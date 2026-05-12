@@ -1,0 +1,23 @@
+# Local environment (실제 키 — 원격 push 절대 금지)
+.env
+.env.local
+*.env.local
+
+# OSRM cached data (대용량, 빌드 결과)
+osrm-data/
+geofabrik/
+*.pbf
+*.osrm
+*.osrm.*
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.iml

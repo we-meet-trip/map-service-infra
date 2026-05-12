@@ -1,0 +1,27 @@
+# map-service-infra — docker-compose 스켈레톤
+#
+# 본 파일은 의도적으로 비어 있다. 실제 코드 작성 단계에서 services / volumes / networks
+# 섹션을 채운다.
+#
+# 작성 예정 services (예시 — 최종 구성은 추후 결정):
+#   1. postgres          — postgis/postgis 베이스, 5432, db/init/*.sql 자동 실행
+#   2. redis             — alpine 베이스, 6379, DB 번호 분리 (user / info)
+#   3. osrm-builder      — profile: build, PBF 다운로드 + foot/bicycle 빌드
+#   4. osrm-foot         — profile: osrm, /data/foot, 5000
+#   5. osrm-bicycle      — profile: osrm, /data/bicycle, 5001
+#   6. user              — build: ../map-service-user, 8080, depends_on: postgres/redis
+#   7. agent             — build: ../map-service-agent, 8000, depends_on: postgres/info
+#   8. info              — build: ../map-service-info, 8001 (컨테이너 8000),
+#                          depends_on: postgres/redis
+#
+# 공통 패턴:
+#   - env_file: ./.env
+#   - healthcheck: postgres=pg_isready, redis=redis-cli ping
+#   - depends_on: condition: service_healthy 또는 service_started
+#   - volumes: postgres-data, redis-data, ./osrm-data
+#
+# 작성 예정 volumes:
+#   - postgres-data, redis-data (이름 있는 볼륨)
+#
+# 작성 예정 networks:
+#   - 기본 default 사용 또는 별도 backend 네트워크 분리 검토
