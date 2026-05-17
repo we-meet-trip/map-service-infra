@@ -10,7 +10,7 @@ set -euo pipefail
 
 PBF_URL="${GEOFABRIK_PBF:-https://download.geofabrik.de/asia/south-korea-latest.osm.pbf}"
 DATA_DIR="$(cd "$(dirname "$0")/.." && pwd)/osrm-data"
-OSRM_IMAGE="osrm/osrm-backend:latest"
+OSRM_IMAGE="osrm/osrm-backend:v5.27.1"
 
 mkdir -p "$DATA_DIR"
 
