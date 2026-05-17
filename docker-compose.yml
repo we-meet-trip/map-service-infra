@@ -1,27 +1,129 @@
-# map-service-infra — docker-compose 스켈레톤
-#
-# 본 파일은 의도적으로 비어 있다. 실제 코드 작성 단계에서 services / volumes / networks
-# 섹션을 채운다.
-#
-# 작성 예정 services (예시 — 최종 구성은 추후 결정):
-#   1. postgres          — postgis/postgis 베이스, 5432, db/init/*.sql 자동 실행
-#   2. redis             — alpine 베이스, 6379, DB 번호 분리 (user / info)
-#   3. osrm-builder      — profile: build, PBF 다운로드 + foot/bicycle 빌드
-#   4. osrm-foot         — profile: osrm, /data/foot, 5000
-#   5. osrm-bicycle      — profile: osrm, /data/bicycle, 5001
-#   6. user              — build: ../map-service-user, 8080, depends_on: postgres/redis
-#   7. agent             — build: ../map-service-agent, 8000, depends_on: postgres/info
-#   8. info              — build: ../map-service-info, 8001 (컨테이너 8000),
-#                          depends_on: postgres/redis
-#
-# 공통 패턴:
-#   - env_file: ./.env
-#   - healthcheck: postgres=pg_isready, redis=redis-cli ping
-#   - depends_on: condition: service_healthy 또는 service_started
-#   - volumes: postgres-data, redis-data, ./osrm-data
-#
-# 작성 예정 volumes:
-#   - postgres-data, redis-data (이름 있는 볼륨)
-#
-# 작성 예정 networks:
-#   - 기본 default 사용 또는 별도 backend 네트워크 분리 검토
+name: map
+
+x-app-env: &app-env
+  env_file: ./.env
+
+services:
+  postgres:
+    image: postgis/postgis:17-3.5
+    restart: unless-stopped
+    profiles: ["infra", "full"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    profiles: ["infra", "full"]
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  osrm-foot:
+    image: osrm/osrm-backend:latest
+    restart: unless-stopped
+    profiles: ["infra", "full"]
+    command: ["osrm-routed", "--algorithm", "mld", "/data/foot/korea.osrm"]
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - ./osrm-data:/data:ro
+
+  osrm-bicycle:
+    image: osrm/osrm-backend:latest
+    restart: unless-stopped
+    profiles: ["infra", "full"]
+    command: ["osrm-routed", "--algorithm", "mld", "/data/bicycle/korea.osrm"]
+    ports:
+      - "127.0.0.1:5001:5000"
+    volumes:
+      - ./osrm-data:/data:ro
+
+  user:
+    build:
+      context: ../map-service-user
+    <<: *app-env
+    restart: unless-stopped
+    profiles: ["backend", "full"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q UP || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  agent:
+    build:
+      context: ../map-service-agent
+    <<: *app-env
+    restart: unless-stopped
+    profiles: ["backend", "full"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      hub:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  hub:
+    build:
+      context: ../map-service-hub
+    <<: *app-env
+    restart: unless-stopped
+    profiles: ["backend", "full"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      osrm-foot:
+        condition: service_started
+      osrm-bicycle:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8001:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres-data:
+  redis-data:
+
+networks:
+  default:
+    name: map-net
