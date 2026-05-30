@@ -1,27 +1,179 @@
-# map-service-infra — docker-compose 스켈레톤
+# map 서비스 전체 컨테이너 오케스트레이션 정의 파일.
 #
-# 본 파일은 의도적으로 비어 있다. 실제 코드 작성 단계에서 services / volumes / networks
-# 섹션을 채운다.
+# project name: map (모든 컨테이너·네트워크·볼륨 prefix 로 사용된다)
 #
-# 작성 예정 services (예시 — 최종 구성은 추후 결정):
-#   1. postgres          — postgis/postgis 베이스, 5432, db/init/*.sql 자동 실행
-#   2. redis             — alpine 베이스, 6379, DB 번호 분리 (user / info)
-#   3. osrm-builder      — profile: build, PBF 다운로드 + foot/bicycle 빌드
-#   4. osrm-foot         — profile: osrm, /data/foot, 5000
-#   5. osrm-bicycle      — profile: osrm, /data/bicycle, 5001
-#   6. user              — build: ../map-service-user, 8080, depends_on: postgres/redis
-#   7. agent             — build: ../map-service-agent, 8000, depends_on: postgres/info
-#   8. info              — build: ../map-service-info, 8001 (컨테이너 8000),
-#                          depends_on: postgres/redis
+# 프로파일 구성:
+#   infra   — 인프라 컨테이너만 (postgres / redis / osrm-foot / osrm-bicycle)
+#   backend — 애플리케이션 컨테이너 + osrm (user / agent / hub + osrm)
+#   full    — 모든 컨테이너
+#   프로파일에 속하지 않는 서비스는 `docker compose up` 시 기동되지 않는다.
 #
-# 공통 패턴:
-#   - env_file: ./.env
-#   - healthcheck: postgres=pg_isready, redis=redis-cli ping
-#   - depends_on: condition: service_healthy 또는 service_started
-#   - volumes: postgres-data, redis-data, ./osrm-data
+# 환경 변수:
+#   x-app-env 앵커가 ./.env 파일을 읽어 user / agent / hub 컨테이너에 주입한다.
+#   postgres 의 POSTGRES_* 변수는 동일한 .env 에서 치환된다.
 #
-# 작성 예정 volumes:
-#   - postgres-data, redis-data (이름 있는 볼륨)
-#
-# 작성 예정 networks:
-#   - 기본 default 사용 또는 별도 backend 네트워크 분리 검토
+# 네트워크: 모든 서비스는 map-net 단일 브리지 네트워크에 연결된다.
+# 포트는 보안상 127.0.0.1 루프백에만 바인딩한다.
+
+name: map
+
+# x-app-env — 애플리케이션 컨테이너 공통 환경설정.
+# user / agent / hub 모두 동일 .env 파일을 공유한다.
+x-app-env: &app-env
+  env_file: ./.env
+
+services:
+  # postgres — PostGIS 확장이 포함된 메인 RDB.
+  # init 디렉터리(./db/init)의 SQL 을 최초 부팅 시 자동 실행하여
+  # hub_data 등 스키마를 사전 생성한다.
+  # ports: 호스트 5432 (루프백) → 컨테이너 5432
+  postgres:
+    image: postgis/postgis:17-3.5
+    restart: unless-stopped
+    profiles: ["infra", "full"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # redis — L1 캐시 / 단기 키-값 저장소.
+  # appendonly 모드로 지속화하여 재기동 시 데이터를 유지한다.
+  # ports: 호스트 16379 → 컨테이너 6379 (호스트 측 충돌 회피용 매핑)
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    profiles: ["infra", "full"]
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # osrm-foot — 도보 라우팅 엔진.
+  # ./osrm-data/foot/korea.osrm 사전 빌드 결과(./scripts/osrm-rebuild.sh)를
+  # 읽어 MLD 알고리즘으로 경로를 계산한다.
+  # ports: 호스트 5000 → 컨테이너 5000 (osrm-routed 기본 포트)
+  osrm-foot:
+    image: osrm/osrm-backend:v5.27.1
+    restart: unless-stopped
+    profiles: ["infra", "backend", "full"]
+    command: ["osrm-routed", "--algorithm", "mld", "/data/foot/korea.osrm"]
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - ./osrm-data:/data:ro
+
+  # osrm-bicycle — 자전거 라우팅 엔진.
+  # foot 과 동일한 빌드 절차로 만든 ./osrm-data/bicycle/korea.osrm 을 읽는다.
+  # ports: 호스트 5001 → 컨테이너 5000 (foot 과 호스트 포트만 다르다)
+  osrm-bicycle:
+    image: osrm/osrm-backend:v5.27.1
+    restart: unless-stopped
+    profiles: ["infra", "backend", "full"]
+    command: ["osrm-routed", "--algorithm", "mld", "/data/bicycle/korea.osrm"]
+    ports:
+      - "127.0.0.1:5001:5000"
+    volumes:
+      - ./osrm-data:/data:ro
+
+  # user — BFF(Backend For Frontend) 애플리케이션.
+  # 인접 디렉터리(../map-service-user)의 Dockerfile 로 빌드된다.
+  # postgres / redis 의 healthcheck 통과를 기다린 후 기동된다.
+  # ports: 호스트 8080 → 컨테이너 8080 (actuator/health 헬스체크)
+  user:
+    build:
+      context: ../map-service-user
+    <<: *app-env
+    restart: unless-stopped
+    profiles: ["backend", "full"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q UP || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  # agent — LLM/그래프 추론 애플리케이션.
+  # postgres 와 hub 가 살아있는지 확인한 뒤 기동된다.
+  # hub 는 service_started 만 보장(자체 health 의존성 없음).
+  # ports: 호스트 8000 → 컨테이너 8000 (FastAPI /health)
+  agent:
+    build:
+      context: ../map-service-agent
+    <<: *app-env
+    restart: unless-stopped
+    profiles: ["backend", "full"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      hub:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # hub — 외부 데이터 게이트웨이 애플리케이션.
+  # postgres / redis / osrm-foot / osrm-bicycle 모두 살아있어야 기동된다.
+  # 컨테이너 내부의 8000 포트를 호스트 8001 로 노출하여
+  # agent / user 의 8000 / 8080 과 충돌하지 않게 한다.
+  hub:
+    build:
+      context: ../map-service-hub
+    <<: *app-env
+    restart: unless-stopped
+    profiles: ["backend", "full"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      osrm-foot:
+        condition: service_started
+      osrm-bicycle:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8001:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+# volumes — 호스트와 분리된 영속 스토리지.
+# postgres-data: RDB 데이터 디렉터리 (/var/lib/postgresql/data)
+# redis-data:    redis appendonly 디렉터리 (/data)
+volumes:
+  postgres-data:
+  redis-data:
+
+# networks — 모든 서비스가 공유하는 기본 브리지 네트워크.
+# 서비스 간 통신은 컨테이너 이름(예: postgres, redis, hub)으로 DNS 해석된다.
+networks:
+  default:
+    name: map-net
