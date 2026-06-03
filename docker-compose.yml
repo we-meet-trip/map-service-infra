@@ -69,27 +69,35 @@ services:
   # 읽어 MLD 알고리즘으로 경로를 계산한다.
   # ports: 호스트 5000 → 컨테이너 5000 (osrm-routed 기본 포트)
   osrm-foot:
-    image: osrm/osrm-backend:v5.27.1
+    image: osrm/osrm-backend:latest
+    # osrm/osrm-backend 는 amd64 단일 아키텍처(arm64 미제공, SoT §2 정정)이므로
+    # Apple Silicon 등 arm64 호스트에서 에뮬레이션 실행하도록 플랫폼을 명시한다.
+    platform: linux/amd64
     restart: unless-stopped
     profiles: ["infra", "backend", "full"]
     command: ["osrm-routed", "--algorithm", "mld", "/data/foot/korea.osrm"]
     ports:
       - "127.0.0.1:5000:5000"
     volumes:
-      - ./osrm-data:/data:ro
+      # SoT §8.4: osrm-data named volume. osrm-rebuild.sh 가 동일 named volume
+      # 에 /data/{foot,bicycle}/korea.osrm 을 적재한다(host bind 아님).
+      - osrm-data:/data:ro
 
   # osrm-bicycle — 자전거 라우팅 엔진.
   # foot 과 동일한 빌드 절차로 만든 ./osrm-data/bicycle/korea.osrm 을 읽는다.
   # ports: 호스트 5001 → 컨테이너 5000 (foot 과 호스트 포트만 다르다)
   osrm-bicycle:
-    image: osrm/osrm-backend:v5.27.1
+    image: osrm/osrm-backend:latest
+    # osrm/osrm-backend 는 amd64 단일 아키텍처(arm64 미제공, SoT §2 정정).
+    platform: linux/amd64
     restart: unless-stopped
     profiles: ["infra", "backend", "full"]
     command: ["osrm-routed", "--algorithm", "mld", "/data/bicycle/korea.osrm"]
     ports:
       - "127.0.0.1:5001:5000"
     volumes:
-      - ./osrm-data:/data:ro
+      # SoT §8.4: osrm-data named volume(foot 과 동일 볼륨 공유, /data/bicycle).
+      - osrm-data:/data:ro
 
   # user — BFF(Backend For Frontend) 애플리케이션.
   # 인접 디렉터리(../map-service-user)의 Dockerfile 로 빌드된다.
@@ -168,9 +176,13 @@ services:
 # volumes — 호스트와 분리된 영속 스토리지.
 # postgres-data: RDB 데이터 디렉터리 (/var/lib/postgresql/data)
 # redis-data:    redis appendonly 디렉터리 (/data)
+# osrm-data:     빌드된 .osrm.* 보관 (SoT §8.4). 외부 osrm-rebuild.sh 가 동일
+#                이름으로 마운트해 적재하므로 프로젝트 prefix 없는 고정 이름 사용.
 volumes:
   postgres-data:
   redis-data:
+  osrm-data:
+    name: osrm-data
 
 # networks — 모든 서비스가 공유하는 기본 브리지 네트워크.
 # 서비스 간 통신은 컨테이너 이름(예: postgres, redis, hub)으로 DNS 해석된다.
