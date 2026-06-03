@@ -69,9 +69,12 @@ services:
   # 읽어 MLD 알고리즘으로 경로를 계산한다.
   # ports: 호스트 5000 → 컨테이너 5000 (osrm-routed 기본 포트)
   osrm-foot:
-    image: osrm/osrm-backend:latest
-    # osrm/osrm-backend 는 amd64 단일 아키텍처(arm64 미제공, SoT §2 정정)이므로
-    # Apple Silicon 등 arm64 호스트에서 에뮬레이션 실행하도록 플랫폼을 명시한다.
+    image: ghcr.io/project-osrm/osrm-backend:v26.5.0-amd64-alpine
+    # ghcr v26.x 는 plain 태그가 없고 arch+base 접미사 태그(-amd64-alpine 등)만
+    # 제공하며 amd64 전용이다(arm64 미제공). osrm-rebuild.sh 의 OSRM_IMAGE 와
+    # 반드시 동일 태그를 써야 엔진/데이터 포맷이 정합한다. /opt/{foot,bicycle}.lua
+    # 프로파일과 osrm-routed --algorithm mld 는 v26 에서도 동일함을 확인했다.
+    # arm64 호스트(Apple Silicon)는 아래 platform 으로 amd64 에뮬레이션 실행한다.
     platform: linux/amd64
     restart: unless-stopped
     profiles: ["infra", "backend", "full"]
@@ -87,8 +90,8 @@ services:
   # foot 과 동일한 빌드 절차로 만든 ./osrm-data/bicycle/korea.osrm 을 읽는다.
   # ports: 호스트 5001 → 컨테이너 5000 (foot 과 호스트 포트만 다르다)
   osrm-bicycle:
-    image: osrm/osrm-backend:latest
-    # osrm/osrm-backend 는 amd64 단일 아키텍처(arm64 미제공, SoT §2 정정).
+    image: ghcr.io/project-osrm/osrm-backend:v26.5.0-amd64-alpine
+    # osrm-foot 과 동일 태그(ghcr v26 은 amd64 접미사 태그만 제공, arm64 미제공).
     platform: linux/amd64
     restart: unless-stopped
     profiles: ["infra", "backend", "full"]

@@ -37,7 +37,7 @@ set -euo pipefail
 PBF_URL="${GEOFABRIK_PBF:-https://download.geofabrik.de/asia/south-korea-latest.osm.pbf}"
 # OSRM_IMAGE — extract/partition/customize 를 실행할 컨테이너 이미지 태그.
 # compose 의 osrm-foot/osrm-bicycle 와 반드시 동일 태그를 사용한다(엔진/데이터 정합).
-OSRM_IMAGE="${OSRM_IMAGE:-osrm/osrm-backend:latest}"
+OSRM_IMAGE="${OSRM_IMAGE:-ghcr.io/project-osrm/osrm-backend:v26.5.0-amd64-alpine}"
 # OSRM_VOLUME — compose 가 선언한 named volume(고정 이름). docker-compose.yml 의
 # volumes.osrm-data.name 과 반드시 일치해야 osrm 서비스가 같은 데이터를 읽는다.
 OSRM_VOLUME="${OSRM_VOLUME:-osrm-data}"
