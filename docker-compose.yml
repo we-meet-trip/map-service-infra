@@ -69,27 +69,38 @@ services:
   # 읽어 MLD 알고리즘으로 경로를 계산한다.
   # ports: 호스트 5000 → 컨테이너 5000 (osrm-routed 기본 포트)
   osrm-foot:
-    image: osrm/osrm-backend:v5.27.1
+    image: ghcr.io/project-osrm/osrm-backend:v26.5.0-amd64-alpine
+    # ghcr v26.x 는 plain 태그가 없고 arch+base 접미사 태그(-amd64-alpine 등)만
+    # 제공하며 amd64 전용이다(arm64 미제공). osrm-rebuild.sh 의 OSRM_IMAGE 와
+    # 반드시 동일 태그를 써야 엔진/데이터 포맷이 정합한다. /opt/{foot,bicycle}.lua
+    # 프로파일과 osrm-routed --algorithm mld 는 v26 에서도 동일함을 확인했다.
+    # arm64 호스트(Apple Silicon)는 아래 platform 으로 amd64 에뮬레이션 실행한다.
+    platform: linux/amd64
     restart: unless-stopped
     profiles: ["infra", "backend", "full"]
     command: ["osrm-routed", "--algorithm", "mld", "/data/foot/korea.osrm"]
     ports:
       - "127.0.0.1:5000:5000"
     volumes:
-      - ./osrm-data:/data:ro
+      # SoT §8.4: osrm-data named volume. osrm-rebuild.sh 가 동일 named volume
+      # 에 /data/{foot,bicycle}/korea.osrm 을 적재한다(host bind 아님).
+      - osrm-data:/data:ro
 
   # osrm-bicycle — 자전거 라우팅 엔진.
   # foot 과 동일한 빌드 절차로 만든 ./osrm-data/bicycle/korea.osrm 을 읽는다.
   # ports: 호스트 5001 → 컨테이너 5000 (foot 과 호스트 포트만 다르다)
   osrm-bicycle:
-    image: osrm/osrm-backend:v5.27.1
+    image: ghcr.io/project-osrm/osrm-backend:v26.5.0-amd64-alpine
+    # osrm-foot 과 동일 태그(ghcr v26 은 amd64 접미사 태그만 제공, arm64 미제공).
+    platform: linux/amd64
     restart: unless-stopped
     profiles: ["infra", "backend", "full"]
     command: ["osrm-routed", "--algorithm", "mld", "/data/bicycle/korea.osrm"]
     ports:
       - "127.0.0.1:5001:5000"
     volumes:
-      - ./osrm-data:/data:ro
+      # SoT §8.4: osrm-data named volume(foot 과 동일 볼륨 공유, /data/bicycle).
+      - osrm-data:/data:ro
 
   # user — BFF(Backend For Frontend) 애플리케이션.
   # 인접 디렉터리(../map-service-user)의 Dockerfile 로 빌드된다.
@@ -168,9 +179,13 @@ services:
 # volumes — 호스트와 분리된 영속 스토리지.
 # postgres-data: RDB 데이터 디렉터리 (/var/lib/postgresql/data)
 # redis-data:    redis appendonly 디렉터리 (/data)
+# osrm-data:     빌드된 .osrm.* 보관 (SoT §8.4). 외부 osrm-rebuild.sh 가 동일
+#                이름으로 마운트해 적재하므로 프로젝트 prefix 없는 고정 이름 사용.
 volumes:
   postgres-data:
   redis-data:
+  osrm-data:
+    name: osrm-data
 
 # networks — 모든 서비스가 공유하는 기본 브리지 네트워크.
 # 서비스 간 통신은 컨테이너 이름(예: postgres, redis, hub)으로 DNS 해석된다.
