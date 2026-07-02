@@ -29,3 +29,6 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# 커밋 메시지 초안 (로컬 전용, 커밋 대상 아님)
+commit_contents.md

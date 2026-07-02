@@ -43,18 +43,14 @@ else
   echo "  ✓ 이미지 존재"
 fi
 
-echo "== [3/5] hub_data 마이그레이션(시드) =="
-# region_grid 가 비면 hub /v1/weather 가 404 → agent 잡 중단. 미시드일 때만 alembic 실행.
-seeded="$("${COMPOSE[@]}" exec -T postgres psql -U map -d map -tAc \
-  "SELECT count(*) FROM hub_data.region_grid" 2>/dev/null | tr -d '[:space:]')"
-if [[ "${seeded:-x}" =~ ^[0-9]+$ ]] && [ "$seeded" -ge 1 ]; then
-  echo "  ✓ 이미 시드됨(region_grid=$seeded)"
-else
-  # hub ENTRYPOINT 가 uvicorn 이라 그대로 두면 'uvicorn ... alembic upgrade head' 로
-  # 합쳐져 실패한다 → --entrypoint alembic 로 덮어써 'alembic upgrade head' 단독 실행.
-  echo "  마이그레이션: alembic upgrade head"
-  "${COMPOSE[@]}" run --rm --no-deps --entrypoint alembic hub upgrade head
-fi
+echo "== [3/5] hub_data 마이그레이션 =="
+# alembic 은 멱등하다(이미 적용된 revision 은 자동으로 건너뛴다). region_grid
+# 존재 여부로 건너뛰면 그 뒤에 추가된 revision(예: places 테이블)이 영영
+# 적용되지 않으므로, 조건 없이 항상 head 까지 올린다.
+# hub ENTRYPOINT 가 uvicorn 이라 그대로 두면 'uvicorn ... alembic upgrade
+# head' 로 합쳐져 실패한다 → --entrypoint alembic 로 덮어써 단독 실행한다.
+echo "  마이그레이션: alembic upgrade head"
+"${COMPOSE[@]}" run --rm --no-deps --entrypoint alembic hub upgrade head
 
 echo "== [4/5] hub · agent 기동 (OSRM 제외: --no-deps) =="
 # hub/agent 는 compose 상 osrm-foot/bicycle 에 depends_on 되어 있으나 라이브 경로에서

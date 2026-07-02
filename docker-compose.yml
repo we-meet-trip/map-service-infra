@@ -35,6 +35,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # db/init/10-admin.sh 가 map_admin 읽기전용 역할을 만들 때 사용.
+      # admin 컨테이너의 ADMIN_DATABASE_URL 비밀번호와 반드시 일치.
+      MAP_ADMIN_PASSWORD: ${MAP_ADMIN_PASSWORD}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -170,6 +173,27 @@ services:
         condition: service_started
     ports:
       - "127.0.0.1:8001:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # admin — 운영 모니터링 백엔드 (cut 1: 읽기전용).
+  # hub_data 를 map_admin(읽기전용) 역할로 직접 조회 + user/agent/hub 헬스 롤업.
+  # 대시보드(HTML)와 Swagger(/docs)를 단일 공유 HTTP Basic 으로 보호한다.
+  # ports: 호스트 8002 → 컨테이너 8000 (8080/8000/8001 과 충돌 없음, loopback).
+  admin:
+    build:
+      context: ../map-service-admin
+    <<: *app-env
+    restart: unless-stopped
+    profiles: ["backend", "full"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8002:8000"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8000/health || exit 1"]
       interval: 15s
