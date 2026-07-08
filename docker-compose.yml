@@ -56,13 +56,19 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     profiles: ["infra", "full"]
-    command: ["redis-server", "--appendonly", "yes"]
+    # REDIS_PASSWORD 가 비어 있으면(현행) 무인증으로 기동한다.
+    # 값이 설정되면 --requirepass 로 인증을 켜고 healthcheck 도 -a 로 인증한다.
+    # $$ 는 compose 치환이 아니라 컨테이너 shell 확장(런타임)을 의미한다.
+    command: ["sh", "-c", "redis-server --appendonly yes $${REDIS_PASSWORD:+--requirepass $$REDIS_PASSWORD}"]
+    # redis 는 x-app-env 앵커를 쓰지 않으므로 REDIS_PASSWORD 를 .env 에서 명시 주입.
+    environment:
+      - REDIS_PASSWORD
     ports:
       - "127.0.0.1:16379:6379"
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli $${REDIS_PASSWORD:+-a $$REDIS_PASSWORD} ping | grep -q PONG"]
       interval: 10s
       timeout: 3s
       retries: 5
