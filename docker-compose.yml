@@ -5,7 +5,11 @@
 # 프로파일 구성:
 #   infra   — 인프라 컨테이너만 (postgres / redis)
 #   backend — 애플리케이션 컨테이너 (user / agent / hub / admin)
-#   full    — 모든 컨테이너
+#   full    — 모든 컨테이너 (postgres / redis / user / agent / hub / admin)
+#   routing — 경로 라우팅 엔진 (osrm-foot / osrm-bicycle). full 에 포함되지 않는
+#             별도 프로파일이다. OSRM 데이터(scripts/osrm-rebuild.sh)를 빌드한
+#             뒤에만 기동한다. hub 는 이 서비스에 depends_on 을 걸지 않으며,
+#             미기동/미설정 시 결정적 스텁 지오메트리로 폴백한다.
 #   프로파일에 속하지 않는 서비스는 `docker compose up` 시 기동되지 않는다.
 #
 # 환경 변수:
@@ -72,6 +76,38 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+
+  # osrm-foot — 도보 라우팅 엔진.
+  # scripts/osrm-rebuild.sh 가 named volume osrm-data 의 /foot/korea.osrm 로
+  # 사전 빌드한 그래프를 read-only 로 마운트해 osrm-routed(MLD)로 서빙한다.
+  # profiles: ["routing"] — full 에 포함되지 않는다. 데이터 빌드 후에만 기동.
+  # ports: 호스트 5000 → 컨테이너 5000 (osrm-routed 기본 포트, 루프백 바인딩)
+  osrm-foot:
+    image: ghcr.io/project-osrm/osrm-backend:v26.5.0-amd64-alpine
+    restart: unless-stopped
+    # osrm-backend 는 amd64 전용(arm64 미제공). arm64 호스트(Apple Silicon)는
+    # 아래 platform 으로 amd64 에뮬레이션 실행된다. 프로덕션 amd64 서버는 네이티브.
+    platform: linux/amd64
+    profiles: ["routing"]
+    command: ["osrm-routed", "--algorithm", "mld", "/data/foot/korea.osrm"]
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - osrm-data:/data:ro
+
+  # osrm-bicycle — 자전거 라우팅 엔진.
+  # foot 과 동일 빌드 절차의 /bicycle/korea.osrm 을 읽는다(같은 named volume 공유).
+  # ports: 호스트 5001 → 컨테이너 5000 (foot 과 호스트 포트만 다르다)
+  osrm-bicycle:
+    image: ghcr.io/project-osrm/osrm-backend:v26.5.0-amd64-alpine
+    restart: unless-stopped
+    platform: linux/amd64
+    profiles: ["routing"]
+    command: ["osrm-routed", "--algorithm", "mld", "/data/bicycle/korea.osrm"]
+    ports:
+      - "127.0.0.1:5001:5000"
+    volumes:
+      - osrm-data:/data:ro
 
   # user — BFF(Backend For Frontend) 애플리케이션.
   # 인접 디렉터리(../map-service-user)의 Dockerfile 로 빌드된다.
@@ -167,9 +203,12 @@ services:
 # volumes — 호스트와 분리된 영속 스토리지.
 # postgres-data: RDB 데이터 디렉터리 (/var/lib/postgresql/data)
 # redis-data:    redis appendonly 디렉터리 (/data)
+# osrm-data:     osrm-rebuild.sh 가 적재한 /foot·/bicycle/korea.osrm* (고정 이름).
 volumes:
   postgres-data:
   redis-data:
+  osrm-data:
+    name: osrm-data
 
 # networks — 모든 서비스가 공유하는 기본 브리지 네트워크.
 # 서비스 간 통신은 컨테이너 이름(예: postgres, redis, hub)으로 DNS 해석된다.
