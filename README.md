@@ -1,13 +1,12 @@
 # map-service-infra
 
-MAP 서비스의 인프라 오케스트레이션 레포. 다른 4 레포(agent · client · hub · user) 위에 위치하며 컨테이너 구성·환경변수·DB 초기화·OSRM 빌드 스크립트를 단독 보유한다.
+MAP 서비스의 인프라 오케스트레이션 레포. 다른 4 레포(agent · client · hub · user) 위에 위치하며 컨테이너 구성·환경변수·DB 초기화를 단독 보유한다.
 
 ## 역할
 
-- `docker-compose.yml` — PoC 단일 호스트 오케스트레이션 (7 services × 3 profiles)
+- `docker-compose.yml` — PoC 단일 호스트 오케스트레이션 (6 services × 3 profiles)
 - `.env.example` 단일 진실원 — 모든 service에 `env_file: ./.env`로 주입
 - `db/init/00-create-schemas.sql` — postgres 첫 부팅 시 schema 3개(`user_service`, `hub_data`, `langgraph`) 생성 + grant
-- `scripts/osrm-rebuild.sh` — OSRM PBF 빌드 (수동 실행, 월 1회 권장)
 - `scripts/map-{up-1-backend,up-2-bff,up-3-client,down}.sh` — PoC 단계별 로컬 기동·정리 (개발/디버그용)
 
 ## 폴더 구조
@@ -15,13 +14,12 @@ MAP 서비스의 인프라 오케스트레이션 레포. 다른 4 레포(agent �
 ```
 map-service-infra/
 ├── .env.example                  환경변수 템플릿
-├── docker-compose.yml            7 services + 3 profiles
+├── docker-compose.yml            6 services + 3 profiles
 ├── db/
 │   └── init/
 │       └── 00-create-schemas.sql 첫 부팅 시 자동 실행
 └── scripts/
-    ├── osrm-rebuild.sh           OSRM PBF 빌드 스크립트
-    ├── map-up-1-backend.sh       Stage1: postgres·redis·hub·agent 기동(OSRM 제외)
+    ├── map-up-1-backend.sh       Stage1: postgres·redis·hub·agent 기동
     ├── map-up-2-bff.sh           Stage2: user-BFF 로컬 실행(gradlew bootRun)
     ├── map-up-3-client.sh        Stage3: 에뮬레이터 + flutter run
     └── map-down.sh               전체 정리(데이터 볼륨 보존)
@@ -31,8 +29,8 @@ map-service-infra/
 
 | profile | 포함 service |
 |---|---|
-| `infra` | postgres · redis · osrm-foot · osrm-bicycle |
-| `backend` | user · agent · hub |
+| `infra` | postgres · redis |
+| `backend` | user · agent · hub · admin |
 | `full` | 위 전부 |
 
 ## 실행 (macOS · Windows WSL2 · Linux 공통)
@@ -40,7 +38,6 @@ map-service-infra/
 ```bash
 cd map-service-infra
 cp .env.example .env                              # API 키 주입
-./scripts/osrm-rebuild.sh                         # 1회, 30-60분, RAM 6GB+
 docker compose --profile full up -d --build
 
 # 검증
@@ -55,7 +52,7 @@ docker compose exec postgres psql -U map -c "\dn" # 3 schemas
 ## PoC 단계별 기동 (로컬 개발·디버그)
 
 `docker compose --profile full up`(전체 컨테이너)과 달리, BFF를 **호스트 JVM(`gradlew bootRun`)**으로
-띄우고 agent·hub·postgres·redis만 컨테이너로 두는 **반복 개발용 토폴로지**다. OSRM은 제외된다.
+띄우고 agent·hub·postgres·redis만 컨테이너로 두는 **반복 개발용 토폴로지**다.
 
 | 스크립트 | 단계 | 실행 형태 |
 |---|---|---|
@@ -75,7 +72,7 @@ cd map-service-infra
 ```
 
 - 추가 사전 준비: `.env`의 유효한 `GEMINI_API_KEY`/`JWT_SECRET`, Android 에뮬레이터(`Pixel_7`), Flutter SDK
-- OSRM 불필요(라우팅은 agent의 LLM 추정). 날씨는 KMA 적재 상태에 따라 빈 배열일 수 있음(정상 동작)
+- 경로 거리·시간은 agent의 LLM 추정으로 산출한다(도로 라우팅 엔진 미사용). 날씨는 KMA 적재 상태에 따라 빈 배열일 수 있음(정상 동작)
 - BFF가 호스트 JVM이라 컨테이너 기동(`--profile full up`)과 토폴로지가 다름에 유의
 
 ## 사전 준비

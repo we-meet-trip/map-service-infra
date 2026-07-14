@@ -50,7 +50,9 @@ docker volume create "$OSRM_VOLUME" >/dev/null
 # 1단계: 원본 PBF 를 named volume 으로 다운로드(curl 컨테이너).
 # 같은 PBF 를 foot/bicycle 두 프로파일이 공유하므로 한 번만 받는다.
 echo "[1/3] Downloading PBF into volume '$OSRM_VOLUME' from $PBF_URL"
-docker run --rm -v "$OSRM_VOLUME:/data" curlimages/curl:latest \
+# curlimages/curl 는 비루트(uid 100)로 실행되어 root 소유 named volume(/data)에
+# 쓰지 못한다. --user 0:0 으로 root 로 실행해 쓰기 권한을 준다.
+docker run --rm --user 0:0 -v "$OSRM_VOLUME:/data" curlimages/curl:latest \
   -L --fail -o /data/korea.osm.pbf "$PBF_URL"
 
 # 2~3단계: 두 프로파일(foot, bicycle) 각각에 대해 동일한 전처리를 반복.
@@ -76,4 +78,6 @@ done
 # 완료 안내. 위 절차가 끝난 후 osrm-foot / osrm-bicycle 컨테이너를 띄울 수 있다.
 echo
 echo "OSRM 빌드 완료(volume: $OSRM_VOLUME). 다음 명령으로 OSRM 서비스를 가동한다:"
-echo "  docker compose --profile infra up -d osrm-foot osrm-bicycle"
+echo "  docker compose --profile routing up -d osrm-foot osrm-bicycle"
+echo "그 후 .env 에 OSRM_FOOT_BASE_URL=http://osrm-foot:5000 ·"
+echo "OSRM_BICYCLE_BASE_URL=http://osrm-bicycle:5000 을 기입하고 hub 를 재기동한다."

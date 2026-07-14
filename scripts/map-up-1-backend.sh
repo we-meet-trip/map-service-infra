@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # MAP PoC Stage 1: 도커 백엔드 기동(postgres·redis·hub·agent).
-# 라이브 추천 경로는 OSRM 을 쓰지 않으므로 --no-deps 로 osrm(대용량 사전빌드)을 제외한다.
+# postgres·redis 를 먼저 띄운 뒤 --no-deps 로 hub·agent 만 기동한다(이미 뜬
+# 의존 컨테이너 재기동 방지).
 # 헬스 게이트 통과 후 종료(컨테이너는 detached 로 계속 실행).
 set -uo pipefail
 
@@ -52,9 +53,9 @@ echo "== [3/5] hub_data 마이그레이션 =="
 echo "  마이그레이션: alembic upgrade head"
 "${COMPOSE[@]}" run --rm --no-deps --entrypoint alembic hub upgrade head
 
-echo "== [4/5] hub · agent 기동 (OSRM 제외: --no-deps) =="
-# hub/agent 는 compose 상 osrm-foot/bicycle 에 depends_on 되어 있으나 라이브 경로에서
-# OSRM 을 호출하지 않으므로, --no-deps 로 osrm 기동(대용량 데이터 필요)을 건너뛴다.
+echo "== [4/5] hub · agent 기동 (--no-deps) =="
+# 위에서 postgres·redis 를 이미 기동했으므로 --no-deps 로 hub·agent 만 올려
+# 의존 컨테이너의 불필요한 재평가/재기동을 피한다.
 "${COMPOSE[@]}" up -d --no-deps hub agent
 
 echo "== [5/5] 헬스 체크 =="
