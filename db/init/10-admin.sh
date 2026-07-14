@@ -12,6 +12,11 @@
 #
 # 비밀번호는 MAP_ADMIN_PASSWORD(컨테이너 env, 공유 .env 유래) 단일 출처에서
 # 온다. admin 컨테이너의 ADMIN_DATABASE_URL 비밀번호와 반드시 일치해야 한다.
+#
+# cut2(2026-07-13): admin_data 스키마 소유권을 map_admin 으로 이전한다.
+#   - hub_data 는 계속 SELECT-only(읽기전용 4중 보장의 DB 계층 유지).
+#   - admin_data 는 map_admin 소유 → admin 레포 Alembic 이 이 DSN 으로
+#     테이블(audit_logs/admin_accounts/admin_sessions)을 생성·관리한다.
 # =========================================================================
 set -euo pipefail
 
@@ -37,8 +42,15 @@ GRANT USAGE ON SCHEMA hub_data TO map_admin;
 GRANT SELECT ON ALL TABLES IN SCHEMA hub_data TO map_admin;
 ALTER DEFAULT PRIVILEGES IN SCHEMA hub_data GRANT SELECT ON TABLES TO map_admin;
 
--- 편의용 search_path (admin 쿼리는 완전수식하므로 필수는 아님).
-ALTER ROLE map_admin SET search_path = hub_data, public;
+-- admin_data 소유권 이전: map_admin 이 admin_data 를 소유(RW).
+-- 00-create-schemas.sql 이 admin_data 를 superuser 소유로 생성해 두었으므로,
+-- 여기서 소유권만 map_admin 으로 넘긴다. 소유자는 자동으로 전권(CREATE/DML)을
+-- 가지므로 별도 GRANT 불필요. admin 레포 Alembic 이 이 스키마에 테이블을 만든다.
+ALTER SCHEMA admin_data OWNER TO map_admin;
+
+-- 편의용 search_path. admin_data 를 앞에 두어 Alembic 의 alembic_version(무수식
+-- 생성)이 admin_data 에 안착하게 한다. hub_data 읽기는 뒤이어 계속 동작.
+ALTER ROLE map_admin SET search_path = admin_data, hub_data, public;
 EOSQL
 
 echo "10-admin.sh: map_admin read-only role ensured on hub_data"

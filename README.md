@@ -75,6 +75,32 @@ cd map-service-infra
 - 경로 거리·시간은 agent의 LLM 추정으로 산출한다(도로 라우팅 엔진 미사용). 날씨는 KMA 적재 상태에 따라 빈 배열일 수 있음(정상 동작)
 - BFF가 호스트 JVM이라 컨테이너 기동(`--profile full up`)과 토폴로지가 다름에 유의
 
+## 운영 콘솔 + 모니터링 스택 (cut 2)
+
+- **admin(8002)** — 운영 콘솔 JSON API. **admin-web(8003)** — React SPA(nginx,
+  `/api` → admin 프록시). 둘 다 `backend`/`full` 프로파일. 브라우저는
+  `http://127.0.0.1:8003/` 로 접속(SPA 로그인). 최초 계정은 `.env` 의
+  `ADMIN_BOOTSTRAP_USER`/`ADMIN_BOOTSTRAP_PASSWORD` 로 시드된다.
+- **모니터링 스택** — `prometheus`(9090)·`grafana`(3000)·`postgres-exporter`·
+  `redis-exporter`·`node-exporter`. **별도 `monitoring` 프로파일**(=`full` 미포함,
+  Pi 메모리 여유 운용). 전 포트 loopback, 이미지는 multi-arch(arm64 OK).
+
+```bash
+# full + monitoring 함께 기동
+docker compose --profile full --profile monitoring up -d --build
+# Grafana: http://127.0.0.1:3000  (GF_SECURITY_ADMIN_USER/PASSWORD, .env)
+# Prometheus: http://127.0.0.1:9090
+```
+
+- Prometheus 는 hub/agent/admin `/metrics` 와 user `/actuator/prometheus`,
+  exporter 3종을 30s 간격으로 스크레이프한다(보존 10d/2GB — `docker-compose.yml`
+  prometheus command 플래그). Grafana 데이터소스·대시보드(서비스 개요·인프라)는
+  `monitoring/grafana/provisioning` 으로 코드 프로비저닝된다.
+- admin 콘솔의 "모니터링" 화면은 `MONITORING_PANELS`(.env) 로 지정한 Grafana URL 을
+  iframe/링크로 임베드한다(Grafana `GF_SECURITY_ALLOW_EMBEDDING=true` + anonymous
+  Viewer 전제 — loopback 한정).
+- `.env` 추가 키: `GF_SECURITY_ADMIN_USER`, `GF_SECURITY_ADMIN_PASSWORD`.
+
 ## 사전 준비
 
 - Docker (Desktop 또는 Engine), `docker compose` v2

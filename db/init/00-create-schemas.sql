@@ -17,10 +17,14 @@ CREATE EXTENSION IF NOT EXISTS postgis;
 --   user_service : 사용자/계정/즐겨찾기 등 user 서비스 영역(Spring 측 BFF 소유)
 --   hub_data     : 외부 데이터(날씨/지역 등) 캐시 영역(hub 서비스 소유)
 --   langgraph    : LangGraph 체크포인트/상태 저장 영역(agent 서비스 소유)
+--   admin_data   : 운영 감사/계정/세션 영역(admin 서비스 소유, D15/cut2)
 -- 각 서비스는 자기 스키마 외부의 테이블에 직접 쓰기 접근하지 않는 것이 원칙.
+-- admin_data 는 여기서 생성만 하고, 소유권은 map_admin 역할 생성 이후
+-- 10-admin.sh 에서 이전한다(ALTER SCHEMA ... OWNER TO map_admin).
 CREATE SCHEMA IF NOT EXISTS user_service;
 CREATE SCHEMA IF NOT EXISTS hub_data;
 CREATE SCHEMA IF NOT EXISTS langgraph;
+CREATE SCHEMA IF NOT EXISTS admin_data;
 
 -- 현재 로그인 ROLE 의 기본 search_path 를 변경한다.
 -- DO $$ ... $$ 블록 + format(%I) 를 사용하는 이유:

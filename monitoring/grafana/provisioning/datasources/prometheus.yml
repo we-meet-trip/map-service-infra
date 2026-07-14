@@ -1,0 +1,14 @@
+# Grafana 데이터소스 프로비저닝 — Prometheus (자동 등록).
+# Grafana 기동 시 본 파일을 읽어 데이터소스를 코드로 구성한다(수동 등록 불필요).
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: map-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 30s

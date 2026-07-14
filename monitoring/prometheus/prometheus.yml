@@ -1,0 +1,48 @@
+# Prometheus 스크레이프 설정 (MAP 모니터링 스택, compose profile "monitoring").
+#
+# 모든 타깃은 map-net 컨테이너 DNS 로 접근한다(호스트 포트 아님). Raspberry Pi
+# 4(8GB) 부담을 줄이기 위해 scrape_interval 을 30s 로 둔다. 보존기간/크기는
+# docker-compose 의 prometheus command 플래그(--storage.tsdb.retention.*)로 제한.
+global:
+  scrape_interval: 30s
+  scrape_timeout: 10s
+  evaluation_interval: 30s
+  external_labels:
+    project: map
+
+scrape_configs:
+  # FastAPI 서비스 — prometheus-fastapi-instrumentator 가 /metrics 제공.
+  - job_name: hub
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["hub:8000"]
+  - job_name: agent
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["agent:8000"]
+  - job_name: admin
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["admin:8000"]
+
+  # Spring BFF — micrometer-registry-prometheus 가 /actuator/prometheus 제공.
+  - job_name: user
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["user:8080"]
+
+  # 인프라 exporter.
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  # 셀프 모니터링.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
