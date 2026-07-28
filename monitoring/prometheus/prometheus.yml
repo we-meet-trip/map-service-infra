@@ -1,8 +1,9 @@
 # Prometheus 스크레이프 설정 (MAP 모니터링 스택, compose profile "monitoring").
 #
-# 모든 타깃은 map-net 컨테이너 DNS 로 접근한다(호스트 포트 아님). Raspberry Pi
-# 4(8GB) 부담을 줄이기 위해 scrape_interval 을 30s 로 둔다. 보존기간/크기는
-# docker-compose 의 prometheus command 플래그(--storage.tsdb.retention.*)로 제한.
+# 모든 타깃은 map-net 컨테이너 DNS 로 접근한다(호스트 포트 아님). 단일 노드에
+# 전 서비스를 올리는 구성이라 호스트 부담을 줄이려고 scrape_interval 을 30s 로
+# 둔다. 보존기간/크기는 docker-compose 의 prometheus command 플래그
+# (--storage.tsdb.retention.*)로 제한한다.
 global:
   scrape_interval: 30s
   scrape_timeout: 10s

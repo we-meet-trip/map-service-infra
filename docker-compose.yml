@@ -207,7 +207,8 @@ services:
   # admin-web — 운영 콘솔 SPA (React/Vite → nginx 정적 서빙).
   # nginx 가 정적 자산을 서빙하고 /api/ 를 admin:8000 으로 리버스 프록시한다
   # (same-origin → 세션 쿠키 그대로 전달, 프로덕션은 CORS 불필요).
-  # ports: 호스트 8003 → 컨테이너 80 (loopback). Pi arm64 빌드 호환(node/nginx alpine).
+  # ports: 호스트 8003 → 컨테이너 80 (loopback). node/nginx alpine 은 멀티아치
+  # 이미지라 amd64·arm64 호스트 어디서든 빌드된다.
   admin-web:
     build:
       context: ../map-service-admin/web
