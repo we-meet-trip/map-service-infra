@@ -16,11 +16,19 @@ if ! docker info >/dev/null 2>&1; then
   echo "  ✗ Docker 데몬 꺼짐. Docker Desktop 실행 후 재시도: open -a Docker"; exit 1
 fi
 [ -f "$ENVF" ] || { echo "  ✗ $ENVF 없음. cp .env.example .env 후 키 입력."; exit 1; }
-# 부팅 필수 키만 검사: agent 는 GEMINI_API_KEY 비면 부팅 실패, BFF 는 JWT_SECRET 필요.
-for k in POSTGRES_PASSWORD GEMINI_API_KEY JWT_SECRET; do
+# 부팅 필수 키만 검사: postgres 자격과 agent 의 GEMINI_API_KEY(비면 부팅 실패).
+for k in POSTGRES_PASSWORD GEMINI_API_KEY; do
   v="$(grep -E "^$k=" "$ENVF" | cut -d= -f2-)"
   [ -n "$v" ] || { echo "  ✗ .env 의 $k 비어 있음(필수)."; exit 1; }
 done
+# BFF 는 RS256 서명이라 JWT_PRIVATE_KEY/JWT_PUBLIC_KEY 를 쓴다(구 JWT_SECRET 은 폐기).
+# AUTH_ENFORCED=false 면 두 키가 비어도 임시 키쌍으로 부팅하므로 조건부로만 요구한다.
+if [ "$(grep -E '^AUTH_ENFORCED=' "$ENVF" | cut -d= -f2-)" = "true" ]; then
+  for k in JWT_PRIVATE_KEY JWT_PUBLIC_KEY; do
+    v="$(grep -E "^$k=" "$ENVF" | cut -d= -f2-)"
+    [ -n "$v" ] || { echo "  ✗ AUTH_ENFORCED=true 인데 .env 의 $k 비어 있음(필수)."; exit 1; }
+  done
+fi
 echo "  ✓ Docker 가동·필수 키 존재"
 
 echo "== [1/5] postgres · redis 기동 =="

@@ -24,7 +24,11 @@ done
 # 비밀값은 환경변수로만 주입(화면 미출력). 로컬 실행이라 컨테이너 DNS 가 아닌 호스트 포트 사용:
 # redis 는 호스트 16379(컨테이너 6379), agent/hub 는 호스트 8000/8001.
 export POSTGRES_PASSWORD="$(grep -E '^POSTGRES_PASSWORD=' "$ENVF" | cut -d= -f2-)"
-export JWT_SECRET="$(grep -E '^JWT_SECRET=' "$ENVF" | cut -d= -f2-)"
+# BFF 는 RS256 서명(JwtService 가 KeyPair 주입). 비어 있으면 임시 키쌍으로 기동하며
+# 재기동 시 기존 토큰이 전부 무효가 된다. AUTH_ENFORCED=true 면 비어 있을 때 부팅 중단.
+export JWT_PRIVATE_KEY="$(grep -E '^JWT_PRIVATE_KEY=' "$ENVF" | cut -d= -f2-)"
+export JWT_PUBLIC_KEY="$(grep -E '^JWT_PUBLIC_KEY=' "$ENVF" | cut -d= -f2-)"
+export AUTH_ENFORCED="$(grep -E '^AUTH_ENFORCED=' "$ENVF" | cut -d= -f2-)"
 export POSTGRES_HOST=localhost POSTGRES_PORT=5432 POSTGRES_DB=map POSTGRES_USER=map
 export REDIS_HOST=localhost REDIS_PORT=16379
 export AGENT_BASE_URL=http://localhost:8000 HUB_BASE_URL=http://localhost:8001

@@ -1,0 +1,15 @@
+# Grafana 대시보드 프로비저닝 — 코드형 대시보드 자동 로드.
+# /var/lib/grafana/dashboards 아래 JSON 을 폴더 "MAP" 로 로드한다.
+apiVersion: 1
+
+providers:
+  - name: MAP
+    orgId: 1
+    folder: MAP
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
