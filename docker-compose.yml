@@ -34,6 +34,12 @@ services:
   postgres:
     image: postgis/postgis:17-3.5
     restart: unless-stopped
+    # postgis/postgis 는 amd64 전용이다(arm64 매니페스트 없음 — 17-3.5 ·
+    # 17-3.5-alpine 모두 동일, manifest 실측 2026-07-29). platform 을 명시하지
+    # 않으면 arm64 호스트(Apple Silicon)의 이미지 캐시가 없는 새 환경에서
+    # `no matching manifest for linux/arm64/v8` 로 pull 이 실패하고, postgres 에
+    # depends_on 을 건 user/agent/hub/admin 까지 전부 기동 불가가 된다.
+    platform: linux/amd64
     profiles: ["infra", "full"]
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
