@@ -81,15 +81,31 @@ done
 echo "$base_url" > "$URL_FILE"
 echo "  ✓ $base_url"
 
+# 이름이 실제로 풀릴 때까지 먼저 기다린다. 주소를 받자마자 물으면 아직 없는
+# 이름이라는 답을 받는데, 맥은 그 답을 한동안 들고 있어 이후 조회까지 전부
+# 막힌다. dig 는 그 보관분을 거치지 않아 실제 등록 여부를 볼 수 있다.
+tunnel_host="${base_url#https://}"
+tunnel_ip=""
+for _ in $(seq 1 30); do
+  tunnel_ip="$(dig +short "$tunnel_host" A 2>/dev/null | grep -E '^[0-9.]+$' | head -1)"
+  [ -n "$tunnel_ip" ] && break
+  sleep 2
+done
+[ -n "$tunnel_ip" ] || fail "터널 이름이 풀리지 않는다($tunnel_host)"
+
 # 터널이 실제로 관문까지 닿는지 본다. 주소만 받고 경로가 안 서면, 게시된 뒤
-# 폰에서야 실패가 드러난다.
+# 폰에서야 실패가 드러난다. 이름은 위에서 얻은 값으로 직접 지정한다 — 맥에
+# 남아 있을 수 있는 옛 답과 무관하게 확인하기 위해서다(폰은 제 나름의 조회를
+# 하므로 이 확인은 이 맥에서만 필요한 우회다).
 tunnel_ok=0
 for _ in $(seq 1 20); do
-  [ "$(curl -s -m 5 -o /dev/null -w '%{http_code}' "$base_url/healthz")" = "200" ] && { tunnel_ok=1; break; }
+  code="$(curl -s -m 5 --resolve "$tunnel_host:443:$tunnel_ip" \
+    -o /dev/null -w '%{http_code}' "$base_url/healthz")"
+  [ "$code" = "200" ] && { tunnel_ok=1; break; }
   sleep 2
 done
 [ "$tunnel_ok" -eq 1 ] || fail "터널 경유 /healthz 실패 — 터널은 떴으나 관문까지 닿지 않는다"
-echo "  ✓ 터널 경유 관문 확인"
+echo "  ✓ 터널 경유 관문 확인 ($tunnel_ip)"
 
 echo "== [4/5] 앱이 읽는 주소 게시 =="
 # 앱은 시작할 때 이 파일 하나만 본다. 파일 위치는 고정, 내용만 매번 바뀐다.
