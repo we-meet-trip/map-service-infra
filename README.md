@@ -8,6 +8,8 @@ MAP 서비스의 인프라 오케스트레이션 레포. 다른 4 레포(agent �
 - `.env.example` 단일 진실원 — 모든 service에 `env_file: ./.env`로 주입
 - `db/init/00-create-schemas.sql` — postgres 첫 부팅 시 schema 3개(`user_service`, `hub_data`, `langgraph`) 생성 + grant
 - `scripts/map-{up-1-backend,up-2-bff,up-3-client,down}.sh` — PoC 단계별 로컬 기동·정리 (개발/디버그용)
+- `scripts/map-serve{,-down}.sh` — 실기기용 외부 노출(터널 개통 + 앱이 읽는 주소 게시)
+- `proxy/default.conf` — 외부 노출 시 앞에 서는 관문(nginx) 설정
 
 ## 폴더 구조
 
@@ -18,10 +20,14 @@ map-service-infra/
 ├── db/
 │   └── init/
 │       └── 00-create-schemas.sql 첫 부팅 시 자동 실행
+├── proxy/
+│   └── default.conf              외부 노출 관문(nginx) 설정
 └── scripts/
     ├── map-up-1-backend.sh       Stage1: postgres·redis·hub·agent 기동
     ├── map-up-2-bff.sh           Stage2: user-BFF 로컬 실행(gradlew bootRun)
     ├── map-up-3-client.sh        Stage3: 에뮬레이터 + flutter run
+    ├── map-serve.sh              실기기용 외부 노출(터널 + 주소 게시)
+    ├── map-serve-down.sh         외부 노출만 종료(스택 유지)
     └── map-down.sh               전체 정리(데이터 볼륨 보존)
 ```
 
@@ -30,7 +36,7 @@ map-service-infra/
 | profile | 포함 service |
 |---|---|
 | `infra` | postgres · redis |
-| `backend` | user · agent · hub · admin |
+| `backend` | user · agent · hub · admin · admin-web · proxy |
 | `full` | 위 전부 |
 
 ## 실행 (macOS · Windows WSL2 · Linux 공통)
@@ -74,6 +80,26 @@ cd map-service-infra
 - 추가 사전 준비: `.env`의 유효한 `GEMINI_API_KEY`/`JWT_SECRET`, Android 에뮬레이터(`Pixel_7`), Flutter SDK
 - 경로 거리·시간은 agent의 LLM 추정으로 산출한다(도로 라우팅 엔진 미사용). 날씨는 KMA 적재 상태에 따라 빈 배열일 수 있음(정상 동작)
 - BFF가 호스트 JVM이라 컨테이너 기동(`--profile full up`)과 토폴로지가 다름에 유의
+
+## 실기기용 외부 노출
+
+이 맥의 스택을 폰에서 쓸 수 있게 여는 흐름이다. `--profile full`(BFF 도 컨테이너)
+전제이며, BFF 를 호스트 JVM 으로 띄우는 위 개발 흐름과는 같이 쓸 수 없다 —
+관문이 컨테이너 이름으로 BFF 를 찾기 때문이다.
+
+```bash
+cd map-service-client && flutter build web --release   # 주소 파일을 담을 산출물
+cd ../map-service-infra
+./scripts/map-serve.sh            # 스택 기동 → 관문 확인 → 터널 개통 → 주소 게시
+./scripts/map-serve-down.sh       # 노출만 종료(스택은 유지)
+```
+
+- 앱은 시작할 때 고정된 위치에서 현재 서버 주소를 읽는다. 터널 주소가 바뀌면
+  이 스크립트를 다시 돌리는 것으로 끝나고, 앱을 다시 만들거나 깔지 않는다.
+- 관문(8090)은 여는 경로를 목록으로 못박고 `/actuator` 를 막으며 일정 생성에
+  IP 당 호출 상한을 건다. 주소를 아는 사람은 누구나 닿을 수 있으므로 BFF 를
+  그대로 노출하지 않는다.
+- 터널은 원본 응답을 120초까지만 기다린다. 그보다 오래 걸리는 요청은 끊긴다.
 
 ## 운영 콘솔 + 모니터링 스택 (cut 2)
 

@@ -13,6 +13,9 @@ geofabrik/
 # Logs
 *.log
 
+# 외부 노출 세션의 실행 상태(터널 pid·주소·로그). 실행마다 달라진다.
+.serve/
+
 # OS
 .DS_Store
 Thumbs.db

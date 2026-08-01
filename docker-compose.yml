@@ -4,8 +4,8 @@
 #
 # 프로파일 구성:
 #   infra   — 인프라 컨테이너만 (postgres / redis)
-#   backend — 애플리케이션 컨테이너 (user / agent / hub / admin)
-#   full    — 모든 컨테이너 (postgres / redis / user / agent / hub / admin)
+#   backend — 애플리케이션 컨테이너 (user / agent / hub / admin / admin-web / proxy)
+#   full    — 모든 컨테이너 (infra + backend)
 #   routing — 경로 라우팅 엔진 (osrm-foot / osrm-bicycle). full 에 포함되지 않는
 #             별도 프로파일이다. OSRM 데이터(scripts/osrm-rebuild.sh)를 빌드한
 #             뒤에만 기동한다. hub 는 이 서비스에 depends_on 을 걸지 않으며,
@@ -224,6 +224,37 @@ services:
       - admin
     ports:
       - "127.0.0.1:8003:80"
+
+  # proxy — 바깥으로 열 때 앞에 세우는 유일한 관문 (nginx).
+  # 설정은 ./proxy/default.conf 에 있다. 여는 경로를 목록으로 못박고(그 밖은
+  # 404), 운영 지표 경로를 막고, 일정 생성에 IP 당 호출 상한을 건다.
+  #
+  # BFF 를 그대로 노출하지 않는 이유: BFF 는 자기 상태 점검 경로를 인증 없이
+  # 열어 두고, 무거운 생성 요청에도 자체 호출 상한이 없다. 공개 주소로 그
+  # 두 가지가 그대로 나가면 지표가 새고 생성 쿼터가 남용된다.
+  #
+  # 컨테이너 이름으로 BFF 를 찾으므로(user:8080) BFF 도 컨테이너로 떠 있어야
+  # 한다. 호스트에서 BFF 를 직접 띄우는 흐름과는 같이 쓸 수 없다.
+  #
+  # ports: 호스트 8090 → 컨테이너 80. 루프백에만 붙인다 — 바깥 노출은 이
+  # 포트를 터널이 집어 가는 방식이고, 열린 포트를 그대로 두지 않는다.
+  proxy:
+    image: nginx:alpine
+    restart: unless-stopped
+    profiles: ["backend", "full"]
+    depends_on:
+      - user
+    volumes:
+      - ./proxy/default.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:8090:80"
+    # 127.0.0.1 을 직접 쓴다. localhost 는 IPv6 로 풀릴 수 있는데 nginx 는
+    # IPv4 로만 듣고 있어 점검이 통과하지 못한다.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz | grep -q ok || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
 
   # ===== 모니터링 스택 (profile "monitoring") =====================
   # full 에 미포함 — Pi 4(8GB) 메모리 여유 운용 위해 별도 기동한다:
