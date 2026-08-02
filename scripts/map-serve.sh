@@ -8,8 +8,9 @@
 # 전제:
 #   - BFF 가 컨테이너로 떠 있어야 한다(full 프로파일). 관문이 컨테이너 이름으로
 #     BFF 를 찾기 때문에, 호스트에서 BFF 를 직접 띄우는 흐름과는 같이 못 쓴다.
-#   - 앱 쪽 웹 산출물이 만들어져 있어야 한다(map-service-client/build/web).
-#     주소 파일을 그 안에 써서 함께 올린다.
+#   - 주소 파일은 앱 저장소의 hosting 디렉터리에 쓴다. 그 디렉터리에는 주소
+#     파일과 링크 검증 파일만 둔다 — 웹 빌드 산출물을 통째로 올리면 앱 설정
+#     자산까지 공개 주소로 따라 올라간다.
 #
 # 알려진 한계:
 #   - 터널 주소는 열 때마다 달라진다. 그래서 이 스크립트가 매번 다시 게시한다.
@@ -37,7 +38,7 @@ command -v cloudflared >/dev/null || fail "cloudflared 없음 → brew install c
 command -v firebase >/dev/null   || fail "firebase CLI 없음 → npm i -g firebase-tools"
 docker info >/dev/null 2>&1      || fail "도커 데몬 미기동"
 [ -f "$INFRA_DIR/.env" ]         || fail "$INFRA_DIR/.env 없음"
-[ -d "$CLIENT_DIR/build/web" ]   || fail "$CLIENT_DIR/build/web 없음 → 먼저 (cd $CLIENT_DIR && flutter build web --release)"
+[ -d "$CLIENT_DIR/hosting" ]     || fail "$CLIENT_DIR/hosting 없음 → 게시할 디렉터리가 없다"
 [ -f "$CLIENT_DIR/.firebaserc" ] || fail "$CLIENT_DIR/.firebaserc 없음 → 배포 프로젝트가 정해지지 않았다"
 firebase login:list 2>/dev/null | grep -q "Logged in as" || fail "firebase 미로그인 → firebase login"
 mkdir -p "$STATE_DIR"
@@ -131,7 +132,7 @@ echo "  ✓ 터널 경유 관문 확인 ($tunnel_ip)"
 
 echo "== [4/5] 앱이 읽는 주소 게시 =="
 # 앱은 시작할 때 이 파일 하나만 본다. 파일 위치는 고정, 내용만 매번 바뀐다.
-python3 - "$CLIENT_DIR/build/web/app_config.json" "$base_url" <<'PY'
+python3 - "$CLIENT_DIR/hosting/app_config.json" "$base_url" <<'PY'
 import json, sys, datetime
 path, base = sys.argv[1], sys.argv[2]
 # 갱신 안내용 자리는 지금 비워 둔다 — 배포 채널이 따로 알림을 보낸다.
