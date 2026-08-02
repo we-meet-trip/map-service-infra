@@ -83,11 +83,33 @@ echo "  ✓ $base_url"
 
 # 이름이 실제로 풀릴 때까지 먼저 기다린다. 주소를 받자마자 물으면 아직 없는
 # 이름이라는 답을 받는데, 맥은 그 답을 한동안 들고 있어 이후 조회까지 전부
-# 막힌다. dig 는 그 보관분을 거치지 않아 실제 등록 여부를 볼 수 있다.
+# 막힌다.
+#
+# 두 갈래로 물어본다. 먼저 맥 자체 해석기 — 앱과 브라우저가 쓰는 것과 같은
+# 길이라, 여기서 답이 나오면 실제로 닿는다는 뜻이다. 그게 비면 공개 해석기에
+# 직접 묻는다. 조회 도구가 시스템 설정을 그대로 못 쓰는 경우가 있어서다.
+# 공유기가 알려 주는 이름 서버가 링크로컬 주소이면 dig 는 그 서버에 질의하지
+# 못하고 조용히 빈 답을 준다 — 이름은 멀쩡히 풀리는데 확인만 실패한다.
+resolve_tunnel_ip() {
+  local host="$1" ip=""
+  ip="$(python3 -c '
+import socket, sys
+try:
+    print(socket.getaddrinfo(sys.argv[1], 443, socket.AF_INET)[0][4][0])
+except Exception:
+    pass
+' "$host" 2>/dev/null)"
+  if [ -n "$ip" ]; then echo "$ip"; return; fi
+  for ns in 1.1.1.1 8.8.8.8; do
+    ip="$(dig +short "$host" A "@$ns" 2>/dev/null | grep -E '^[0-9.]+$' | head -1)"
+    if [ -n "$ip" ]; then echo "$ip"; return; fi
+  done
+}
+
 tunnel_host="${base_url#https://}"
 tunnel_ip=""
 for _ in $(seq 1 30); do
-  tunnel_ip="$(dig +short "$tunnel_host" A 2>/dev/null | grep -E '^[0-9.]+$' | head -1)"
+  tunnel_ip="$(resolve_tunnel_ip "$tunnel_host")"
   [ -n "$tunnel_ip" ] && break
   sleep 2
 done
