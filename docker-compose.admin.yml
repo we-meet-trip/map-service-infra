@@ -1,0 +1,175 @@
+# map 관리자 스택 컨테이너 오케스트레이션 정의 파일.
+#
+# project name: map-admin
+#
+# 운영자용 컨테이너만 모아 둔 스택이다. 서비스 스택(docker-compose.yml)과
+# 수명주기를 분리해, 평소 개발에서는 서비스 스택만 띄우고 콘솔이 필요할 때만
+# 이 스택을 올린다.
+#
+# 기동:
+#   docker compose -f docker-compose.admin.yml up -d                       # 콘솔만
+#   docker compose -f docker-compose.admin.yml --profile monitoring up -d  # 콘솔 + 지표
+#   (scripts/map-up-admin.sh 가 DB 준비 상태를 확인한 뒤 위를 대신 실행한다)
+# 종료:
+#   docker compose -f docker-compose.admin.yml --profile monitoring down
+#
+# 순서 제약: map-net 네트워크는 서비스 스택이 만든다. 따라서 기동은
+# 서비스 → 관리자, 종료는 관리자 → 서비스 순서여야 한다.
+#
+# depends_on 이 없는 이유: 대상(postgres·hub·user)이 다른 스택에 있어 compose 가
+# 의존을 걸 수 없다. 대신 restart 정책과 넉넉한 start_period 로 재시도하며,
+# 기동 스크립트가 DB 준비를 먼저 확인한다. 모니터링 exporter 들이 원래부터
+# 같은 방식(대상 미기동 시 스크레이프만 실패)으로 동작해 왔다.
+#
+# 컨테이너 이름은 map-admin-<역할> 로 고정한다. 운영 콘솔 API 는 서비스명이
+# admin 이라 그대로 붙이면 map-admin-admin 이 되므로 map-admin-api 로 둔다.
+#
+# 포트는 전부 127.0.0.1 루프백 바인딩이다.
+
+name: map-admin
+
+# x-app-env — 애플리케이션 컨테이너 공통 환경설정.
+# 서비스 스택과 동일한 .env 파일을 읽는다(설정 단일 출처).
+x-app-env: &app-env
+  env_file: ./.env
+
+services:
+  # admin — 운영 콘솔 JSON API 서버 (cut 2).
+  # hub_data 직접 RO + admin_data 소유 RW(감사/계정/세션) + Redis 진단 RO
+  # + hub/BFF `/internal` 위임. UI 는 별도 SPA(admin-web)가 담당한다.
+  # 기동 시 entrypoint 가 alembic upgrade head(admin_data) 후 uvicorn 을 띄운다.
+  # 인증은 admin_accounts(bcrypt)+세션쿠키(단일 공유 Basic 폐지).
+  # ports: 호스트 8002 → 컨테이너 8000 (loopback).
+  admin:
+    build:
+      context: ../map-service-admin
+    container_name: map-admin-api
+    <<: *app-env
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8002:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)\" || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # 기동 시 alembic 마이그레이션이 선행하고, 서비스 스택 postgres 가
+      # 아직 준비되지 않았을 수도 있어 여유를 둔다.
+      start_period: 45s
+
+  # admin-web — 운영 콘솔 SPA (React/Vite → nginx 정적 서빙).
+  # nginx 가 정적 자산을 서빙하고 /api/ 를 admin:8000 으로 리버스 프록시한다
+  # (same-origin → 세션 쿠키 그대로 전달, 프로덕션은 CORS 불필요).
+  # ports: 호스트 8003 → 컨테이너 80 (loopback). node/nginx alpine 은 멀티아치
+  # 이미지라 amd64·arm64 호스트 어디서든 빌드된다.
+  admin-web:
+    build:
+      context: ../map-service-admin/web
+    container_name: map-admin-web
+    restart: unless-stopped
+    depends_on:
+      - admin
+    ports:
+      - "127.0.0.1:8003:80"
+
+  # ===== 모니터링 스택 (profile "monitoring") =====================
+  # 콘솔만 필요할 때는 띄우지 않는다:
+  #   docker compose -f docker-compose.admin.yml --profile monitoring up -d
+  # 전 포트 loopback. 이미지는 모두 multi-arch(arm64 OK).
+
+  # prometheus — 메트릭 수집/저장. 보존기간/크기를 단일 호스트에 맞게 제한한다.
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: map-admin-prometheus
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=10d"
+      - "--storage.tsdb.retention.size=2GB"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  # grafana — 대시보드. 데이터소스/대시보드는 코드로 프로비저닝된다.
+  # 임베드 허용 + anonymous Viewer(loopback 전제) — admin 콘솔 iframe 용.
+  grafana:
+    image: grafana/grafana-oss:11.2.0
+    container_name: map-admin-grafana
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    # 호스트 포트는 GRAFANA_PORT(.env)로 재정의 가능(기본 3000). 로컬에서 3000이
+    # 다른 프로세스에 점유된 경우 GRAFANA_PORT=3001 등으로 우회한다.
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+
+  # postgres-exporter — Postgres 메트릭(pg_stat_*). 슈퍼유저 DSN 사용.
+  # 대상 postgres 는 서비스 스택 소속이며, 미기동 시 스크레이프만 실패하고
+  # 자동으로 재접속한다.
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: map-admin-postgres-exporter
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+
+  # redis-exporter — Redis 메트릭(메모리/클라이언트/키스페이스).
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0
+    container_name: map-admin-redis-exporter
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+
+  # node-exporter — 호스트 자원(CPU/메모리/디스크).
+  # 루트를 마운트할 때 전파 옵션(rslave)을 붙이지 않는다. Docker Desktop 의
+  # 리눅스 VM 은 루트가 공유/슬레이브 마운트가 아니어서, 붙이면 컨테이너가
+  # 아예 생성되지 않고 그 오류가 up 전체를 중단시킨다(그 뒤 컨테이너들이
+  # 생성만 된 채 멈춘다). 전파 옵션은 중첩 마운트까지 들여다보기 위한 것이라,
+  # 없어도 CPU·메모리·디스크 지표 수집에는 지장이 없다.
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: map-admin-node-exporter
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    command:
+      - "--path.rootfs=/host"
+    pid: host
+    volumes:
+      - /:/host:ro
+
+# volumes — 모니터링 스택 영속 스토리지.
+# 실제 볼륨 이름을 map_ 접두로 고정해 프로젝트명이 map 이던 시절에 쌓인
+# 지표 히스토리와 대시보드 설정을 그대로 이어 쓴다.
+volumes:
+  prometheus-data:
+    name: map_prometheus-data
+  grafana-data:
+    name: map_grafana-data
+
+# networks — 서비스 스택이 만든 map-net 에 참여한다(이 파일은 소유자가 아니다).
+# 그래서 서비스 스택을 먼저 띄워야 하고, 내릴 때는 이 스택을 먼저 내려야 한다.
+networks:
+  default:
+    name: map-net
+    external: true

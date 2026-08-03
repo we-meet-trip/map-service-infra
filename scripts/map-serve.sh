@@ -11,6 +11,9 @@
 #   - 주소 파일은 앱 저장소의 hosting 디렉터리에 쓴다. 그 디렉터리에는 주소
 #     파일과 링크 검증 파일만 둔다 — 웹 빌드 산출물을 통째로 올리면 앱 설정
 #     자산까지 공개 주소로 따라 올라간다.
+#   - 도로를 따라가는 경로를 쓰려면 경로 그래프가 미리 만들어져 있어야 한다
+#     (scripts/osrm-rebuild.sh, 최초 1회). 없어도 나머지는 그대로 열리고
+#     화면의 경로만 두 점을 잇는 직선이 된다.
 #
 # 알려진 한계:
 #   - 터널 주소는 열 때마다 달라진다. 그래서 이 스크립트가 매번 다시 게시한다.
@@ -44,9 +47,24 @@ firebase login:list 2>/dev/null | grep -q "Logged in as" || fail "firebase 미�
 mkdir -p "$STATE_DIR"
 echo "  ✓ 도구·설정 확인"
 
-echo "== [1/5] 스택 기동 (full) =="
-"${COMPOSE[@]}" --profile full up -d 2>&1 | sed 's/^/  /'
+echo "== [1/5] 스택 기동 (full + vision + routing) =="
+# vision 을 함께 띄운다. 폰에서 카메라 인식을 쓰려면 관문의 /ws/vision 뒤에
+# 그 서비스가 있어야 한다.
+"${COMPOSE[@]}" --profile full --profile vision up -d 2>&1 | sed 's/^/  /'
 [ "${PIPESTATUS[0]}" -eq 0 ] || fail "compose up 실패"
+
+# 경로 엔진은 명령을 따로 낸다. 이 엔진은 미리 만들어 둔 그래프 파일을 읽어야
+# 뜨는데, 그 파일이 없는 환경에서는 이 기동만 실패할 수 있다. 위 명령에 프로파일을
+# 하나 더 얹어 한 줄로 합치면 그 실패가 명령 전체의 실패가 되어, 앞의 여섯
+# 컨테이너까지 열리지 않는다. 그래서 떼어 두고 여기서 실패해도 멈추지 않는다 —
+# 경로만 직선이 될 뿐 나머지 기능은 그대로다.
+#
+# 서비스 이름을 직접 적으면 그 둘만 다루므로, 이미 떠 있는 다른 컨테이너를
+# 건드릴 여지가 없다.
+echo "  경로 엔진..."
+routing_up=0
+"${COMPOSE[@]}" --profile routing up -d osrm-foot osrm-bicycle 2>&1 | sed 's/^/  /'
+[ "${PIPESTATUS[0]}" -eq 0 ] && routing_up=1
 
 echo "== [2/5] 관문·BFF 준비 대기 =="
 # 관문은 백엔드와 무관한 정적 응답을 준다. 이것만으로는 BFF 준비를 알 수 없어
@@ -60,6 +78,66 @@ for _ in $(seq 1 60); do
 done
 [ "$ready" -eq 1 ] || fail "관문(8090) 또는 BFF(8080) 미준비 — ${COMPOSE[*]} logs user proxy 확인"
 echo "  ✓ 관문 200 / BFF UP"
+
+# 카메라 인식은 부가 기능이라 준비되지 않아도 노출을 막지 않는다. 다만 폰에서
+# 그 기능만 조용히 실패하는 상황을 피하려고 상태를 알려 준다.
+vision_ok=0
+for _ in $(seq 1 15); do
+  [ "$(curl -s -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8004/health)" = "200" ] && { vision_ok=1; break; }
+  sleep 2
+done
+if [ "$vision_ok" -eq 1 ]; then
+  echo "  ✓ 카메라 인식(8004) 200"
+else
+  echo "  · 카메라 인식(8004) 미준비 — 앱의 카메라 기능만 실패한다(나머지는 정상)."
+  echo "    로그: ${COMPOSE[*]} logs yolo"
+fi
+
+# 도로를 따라가는 경로는 이 엔진이 만든다. 엔진이 없으면 화면의 경로가 두 점을
+# 잇는 직선이 되는데, 앱은 그 상태로도 끝까지 동작해 겉으로는 정상처럼 보인다.
+# 그래서 노출을 막지는 않되 상태만은 분명히 알려 준다.
+#
+# 준비 판정은 좌표를 도로에 붙여 보는 조회로 한다. 이 조회는 그래프를 실제로
+# 읽어야 답할 수 있어, 포트만 열린 상태와 경로를 낼 수 있는 상태를 갈라 준다.
+# 뿌리 경로는 그래프 없이도 답을 주므로 판정에 쓸 수 없다.
+#
+# 두 엔진을 한 루프에서 함께 본다. 따로 기다리면 둘 다 없는 환경에서 대기가
+# 두 배가 된다. 기동 자체가 실패했으면 기다릴 이유가 없어 건너뛴다.
+osrm_probe() {
+  curl -s -m 3 "http://127.0.0.1:$1/nearest/v1/$2/126.9780,37.5665" \
+    | grep -q '"code":"Ok"'
+}
+foot_ok=0
+bike_ok=0
+if [ "$routing_up" -eq 1 ]; then
+  for _ in $(seq 1 15); do
+    [ "$foot_ok" -eq 1 ] || { osrm_probe 5000 foot    && foot_ok=1; }
+    [ "$bike_ok" -eq 1 ] || { osrm_probe 5001 bicycle && bike_ok=1; }
+    [ "$foot_ok" -eq 1 ] && [ "$bike_ok" -eq 1 ] && break
+    sleep 2
+  done
+fi
+if [ "$foot_ok" -eq 1 ] && [ "$bike_ok" -eq 1 ]; then
+  echo "  ✓ 경로 엔진(5000·5001) 응답"
+else
+  echo "  · 경로 엔진 미준비(도보=$foot_ok 자전거=$bike_ok) — 경로가 직선으로 그려진다."
+  echo "    그래프를 만든 적이 없으면(최초 1회, 오래 걸린다):"
+  echo "      $INFRA_DIR/scripts/osrm-rebuild.sh"
+  echo "    로그: ${COMPOSE[*]} logs osrm-foot osrm-bicycle"
+fi
+
+# 엔진이 떠 있어도 hub 쪽 주소가 비어 있으면 hub 는 엔진을 부르지 않고 자체
+# 대체 경로를 쓴다. 그 경로는 직선이 아니라 몇 점 꺾인 모양이라 도로를 따라간
+# 것처럼 보이므로, 값이 비었는지 여기서 미리 짚어 준다.
+osrm_env_missing=0
+for k in OSRM_FOOT_BASE_URL OSRM_BICYCLE_BASE_URL; do
+  [ -n "$(grep -E "^$k=" "$INFRA_DIR/.env" | cut -d= -f2-)" ] || osrm_env_missing=1
+done
+if [ "$osrm_env_missing" -eq 1 ]; then
+  echo "  · .env 의 OSRM_FOOT_BASE_URL / OSRM_BICYCLE_BASE_URL 이 비어 있다 —"
+  echo "    엔진이 떠 있어도 호출되지 않는다. 각각 http://osrm-foot:5000 ·"
+  echo "    http://osrm-bicycle:5000 을 채우고 ${COMPOSE[*]} restart hub"
+fi
 
 echo "== [3/5] 터널 개통 =="
 # 앞서 띄운 터널이 남아 있으면 주소가 둘이 되어 어느 쪽이 게시됐는지 흐려진다.

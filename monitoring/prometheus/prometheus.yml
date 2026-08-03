@@ -25,6 +25,12 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["admin:8000"]
+  # yolo 는 vision 프로파일이라 떠 있지 않을 때가 많다. 그때는 이 타깃만
+  # down 으로 표시되고 나머지 수집에는 영향이 없다.
+  - job_name: yolo
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["yolo:8000"]
 
   # Spring BFF — micrometer-registry-prometheus 가 /actuator/prometheus 제공.
   - job_name: user

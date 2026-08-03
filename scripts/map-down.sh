@@ -37,11 +37,17 @@ if [ -n "$pids" ]; then echo "$pids" | xargs kill -9 2>/dev/null; echo "  8080 �
 pkill -f "bootRun" 2>/dev/null || true
 pkill -f "ServiceUserApplication" 2>/dev/null || true
 
-echo "== [5/5] 도커 백엔드 종료 (컨테이너/네트워크 제거, 볼륨 유지) =="
-# 서비스가 profiles(infra/backend/full)로 묶여 있어, 활성 프로파일 없이 `down` 하면
-# 대상 서비스가 0개로 해석돼 아무것도 제거되지 않는다 → 전 프로파일을 활성화해야 한다.
+echo "== [5/5] 도커 스택 종료 (컨테이너/네트워크 제거, 볼륨 유지) =="
+# 관리자 스택을 먼저 내린다. map-net 은 서비스 스택이 소유하므로 순서가 바뀌면
+# 네트워크가 사용 중이라 제거되지 않는다.
+echo "  관리자 스택..."
+docker compose -f "$INFRA_DIR/docker-compose.admin.yml" --profile monitoring down --remove-orphans 2>&1 | sed 's/^/    /'
+# 서비스가 profiles(infra/backend/full/vision/routing)로 묶여 있어, 활성 프로파일
+# 없이 `down` 하면 대상 서비스가 0개로 해석돼 아무것도 제거되지 않는다 →
+# 전 프로파일을 활성화해야 한다.
 # --remove-orphans: 과거 잔여 컨테이너(예: 도커로 띄웠던 user)까지 정리.
-COMPOSE_PROFILES=infra,backend,full "${COMPOSE[@]}" down --remove-orphans 2>&1 | sed 's/^/  /'
+echo "  서비스 스택..."
+COMPOSE_PROFILES=infra,backend,full,vision,routing "${COMPOSE[@]}" down --remove-orphans 2>&1 | sed 's/^/    /'
 
 echo ""
 echo "== ✅ 정리 완료. 다시 띄우려면: map-up-1-backend.sh =="
