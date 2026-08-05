@@ -123,8 +123,13 @@ services:
   # postgres-exporter — Postgres 메트릭(pg_stat_*). 슈퍼유저 DSN 사용.
   # 대상 postgres 는 서비스 스택 소속이며, 미기동 시 스크레이프만 실패하고
   # 자동으로 재접속한다.
+  #
+  # 버전은 대상 Postgres 와 함께 올려야 한다. 체크포인트 통계가 PG17 에서
+  # pg_stat_bgwriter 에서 pg_stat_checkpointer 로 옮겨 갔는데, 옛 exporter 는
+  # 옛 컬럼을 계속 조회해 해당 수집기가 30초마다 영구 실패한다. 지표가 통째로
+  # 비는 데다 대상 DB 로그에도 오류가 계속 쌓인다.
   postgres-exporter:
-    image: prometheuscommunity/postgres-exporter:v0.15.0
+    image: prometheuscommunity/postgres-exporter:v0.17.1
     container_name: map-admin-postgres-exporter
     restart: unless-stopped
     profiles: ["monitoring"]
