@@ -8,7 +8,7 @@
 #     ② osrm-partition — 그래프 셀 분할
 #     ③ osrm-customize — 비용/가중치 적용
 #   산출물 *.osrm 파일들은 named volume `osrm-data` 의 /foot, /bicycle 하위에
-#   적재되어(SoT §8.4), docker-compose.yml 의 osrm-foot / osrm-bicycle 서비스가
+#   적재되어, docker-compose.yml 의 osrm-foot / osrm-bicycle 서비스가
 #   같은 named volume 을 read-only 로 마운트하여 사용한다(host bind 아님).
 #
 # 언제 실행하는가:
@@ -19,7 +19,7 @@
 #   환경변수 미지정 시 기본 PBF(한국 전역)를 다운로드한다.
 #
 # 플랫폼:
-#   osrm/osrm-backend 는 amd64 단일 아키텍처만 제공한다(arm64 미제공, SoT §2 정정).
+#   osrm/osrm-backend 는 amd64 단일 아키텍처만 제공한다(arm64 미제공).
 #   따라서 모든 osrm 단계에 --platform linux/amd64 를 명시한다. Apple Silicon 등
 #   arm64 호스트에서는 Rosetta/QEMU 에뮬레이션으로 실행된다.
 #

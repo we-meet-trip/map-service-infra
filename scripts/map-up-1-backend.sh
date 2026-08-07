@@ -46,7 +46,10 @@ echo "  ✓ postgres ready"
 
 echo "== [2/5] hub · agent 이미지 확인/빌드 =="
 # 이미지가 없을 때만 빌드(있으면 생략해 반복 기동을 빠르게).
-if ! docker image inspect map-hub >/dev/null 2>&1 || ! docker image inspect map-agent >/dev/null 2>&1; then
+# 이름은 compose 의 프로젝트명(map-service)에서 나온다 — 프로젝트명이 바뀌면
+# 여기도 함께 바꿔야 한다. 어긋나면 매번 있는 이미지를 없다고 보고 다시 빌드한다.
+if ! docker image inspect map-service-hub >/dev/null 2>&1 \
+  || ! docker image inspect map-service-agent >/dev/null 2>&1; then
   echo "  이미지 빌드(최초 1회)..."; "${COMPOSE[@]}" build hub agent
 else
   echo "  ✓ 이미지 존재"
