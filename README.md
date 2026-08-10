@@ -170,7 +170,8 @@ cd map-service-infra
 ./scripts/map-serve-down.sh       # 노출만 종료(스택은 유지)
 ```
 
-- 게시 대상은 `map-service-client/hosting/` 이며 **웹 빌드 산출물은 올리지 않는다.** 주소 파일은 `map-serve.sh` 가 그 디렉터리에 직접 쓰므로 사전 빌드가 필요 없다(배포 전 훅 `check_app_config.sh` · `check_web_secrets.sh` 가 산출물 혼입을 막는다).
+- 게시 대상은 `map-service-client/hosting/` 이다. 주소 파일은 `map-serve.sh` 가 그 디렉터리에 직접 쓰므로 이 절차에 사전 빌드가 필요 없다.
+- 브라우저로도 쓰려면 웹앱을 따로 올려야 한다. 반드시 `map-service-client/tool/build_web.sh` 로 빌드한다 — `flutter build web` 을 직접 돌리면 서버용 키가 담긴 실행 설정이 자산으로 실려 그대로 공개된다. 배포 전 훅 `check_app_config.sh` · `check_web_secrets.sh` 가 그 경우를 막는다.
 
 - 앱은 시작할 때 고정된 위치에서 현재 서버 주소를 읽는다. 터널 주소가 바뀌면
   이 스크립트를 다시 돌리는 것으로 끝나고, 앱을 다시 만들거나 깔지 않는다.
