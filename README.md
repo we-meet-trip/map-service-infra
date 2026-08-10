@@ -13,15 +13,16 @@ MAP 서비스의 인프라 오케스트레이션 레포. 다른 6 레포(admin �
 
 - 컨테이너 이름은 `map-service-hub`, `map-admin-prometheus` 처럼 스택과 역할이 드러나게 고정한다(운영 콘솔 API 만 `map-admin-api`).
 - 네트워크 `map-net` 은 **서비스 스택이 소유**한다. 그래서 **기동은 서비스 → 관리자**, **종료는 관리자 → 서비스** 순서여야 한다.
-- 데이터 볼륨 이름은 `map_postgres-data` 처럼 고정해 두었다. 프로젝트명을 바꾸기 전에 쌓인 데이터를 그대로 이어 쓰기 위해서다.
+- 데이터 볼륨 이름은 `map_postgres-data` 처럼 고정해 두었다. 프로젝트명을 바꾸기 전에 쌓인 데이터를 그대로 이어 쓰기 위해서다. 단 `osrm-data` 만 접두 없이 그 이름 그대로이며, `scripts/osrm-rebuild.sh` 의 `OSRM_VOLUME` 기본값과 짝을 이룬다.
+- 이름을 고정한 대가로 **`docker compose down -v` 가 볼륨을 지우지 못한다.** 볼륨 라벨은 옛 프로젝트명 `map` 이고 현재 프로젝트명은 `map-service` 라 대상으로 잡히지 않는다(osrm-data 는 라벨 자체가 없다). 지울 때는 `docker volume rm <이름>` 으로 명시한다.
 
 ## 역할
 
 - `docker-compose.yml` — 서비스 스택 (9 services × 5 profiles)
 - `docker-compose.admin.yml` — 관리자 스택 (7 services, `monitoring` 프로파일 분리)
 - `.env.example` 단일 진실원 — 두 스택 모두 `env_file: ./.env` 로 주입
-- `db/init/00-create-schemas.sql` — postgres 첫 부팅 시 schema 4개(`user_service`, `hub_data`, `langgraph`, `admin_data`) 생성 + grant
-- `db/init/10-admin.sh` — 운영 콘솔용 `map_admin` 역할·권한 생성
+- `db/init/00-create-schemas.sql` — postgres 첫 부팅 시 schema 4개(`user_service`, `hub_data`, `langgraph`, `admin_data`) 생성 + PostGIS 확장 + `search_path` 설정
+- `db/init/10-admin.sh` — 운영 콘솔용 `map_admin` 역할 생성과 권한(GRANT) 부여. 파일명 순서(00 → 10)대로 실행되어야 한다 — 앞 파일이 만든 스키마에 권한을 걸기 때문이다
 - `scripts/map-{up-1-backend,up-2-bff,up-3-client,down}.sh` — 단계별 로컬 기동·정리 (개발/디버그용)
 - `scripts/map-up-admin.sh` — 관리자 스택 기동(DB 준비 확인 후)
 - `scripts/map-serve{,-down}.sh` — 실기기용 외부 노출(터널 개통 + 앱이 읽는 주소 게시)
@@ -36,8 +37,8 @@ map-service-infra/
 ├── docker-compose.admin.yml      관리자 스택 (7 services)
 ├── db/
 │   └── init/
-│       ├── 00-create-schemas.sql 첫 부팅 시 자동 실행 (schema 4개)
-│       └── 10-admin.sh           map_admin 역할·권한
+│       ├── 00-create-schemas.sql 첫 부팅 시 자동 실행 (schema 4개 + PostGIS + search_path)
+│       └── 10-admin.sh           map_admin 역할·권한 (00 다음에 실행)
 ├── monitoring/
 │   ├── prometheus/prometheus.yml 스크레이프 대상
 │   └── grafana/                  데이터소스·대시보드 프로비저닝
@@ -67,13 +68,19 @@ map-service-infra/
 
 관리자 스택은 admin·admin-web 이 프로파일 없이 항상 뜨고, 모니터링 5종만 `monitoring` 프로파일이다.
 
-## 실행 (macOS · Windows WSL2 · Linux 공통)
+## 실행
+
+compose 명령은 macOS · Windows WSL2 · Linux 어디서나 같다. 다만 아래 `scripts/` 는 macOS 전제다(adb 경로·`open -a Docker`·`caffeinate`).
 
 ```bash
 cd map-service-infra
 cp .env.example .env                              # API 키 주입
+# .env 에 HUB_DATABASE_URL 을 직접 추가한다(템플릿에 없다. 없으면 hub 가 즉시 종료)
+#   HUB_DATABASE_URL=postgresql+psycopg://map:<POSTGRES_PASSWORD>@postgres:5432/map
 
-# 서비스 스택
+# 서비스 스택 — hub 스키마는 자동 생성되지 않으므로 인프라 → 마이그레이션 → 앱 순서로 띄운다
+docker compose --profile infra up -d
+docker compose run --rm --no-deps --entrypoint alembic hub upgrade head
 docker compose --profile full up -d --build
 docker compose --profile full --profile vision up -d --build   # 카메라 인식까지
 docker compose --profile routing up -d osrm-foot osrm-bicycle   # 도로 추종 경로까지
@@ -93,7 +100,7 @@ curl -s "http://127.0.0.1:5000/nearest/v1/foot/126.9780,37.5665"     # 경로 �
 curl -s "http://127.0.0.1:5001/nearest/v1/bicycle/126.9780,37.5665"  # 경로 엔진 자전거
 docker compose exec postgres pg_isready -U map
 docker compose exec redis    redis-cli ping
-docker compose exec postgres psql -U map -c "\dn" # 4 schemas
+docker compose exec postgres psql -U map -c "\dn" # 도메인 스키마 4개 + public = 5행
 ```
 
 ## 카메라 인식 (vision)
@@ -159,11 +166,11 @@ cd map-service-infra
 관문이 컨테이너 이름으로 BFF 를 찾기 때문이다.
 
 ```bash
-cd map-service-client && flutter build web --release   # 주소 파일을 담을 산출물
-cd ../map-service-infra
 ./scripts/map-serve.sh            # 스택(full+vision+routing) 기동 → 관문 확인 → 터널 개통 → 주소 게시
 ./scripts/map-serve-down.sh       # 노출만 종료(스택은 유지)
 ```
+
+- 게시 대상은 `map-service-client/hosting/` 이며 **웹 빌드 산출물은 올리지 않는다.** 주소 파일은 `map-serve.sh` 가 그 디렉터리에 직접 쓰므로 사전 빌드가 필요 없다(배포 전 훅 `check_app_config.sh` · `check_web_secrets.sh` 가 산출물 혼입을 막는다).
 
 - 앱은 시작할 때 고정된 위치에서 현재 서버 주소를 읽는다. 터널 주소가 바뀌면
   이 스크립트를 다시 돌리는 것으로 끝나고, 앱을 다시 만들거나 깔지 않는다.
@@ -184,7 +191,7 @@ cd ../map-service-infra
 ```bash
 # 서비스 스택이 떠 있는 상태에서
 ./scripts/map-up-admin.sh --monitoring
-# Grafana: http://127.0.0.1:3000  (GF_SECURITY_ADMIN_USER/PASSWORD, .env)
+# Grafana: http://127.0.0.1:${GRAFANA_PORT:-3000}  (GF_SECURITY_ADMIN_USER/PASSWORD, .env)
 # Prometheus: http://127.0.0.1:9090
 ```
 
@@ -196,7 +203,8 @@ cd ../map-service-infra
 - admin 콘솔의 "모니터링" 화면은 `MONITORING_PANELS`(.env) 로 지정한 Grafana URL 을
   iframe/링크로 임베드한다(Grafana `GF_SECURITY_ALLOW_EMBEDDING=true` + anonymous
   Viewer 전제 — loopback 한정).
-- `.env` 추가 키: `GF_SECURITY_ADMIN_USER`, `GF_SECURITY_ADMIN_PASSWORD`.
+- `.env` 추가 키: `GF_SECURITY_ADMIN_USER`, `GF_SECURITY_ADMIN_PASSWORD`, `GRAFANA_PORT`(호스트 포트, 기본 3000).
+- `MONITORING_PANELS` 와 `ADMIN_CORS_ORIGINS` 는 JSON 복합 타입이라 **비우려면 키를 주석 처리해야 한다.** `KEY=` 로 빈 값을 남기면 admin 이 `SettingsError` 로 뜨지 못한다.
 
 ## 사전 준비
 
