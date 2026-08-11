@@ -44,15 +44,21 @@ done
 [ "$pg_ok" = 1 ] || { echo "  ✗ postgres 준비 타임아웃"; exit 1; }
 echo "  ✓ postgres ready"
 
-echo "== [2/5] hub · agent 이미지 확인/빌드 =="
-# 이미지가 없을 때만 빌드(있으면 생략해 반복 기동을 빠르게).
-# 이름은 compose 의 프로젝트명(map-service)에서 나온다 — 프로젝트명이 바뀌면
-# 여기도 함께 바꿔야 한다. 어긋나면 매번 있는 이미지를 없다고 보고 다시 빌드한다.
-if ! docker image inspect map-service-hub >/dev/null 2>&1 \
-  || ! docker image inspect map-service-agent >/dev/null 2>&1; then
-  echo "  이미지 빌드(최초 1회)..."; "${COMPOSE[@]}" build hub agent
+echo "== [2/5] hub · agent 이미지 빌드 =="
+# 항상 빌드한다. 도커는 바뀐 것이 없으면 캐시로 즉시 끝내므로 반복 기동이
+# 느려지지 않는다.
+#
+# 예전에는 이미지가 있으면 건너뛰었는데, 그러면 소스를 고치고 다시 띄웠을 때
+# 예전 이미지가 그대로 떠서 고친 것이 반영되지 않았다. 그 상태는 겉으로
+# 드러나지 않아 — 컨테이너는 정상이고 로그도 조용하다 — 고친 사람이 코드를
+# 다시 들여다보게 만든다.
+#
+# MAP_SKIP_BUILD=1 을 주면 예전처럼 건너뛴다. 소스를 건드리지 않은 것이
+# 확실할 때만 쓴다.
+if [ "${MAP_SKIP_BUILD:-0}" = "1" ]; then
+  echo "  ✓ MAP_SKIP_BUILD=1 → 빌드 생략"
 else
-  echo "  ✓ 이미지 존재"
+  "${COMPOSE[@]}" build hub agent
 fi
 
 echo "== [3/5] hub_data 마이그레이션 =="

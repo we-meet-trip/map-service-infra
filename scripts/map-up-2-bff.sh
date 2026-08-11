@@ -29,6 +29,19 @@ export POSTGRES_PASSWORD="$(grep -E '^POSTGRES_PASSWORD=' "$ENVF" | cut -d= -f2-
 export JWT_PRIVATE_KEY="$(grep -E '^JWT_PRIVATE_KEY=' "$ENVF" | cut -d= -f2-)"
 export JWT_PUBLIC_KEY="$(grep -E '^JWT_PUBLIC_KEY=' "$ENVF" | cut -d= -f2-)"
 export AUTH_ENFORCED="$(grep -E '^AUTH_ENFORCED=' "$ENVF" | cut -d= -f2-)"
+# 테스터 계정 시더. 켜져 있으면 부팅 때마다 maptester1..5@admin.map 을 보장한다.
+# 키가 .env 에 없으면 위 방식은 빈 문자열을 내보내는데, 빈 값은 설정 파일의 기본값을
+# 이기고 boolean 변환에서 기동을 깨뜨린다 → 비어 있으면 아예 내보내지 않는다.
+export TESTER_SEED_ENABLED="$(grep -E '^TESTER_SEED_ENABLED=' "$ENVF" | cut -d= -f2-)"
+[ -n "$TESTER_SEED_ENABLED" ] || unset TESTER_SEED_ENABLED
+export TESTER_SEED_PASSWORD="$(grep -E '^TESTER_SEED_PASSWORD=' "$ENVF" | cut -d= -f2-)"
+[ -n "$TESTER_SEED_PASSWORD" ] || unset TESTER_SEED_PASSWORD
+# 내부 서비스 공유 비밀. agent·hub 가 이 값으로 호출자를 확인하는데, 여기서
+# 내보내지 않으면 BFF 는 헤더를 안 붙인 채 부른다 → 그쪽이 값을 갖고 있으면
+# 추천 호출이 전부 401 이다. 도커로 띄울 때는 compose 가 넣어 주지만 이 길로
+# 띄우면 아무도 넣어 주지 않아, 같은 코드가 실행 방식에 따라 갈린다.
+export INTERNAL_SERVICE_TOKEN="$(grep -E '^INTERNAL_SERVICE_TOKEN=' "$ENVF" | cut -d= -f2-)"
+[ -n "$INTERNAL_SERVICE_TOKEN" ] || unset INTERNAL_SERVICE_TOKEN
 export POSTGRES_HOST=localhost POSTGRES_PORT=5432 POSTGRES_DB=map POSTGRES_USER=map
 export REDIS_HOST=localhost REDIS_PORT=16379
 export AGENT_BASE_URL=http://localhost:8000 HUB_BASE_URL=http://localhost:8001

@@ -50,8 +50,21 @@ echo "  ✓ 도구·설정 확인"
 echo "== [1/5] 스택 기동 (full + vision + routing) =="
 # vision 을 함께 띄운다. 폰에서 카메라 인식을 쓰려면 관문의 /ws/vision 뒤에
 # 그 서비스가 있어야 한다.
-"${COMPOSE[@]}" --profile full --profile vision up -d 2>&1 | sed 's/^/  /'
+#
+# --build 를 붙인다. 이것 없이 띄우면 예전에 만들어 둔 이미지가 그대로 떠서,
+# 고친 코드가 반영되지 않은 채 밖으로 열린다. 그 상태는 겉으로 드러나지
+# 않는다 — 컨테이너는 정상이고 로그도 조용하다. 바뀐 것이 없으면 도커가
+# 캐시로 즉시 끝내므로 반복 기동이 느려지지도 않는다.
+"${COMPOSE[@]}" --profile full --profile vision up -d --build 2>&1 | sed 's/^/  /'
 [ "${PIPESTATUS[0]}" -eq 0 ] || fail "compose up 실패"
+
+# hub 의 스키마를 최신까지 올린다. BFF 는 자기 스키마를 스스로 올리지만
+# hub 는 그러지 않아, 새 revision 이 생긴 뒤 이 길로만 띄우면 hub 가 없는
+# 테이블을 찾는다. alembic 은 멱등해서 이미 올라간 것은 그냥 지나간다.
+echo "  hub 스키마..."
+"${COMPOSE[@]}" run --rm --no-deps --entrypoint alembic hub upgrade head \
+  2>&1 | sed 's/^/  /'
+[ "${PIPESTATUS[0]}" -eq 0 ] || fail "hub 마이그레이션 실패"
 
 # 경로 엔진은 명령을 따로 낸다. 이 엔진은 미리 만들어 둔 그래프 파일을 읽어야
 # 뜨는데, 그 파일이 없는 환경에서는 이 기동만 실패할 수 있다. 위 명령에 프로파일을
@@ -210,12 +223,25 @@ echo "  ✓ 터널 경유 관문 확인 ($tunnel_ip)"
 
 echo "== [4/5] 앱이 읽는 주소 게시 =="
 # 앱은 시작할 때 이 파일 하나만 본다. 파일 위치는 고정, 내용만 매번 바뀐다.
-python3 - "$CLIENT_DIR/hosting/app_config.json" "$base_url" <<'PY'
+#
+# 지도 식별자도 함께 싣는다. 앱이 아닌 정적 페이지(web/pm_map.html)는 자기
+# 설정 파일을 갖지 않아 값을 적을 자리가 없는데, 소스에 적어 두면 공개
+# 저장소에 값이 들어간다. 이 식별자는 브라우저가 어차피 밖으로 내보내는
+# 값이고 방어는 발급처의 도메인 목록이 하므로, 여기서 내려 주고 페이지는
+# 받아 쓰기만 한다.
+#
+# 예비 식별자도 함께 싣는다. 페이지는 앞의 것으로 먼저 붙고 인증이 막히면
+# 뒤의 것으로 한 번 더 시도한다.
+naver_map_id="$(grep -E '^NAVER_MAP_CLIENT_ID=' "$INFRA_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r')"
+naver_map_id_alt="$(grep -E '^NAVER_MAP_CLIENT_ID_FALLBACK=' "$INFRA_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r')"
+python3 - "$CLIENT_DIR/hosting/app_config.json" "$base_url" "$naver_map_id" "$naver_map_id_alt" <<'PY'
 import json, sys, datetime
-path, base = sys.argv[1], sys.argv[2]
+path, base, naver_map_id, naver_map_id_alt = sys.argv[1:5]
 # 갱신 안내용 자리는 지금 비워 둔다 — 배포 채널이 따로 알림을 보낸다.
 doc = {
     "api_base_url": base,
+    "naver_map_client_id": naver_map_id,
+    "naver_map_client_id_fallback": naver_map_id_alt,
     "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
     "latest_version": "",
     "latest_build_number": 0,
