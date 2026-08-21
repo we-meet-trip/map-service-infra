@@ -4,7 +4,7 @@
 #
 # 무엇을 하는가:
 #   compose 의 postgres 컨테이너에서 pg_dump 로 전체 DB 를 떠서 gzip 압축해
-#   ~/backups/ 아래에 날짜별로 저장하고, 보존기간(기본 7일) 초과분을 지운다.
+#   ~/backups/ 아래에 시각별로 저장하고, 보존기간(기본 7일) 초과분을 지운다.
 #
 # 언제 실행하는가:
 #   compose 를 띄워 둔 호스트에서 cron 으로 매일 1회(예: 04:00). 배포처와
@@ -15,41 +15,93 @@
 # 사용:
 #   ./scripts/pg-backup.sh                 # 기본값으로 실행
 #   BACKUP_DIR=/data/backups RETAIN_DAYS=14 ./scripts/pg-backup.sh
+#   COMPOSE_PROJECT=map-test ENV_FILE=./.env.test ./scripts/pg-backup.sh  # 시험 스택
 #
 # 복원(요약):
-#   gunzip -c ~/backups/map-YYYY-MM-DD.sql.gz | \
-#     docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+#   gunzip -c ~/backups/map-<시각>.sql.gz | \
+#     docker compose -p map-service exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+#   복원이 실제로 되는지는 scripts/pg-restore-check.sh 가 확인한다.
 #
 # cron 등록 예(매일 04:00):
 #   0 4 * * * cd /path/to/map-service-infra && ./scripts/pg-backup.sh >> ~/backups/pg-backup.log 2>&1
+#
+# 안전 장치가 세 가지 있다:
+#
+#   (1) 임시 파일에 받아 검증한 뒤에야 최종 이름으로 옮긴다.
+#       예전에는 최종 이름으로 바로 리다이렉트했는데, 리다이렉트는 pg_dump 가
+#       실행되기 전에 파일을 연다. 그래서 같은 날 다시 돌리면 덤프가 실패해도
+#       그 순간 이미 기존 백업이 잘려 나갔다. 장애가 난 뒤 "백업부터 뜨자" 가
+#       마지막 정상 백업을 지우는 셈이었다.
+#
+#   (2) 파일명에 시각까지 넣는다. 날짜만 쓰면 하루에 두 번 돌린 것이 서로를
+#       덮는다.
+#
+#   (3) 프로젝트를 이름으로 못박는다. 지정하지 않으면 어느 스택의 postgres 에
+#       붙을지 현재 디렉터리에 따라 달라져, 시험 스택을 운영 백업으로 남길 수
+#       있다.
 # =========================================================================
 set -euo pipefail
 
 # 스크립트 위치 기준으로 infra 루트로 이동(compose 파일이 있는 곳).
 cd "$(dirname "$0")/.."
 
-# .env 에서 POSTGRES_USER/DB 를 읽는다(없으면 기본값).
-if [ -f ./.env ]; then
+# POSTGRES_USER/DB 를 읽는다(없으면 기본값). 시험 스택을 뜰 때는
+# ENV_FILE 로 그쪽 파일을 지정한다 — 프로젝트만 바꾸고 계정을 운영 것으로
+# 두면 어느 쪽에 붙는지가 다시 흐려진다.
+ENV_FILE="${ENV_FILE:-./.env}"
+if [ -f "$ENV_FILE" ]; then
   # shellcheck disable=SC1091
-  set -a; . ./.env; set +a
+  set -a; . "$ENV_FILE"; set +a
 fi
 : "${POSTGRES_USER:=map}"
 : "${POSTGRES_DB:=map}"
 
 BACKUP_DIR="${BACKUP_DIR:-$HOME/backups}"
 RETAIN_DAYS="${RETAIN_DAYS:-7}"
-STAMP="$(date +%F)"
+COMPOSE_PROJECT="${COMPOSE_PROJECT:-map-service}"
+STAMP="$(date +%F_%H%M%S)"
 OUT="${BACKUP_DIR}/map-${STAMP}.sql.gz"
+TMP="${OUT}.partial"
 
 mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR" 2>/dev/null || true
 
-echo "[pg-backup] dumping ${POSTGRES_DB} as ${POSTGRES_USER} -> ${OUT}"
+# 중간에 죽어도 반쪽짜리 파일을 남기지 않는다. 최종 이름은 검증을 통과한
+# 뒤에만 생기므로, 디렉터리에 보이는 파일은 전부 복원 가능한 것이다.
+cleanup() { rm -f "$TMP"; }
+trap cleanup EXIT
+
+echo "[pg-backup] project=${COMPOSE_PROJECT} db=${POSTGRES_DB} user=${POSTGRES_USER}"
+echo "[pg-backup] dumping -> ${OUT}"
 # -T: TTY 비할당(cron 안전). pg_dump 를 컨테이너 안에서 실행하고 stdout 을 gzip.
-docker compose exec -T postgres pg_dump -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
-  | gzip -c > "${OUT}"
+docker compose -p "${COMPOSE_PROJECT}" exec -T postgres \
+  pg_dump -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" | gzip -c > "${TMP}"
+
+# gzip 이 끝까지 온전한지 본다. 덤프가 중간에 끊기면 여기서 걸린다.
+echo "[pg-backup] verifying"
+gzip -t "${TMP}"
+
+# 내용이 비면 압축은 멀쩡해도 복원할 것이 없다. pg_dump 가 빈 출력을 내고
+# 정상 종료하는 경우(잘못된 DB 이름 등)를 잡는다.
+if [ ! -s "${TMP}" ] || [ "$(gzip -dc "${TMP}" | head -c 1 | wc -c)" -eq 0 ]; then
+  echo "[pg-backup] ✗ 덤프가 비어 있다 — 최종 파일을 만들지 않는다"
+  exit 1
+fi
+
+chmod 600 "${TMP}"
+mv "${TMP}" "${OUT}"
+trap - EXIT
+
+# 무결성 확인용. 오프박스로 옮긴 뒤에도 같은 파일인지 이것으로 본다.
+if command -v shasum >/dev/null 2>&1; then
+  ( cd "${BACKUP_DIR}" && shasum -a 256 "$(basename "${OUT}")" >> "map-checksums.txt" )
+  chmod 600 "${BACKUP_DIR}/map-checksums.txt" 2>/dev/null || true
+fi
 
 echo "[pg-backup] done: $(du -h "${OUT}" | cut -f1)"
 
+# 정리는 새 백업이 검증까지 끝난 뒤에만 한다. 순서를 뒤집으면 이번 백업이
+# 실패한 날에 과거 백업만 지우게 된다.
 echo "[pg-backup] pruning backups older than ${RETAIN_DAYS} days"
 find "${BACKUP_DIR}" -name 'map-*.sql.gz' -type f -mtime +"${RETAIN_DAYS}" -print -delete || true
 
