@@ -2,6 +2,9 @@
 .env
 .env.local
 *.env.local
+# 시험 스택 환경. scripts/make-test-env.sh 가 .env.example 에서 만든다.
+# 발급처 키는 비워 두지만, 실수로 채운 값이 올라가지 않도록 함께 제외한다.
+.env.test
 
 # OSRM cached data (대용량, 빌드 결과)
 osrm-data/

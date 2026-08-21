@@ -1,0 +1,111 @@
+# 시험용 스택 오버레이. 운영 스택과 같은 호스트에서 함께 떠도 서로를 건드리지
+# 않게 만드는 것이 이 파일의 전부다.
+#
+# 쓰는 법 (반드시 두 파일을 함께 넘긴다):
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml \
+#     --env-file ./.env.test --profile full up -d
+#
+# 두 계층을 모두 갈아야 하는 이유:
+#   --env-file  은 compose 파일 안의 ${...} 를 채우는 값이다(호스트 쪽).
+#   env_file    은 컨테이너 안으로 들어가는 값이다(컨테이너 쪽).
+#   둘은 서로 다른 계층이라 한쪽만 바꾸면 나머지 한쪽은 운영 값을 계속 쓴다.
+#
+# 겹치면 안 되는 것이 다섯 가지다. 하나라도 빠지면 시험이 운영을 건드린다.
+#   1. 프로젝트명   map-service      → map-test
+#   2. 볼륨 이름    map_*            → map-test_*        ★ 가장 위험하다
+#   3. 네트워크     map-net          → map-test-net
+#   4. 컨테이너명   map-service-*    → 고정 해제(compose 가 프로젝트명으로 짓는다)
+#   5. 호스트 포트  원래 값          → +200
+#
+# 2번이 가장 위험한 이유: 원본 파일이 볼륨 이름을 map_ 로 못박아 두어,
+# 프로젝트명만 바꾸면 시험 스택이 운영 데이터베이스를 그대로 물고 올라온다.
+# 그 상태로 마이그레이션을 돌리면 운영 스키마가 바뀐다.
+#
+# 겹침이 정말 0인지는 눈으로 대조하지 말고 scripts/compose-isolation-check.sh
+# 로 확인한다. 사람이 다섯 축을 매번 빠짐없이 보는 것은 기대할 수 없다.
+#
+# 담지 않는 것: routing(osrm) · vision(yolo) · 관리자 스택.
+# 시험은 가볍게 뜨는 것이 목적이고, 경로 엔진은 없으면 결정적 스텁으로
+# 내려가므로(원본 파일 주석 참조) 경로 품질을 보지 않는 시험에는 지장이 없다.
+
+name: map-test
+
+services:
+  postgres:
+    container_name: !reset null
+    ports: !override
+      - "127.0.0.1:5632:5432"
+
+  redis:
+    container_name: !reset null
+    ports: !override
+      - "127.0.0.1:16579:6379"
+
+  # osrm 두 개는 routing 프로파일이라 이 스택에서 뜨지 않는다. 그래도 정의는
+  # 남아 있으므로 이름과 포트를 함께 갈라 둔다 — 겹침 검사가 "안 뜨니까
+  # 괜찮다" 를 알 수 없고, 실수로 --profile routing 을 붙였을 때 운영 그래프
+  # 볼륨을 물지 않게 하려는 것이다.
+  osrm-foot:
+    container_name: !reset null
+    ports: !override
+      - "127.0.0.1:5200:5000"
+
+  osrm-bicycle:
+    container_name: !reset null
+    ports: !override
+      - "127.0.0.1:5201:5000"
+
+  user:
+    container_name: !reset null
+    env_file: !override
+      - ./.env.test
+    ports: !override
+      - "127.0.0.1:8280:8080"
+
+  agent:
+    container_name: !reset null
+    env_file: !override
+      - ./.env.test
+    ports: !override
+      - "127.0.0.1:8200:8000"
+
+  hub:
+    container_name: !reset null
+    env_file: !override
+      - ./.env.test
+    ports: !override
+      - "127.0.0.1:8201:8000"
+
+  yolo:
+    container_name: !reset null
+    env_file: !override
+      - ./.env.test
+    ports: !override
+      - "127.0.0.1:8204:8000"
+
+  proxy:
+    container_name: !reset null
+    ports: !override
+      - "127.0.0.1:8290:80"
+
+# 볼륨 이름을 프로젝트 접두로 되돌린다. 원본이 map_ 로 못박아 둔 것을 여기서
+# 풀어 주지 않으면 프로젝트명을 바꾼 의미가 없다.
+#
+# osrm-data 도 가른다. 도로 그래프는 읽기 전용이라 나눠 갖는 것이 손해처럼
+# 보이지만, 시험 스택이 운영 볼륨을 마운트하는 통로를 하나라도 남기지 않는
+# 편이 낫다. 시험에서 경로 엔진이 필요해지면 그때 이 줄을 지워 원본을
+# 재사용하면 된다(그래프 재생성은 오래 걸린다).
+volumes:
+  postgres-data:
+    name: map-test_postgres-data
+  redis-data:
+    name: map-test_redis-data
+  osrm-data:
+    name: map-test_osrm-data
+
+# 원본은 map-net 을 소유하고 관리자 스택이 external 로 그 이름을 가져다 쓴다.
+# 시험 스택이 같은 이름을 쓰면 두 스택의 컨테이너가 한 네트워크에 섞여,
+# 서비스 이름(postgres, redis, hub …)이 어느 쪽으로 풀릴지 알 수 없게 된다.
+networks:
+  default:
+    name: map-test-net
