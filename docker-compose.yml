@@ -68,7 +68,13 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      # -h 127.0.0.1 을 붙여 TCP 로 묻는다. 빼면 유닉스 소켓으로 물어보는데,
+      # 이 이미지는 최초 부팅(빈 볼륨)에서 initdb 와 확장 적재를 하는 동안
+      # 임시 서버를 띄우고 그 서버도 소켓에는 응답한다. 그래서 준비되지 않은
+      # 상태가 healthy 로 보이고, depends_on 을 건 user/agent/hub 가 먼저
+      # 떠서 아직 열리지 않은 TCP 로 붙다 실패한다. 임시 서버는 TCP 를 열지
+      # 않으므로 TCP 로 물으면 진짜 서버가 뜬 뒤에만 통과한다.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 6

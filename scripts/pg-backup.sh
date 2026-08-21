@@ -62,46 +62,68 @@ COMPOSE_PROJECT="${COMPOSE_PROJECT:-map-service}"
 STAMP="$(date +%F_%H%M%S)"
 OUT="${BACKUP_DIR}/map-${STAMP}.sql.gz"
 TMP="${OUT}.partial"
+OUT_GLOBALS="${BACKUP_DIR}/map-globals-${STAMP}.sql.gz"
+TMP_GLOBALS="${OUT_GLOBALS}.partial"
 
 mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR" 2>/dev/null || true
 
 # 중간에 죽어도 반쪽짜리 파일을 남기지 않는다. 최종 이름은 검증을 통과한
 # 뒤에만 생기므로, 디렉터리에 보이는 파일은 전부 복원 가능한 것이다.
-cleanup() { rm -f "$TMP"; }
+cleanup() { rm -f "$TMP" "$TMP_GLOBALS"; }
 trap cleanup EXIT
 
+# 압축이 온전한지, 그리고 안에 내용이 있는지 함께 본다. gzip -t 만으로는
+# 부족하다 — 빈 입력을 압축해도 gzip 으로는 멀쩡한 파일이 되기 때문이다.
+# 실제로 그렇게 만들어진 20바이트짜리 "백업" 이 남아 있던 적이 있다.
+verify_dump() {
+  local path="$1" label="$2"
+  gzip -t "$path"
+  if [ ! -s "$path" ] || [ "$(gzip -dc "$path" | head -c 1 | wc -c)" -eq 0 ]; then
+    echo "[pg-backup] ✗ ${label} 덤프가 비어 있다 — 최종 파일을 만들지 않는다"
+    exit 1
+  fi
+}
+
 echo "[pg-backup] project=${COMPOSE_PROJECT} db=${POSTGRES_DB} user=${POSTGRES_USER}"
+
+# 역할·권한을 먼저 뜬다. pg_dump 에는 역할 정의가 들어가지 않아서, 이것이
+# 없으면 빈 클러스터에 복원할 때 map_admin 같은 역할을 찾지 못해 멈춘다.
+# 예전에는 이 파일을 따로 한 번만 떠 두었는데, 그러면 역할이 바뀐 뒤의
+# 데이터 덤프와 짝이 맞지 않는다. 같은 시각으로 함께 뜬다.
+echo "[pg-backup] dumping globals -> ${OUT_GLOBALS}"
+docker compose -p "${COMPOSE_PROJECT}" exec -T postgres \
+  pg_dumpall -U "${POSTGRES_USER}" --globals-only | gzip -c > "${TMP_GLOBALS}"
+verify_dump "${TMP_GLOBALS}" "globals"
+
 echo "[pg-backup] dumping -> ${OUT}"
 # -T: TTY 비할당(cron 안전). pg_dump 를 컨테이너 안에서 실행하고 stdout 을 gzip.
 docker compose -p "${COMPOSE_PROJECT}" exec -T postgres \
   pg_dump -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" | gzip -c > "${TMP}"
-
-# gzip 이 끝까지 온전한지 본다. 덤프가 중간에 끊기면 여기서 걸린다.
 echo "[pg-backup] verifying"
-gzip -t "${TMP}"
+verify_dump "${TMP}" "data"
 
-# 내용이 비면 압축은 멀쩡해도 복원할 것이 없다. pg_dump 가 빈 출력을 내고
-# 정상 종료하는 경우(잘못된 DB 이름 등)를 잡는다.
-if [ ! -s "${TMP}" ] || [ "$(gzip -dc "${TMP}" | head -c 1 | wc -c)" -eq 0 ]; then
-  echo "[pg-backup] ✗ 덤프가 비어 있다 — 최종 파일을 만들지 않는다"
-  exit 1
-fi
-
-chmod 600 "${TMP}"
+# 둘 다 통과한 뒤에 함께 내놓는다. 한쪽만 남으면 복원할 수 없는 짝이 된다.
+chmod 600 "${TMP_GLOBALS}" "${TMP}"
+mv "${TMP_GLOBALS}" "${OUT_GLOBALS}"
 mv "${TMP}" "${OUT}"
 trap - EXIT
 
 # 무결성 확인용. 오프박스로 옮긴 뒤에도 같은 파일인지 이것으로 본다.
 if command -v shasum >/dev/null 2>&1; then
-  ( cd "${BACKUP_DIR}" && shasum -a 256 "$(basename "${OUT}")" >> "map-checksums.txt" )
+  ( cd "${BACKUP_DIR}" && shasum -a 256 \
+      "$(basename "${OUT_GLOBALS}")" "$(basename "${OUT}")" >> "map-checksums.txt" )
   chmod 600 "${BACKUP_DIR}/map-checksums.txt" 2>/dev/null || true
 fi
 
-echo "[pg-backup] done: $(du -h "${OUT}" | cut -f1)"
+echo "[pg-backup] done: globals $(du -h "${OUT_GLOBALS}" | cut -f1) · data $(du -h "${OUT}" | cut -f1)"
 
 # 정리는 새 백업이 검증까지 끝난 뒤에만 한다. 순서를 뒤집으면 이번 백업이
 # 실패한 날에 과거 백업만 지우게 된다.
+#
+# 역할 덤프와 데이터 덤프는 같은 시각으로 짝을 이루므로 같은 기준으로 지운다.
+# 반쪽짜리 짝은 애초에 만들어지지 않으니(위에서 둘 다 검증한 뒤 함께 내놓는다)
+# 남은 파일은 언제나 짝이 맞는다.
 echo "[pg-backup] pruning backups older than ${RETAIN_DAYS} days"
 find "${BACKUP_DIR}" -name 'map-*.sql.gz' -type f -mtime +"${RETAIN_DAYS}" -print -delete || true
 

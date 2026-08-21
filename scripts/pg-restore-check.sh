@@ -55,26 +55,47 @@ docker run -d --name "$BOX" \
   "$IMAGE" >/dev/null
 
 echo "== 준비 대기 =="
-for i in $(seq 1 60); do
-  if docker exec "$BOX" pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then
+# TCP 로 물어본다. pg_isready 를 쓰면 안 된다 — postgres 이미지는 초기화
+# 단계에서 임시 서버를 띄우는데, 그 서버도 유닉스 소켓에는 응답하므로
+# pg_isready 가 "준비됨" 을 돌려준다. 그 상태에서 복원을 시작하면 초기화가
+# 끝나는 순간 entrypoint 가 임시 서버를 내리면서 복원이 중간에 잘린다.
+# 임시 서버는 TCP 를 열지 않으므로(listen_addresses 가 비어 있다) TCP 로
+# 물으면 진짜 서버가 뜬 뒤에만 통과한다.
+for i in $(seq 1 90); do
+  if docker exec "$BOX" psql -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+       -c 'SELECT 1' >/dev/null 2>&1; then
     echo "   준비됨 (${i}s)"
     break
   fi
-  [ "$i" -eq 60 ] && { echo "✗ 일회용 postgres 가 뜨지 않았다"; exit 1; }
+  [ "$i" -eq 90 ] && { echo "✗ 일회용 postgres 가 뜨지 않았다"; docker logs "$BOX" 2>&1 | tail -20; exit 1; }
   sleep 1
 done
 
+# 역할을 먼저 세운다. 데이터 덤프에는 역할 정의가 들어가지 않아서, 이것 없이
+# 부으면 map_admin 같은 역할을 찾지 못해 중간에 멈춘다.
+GLOBALS="$(dirname "$DUMP")/$(basename "$DUMP" | sed 's|^map-|map-globals-|')"
+if [ -f "$GLOBALS" ]; then
+  echo "== 역할 복원: $(basename "$GLOBALS") =="
+  # 이미 있는 역할(컨테이너가 만든 superuser)은 중복 오류가 나는데, 그것은
+  # 정상이므로 멈추지 않는다. 진짜 문제는 다음 단계에서 드러난다.
+  gzip -dc "$GLOBALS" | docker exec -i "$BOX" \
+    psql -h 127.0.0.1 -v ON_ERROR_STOP=0 -q -U "$POSTGRES_USER" -d postgres >/dev/null 2>&1 || true
+else
+  echo "== 역할 덤프 없음 ($(basename "$GLOBALS")) — 데이터만 시도한다 =="
+fi
+
 echo "== 복원 =="
 if ! gzip -dc "$DUMP" | docker exec -i "$BOX" \
-     psql -v ON_ERROR_STOP=1 -q -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null; then
+     psql -h 127.0.0.1 -v ON_ERROR_STOP=1 -q -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null; then
   echo "✗ 복원 중 오류 — 이 백업으로는 되살릴 수 없다"
+  [ -f "$GLOBALS" ] || echo "  (역할 덤프가 없다. pg-backup.sh 가 둘을 함께 뜨는지 확인할 것)"
   exit 1
 fi
 
 echo "== 내용 확인 =="
 # 스키마가 서 있고 테이블이 실제로 들어왔는지 본다. 복원이 조용히 아무것도
 # 하지 않은 경우를 잡는다.
-SUMMARY="$(docker exec "$BOX" psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+SUMMARY="$(docker exec "$BOX" psql -h 127.0.0.1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
   SELECT table_schema || ' ' || count(*)
   FROM information_schema.tables
   WHERE table_type = 'BASE TABLE'
