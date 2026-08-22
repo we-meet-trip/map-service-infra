@@ -47,6 +47,11 @@ services:
   postgres:
     image: postgis/postgis:17-3.5
     container_name: map-service-postgres
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1g
     restart: unless-stopped
     # postgis/postgis 는 amd64 전용이다(arm64 매니페스트 없음 — 17-3.5 ·
     # 17-3.5-alpine 모두 동일, manifest 실측 2026-07-29). platform 을 명시하지
@@ -85,6 +90,11 @@ services:
   redis:
     image: redis:7-alpine
     container_name: map-service-redis
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
     restart: unless-stopped
     profiles: ["infra", "full"]
     # REDIS_PASSWORD 가 비어 있으면(현행) 무인증으로 기동한다.
@@ -112,6 +122,11 @@ services:
   osrm-foot:
     image: ghcr.io/project-osrm/osrm-backend:v26.5.0-amd64-alpine
     container_name: map-service-osrm-foot
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
     restart: unless-stopped
     # osrm-backend 는 amd64 전용(arm64 미제공). arm64 호스트(Apple Silicon)는
     # 아래 platform 으로 amd64 에뮬레이션 실행된다. 프로덕션 amd64 서버는 네이티브.
@@ -129,6 +144,11 @@ services:
   osrm-bicycle:
     image: ghcr.io/project-osrm/osrm-backend:v26.5.0-amd64-alpine
     container_name: map-service-osrm-bicycle
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
     restart: unless-stopped
     platform: linux/amd64
     profiles: ["routing"]
@@ -146,7 +166,21 @@ services:
     build:
       context: ../map-service-user
     container_name: map-service-user
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 2g
     <<: *app-env
+    # 컨테이너에 메모리 상한을 걸면 JVM 이 힙을 다시 잡는다. 기본값은 상한의
+    # 25% 라, 상한을 2g 로 두는 순간 힙이 512m 가 된다 — 상한이 없을 때는
+    # Docker VM(7.8GiB)의 25%인 약 1.9GiB 였다. 그대로 두면 상한을 넣은 것만으로
+    # 힙이 1/4 로 줄어 GC 가 잦아진다.
+    #
+    # 70% 로 두면 힙 약 1.4GiB 에 나머지 0.6GiB 를 스택·메타스페이스·네이티브
+    # 버퍼에 남긴다. 부하 실측 최대 상주가 849MiB 였으므로 여유가 있다.
+    environment:
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=70"
     restart: unless-stopped
     profiles: ["backend", "full"]
     depends_on:
@@ -171,6 +205,11 @@ services:
     build:
       context: ../map-service-agent
     container_name: map-service-agent
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 512m
     <<: *app-env
     restart: unless-stopped
     profiles: ["backend", "full"]
@@ -195,6 +234,11 @@ services:
     build:
       context: ../map-service-hub
     container_name: map-service-hub
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 512m
     <<: *app-env
     restart: unless-stopped
     profiles: ["backend", "full"]
@@ -235,6 +279,11 @@ services:
     build:
       context: ../map-service-yolo
     container_name: map-service-yolo
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 3g
     <<: *app-env
     environment:
       GEMINI_API_KEY: ${VISION_GEMINI_API_KEY:-${GEMINI_API_KEY:-}}
@@ -271,6 +320,11 @@ services:
   proxy:
     image: nginx:alpine
     container_name: map-service-proxy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128m
     restart: unless-stopped
     profiles: ["backend", "full"]
     depends_on:
