@@ -1,0 +1,107 @@
+[
+  {
+    "_label": "서울 종로 산책 1일",
+    "schedule": {
+      "start_date": "2026-09-05",
+      "end_date": "2026-09-05",
+      "active_start_hour": 10,
+      "active_end_hour": 18
+    },
+    "budget": {
+      "min": 0,
+      "max": 100000
+    },
+    "themes": [
+      "산책"
+    ],
+    "transport": "WALK",
+    "location": {
+      "province": "서울특별시",
+      "city": "종로구"
+    }
+  },
+  {
+    "_label": "서울 강남 맛집 1일",
+    "schedule": {
+      "start_date": "2026-09-05",
+      "end_date": "2026-09-05",
+      "active_start_hour": 11,
+      "active_end_hour": 20
+    },
+    "budget": {
+      "min": 0,
+      "max": 100000
+    },
+    "themes": [
+      "맛집"
+    ],
+    "transport": "WALK",
+    "location": {
+      "province": "서울특별시",
+      "city": "강남구"
+    }
+  },
+  {
+    "_label": "부산 해운대 역사 2일",
+    "schedule": {
+      "start_date": "2026-09-05",
+      "end_date": "2026-09-06",
+      "active_start_hour": 10,
+      "active_end_hour": 19
+    },
+    "budget": {
+      "min": 0,
+      "max": 100000
+    },
+    "themes": [
+      "역사"
+    ],
+    "transport": "WALK",
+    "location": {
+      "province": "부산광역시",
+      "city": "해운대구"
+    }
+  },
+  {
+    "_label": "제주 제주시 자연 2일",
+    "schedule": {
+      "start_date": "2026-09-05",
+      "end_date": "2026-09-06",
+      "active_start_hour": 9,
+      "active_end_hour": 18
+    },
+    "budget": {
+      "min": 0,
+      "max": 100000
+    },
+    "themes": [
+      "자연"
+    ],
+    "transport": "WALK",
+    "location": {
+      "province": "제주특별자치도",
+      "city": "제주시"
+    }
+  },
+  {
+    "_label": "강릉 바다 1일",
+    "schedule": {
+      "start_date": "2026-09-05",
+      "end_date": "2026-09-05",
+      "active_start_hour": 10,
+      "active_end_hour": 18
+    },
+    "budget": {
+      "min": 0,
+      "max": 100000
+    },
+    "themes": [
+      "자연"
+    ],
+    "transport": "WALK",
+    "location": {
+      "province": "강원특별자치도",
+      "city": "강릉시"
+    }
+  }
+]
