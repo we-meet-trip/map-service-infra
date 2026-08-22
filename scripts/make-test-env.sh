@@ -53,10 +53,18 @@ declare -a OVERRIDES=(
 
 cp "$SRC" "$OUT"
 
+# 제자리 편집(sed -i)은 쓰지 않는다. BSD 와 GNU 의 인자 형태가 달라
+# 개발 기계(macOS)에서 되는 것이 검사 기계(리눅스)에서 깨진다.
+# 임시 파일에 쓰고 옮기는 방식은 양쪽에서 같게 동작한다.
+replace_line() {
+  local key="$1" line="$2" tmp="${OUT}.tmp"
+  sed -E "s|^${key}=.*|${line}|" "$OUT" > "$tmp" && mv "$tmp" "$OUT"
+}
+
 # 발급처 키 비우기.
 for key in "${PROVIDER_KEYS[@]}"; do
   if grep -qE "^${key}=" "$OUT"; then
-    sed -i '' -E "s|^${key}=.*|${key}=|" "$OUT"
+    replace_line "$key" "${key}="
   fi
 done
 
@@ -64,7 +72,7 @@ done
 for pair in "${OVERRIDES[@]}"; do
   key="${pair%%=*}"
   if grep -qE "^${key}=" "$OUT"; then
-    sed -i '' -E "s|^${key}=.*|${pair}|" "$OUT"
+    replace_line "$key" "$pair"
   else
     printf '%s\n' "$pair" >> "$OUT"
   fi
