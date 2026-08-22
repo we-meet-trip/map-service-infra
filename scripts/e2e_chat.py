@@ -160,6 +160,48 @@ async def connect(url, token) -> Stomp | None:
     return s
 
 
+async def peer(base, ws_url, args) -> int:
+    """기기 시험의 상대역. 방에 붙어 표식을 되풀이해 보내고 기기 것을 기다린다.
+
+    기기를 두 대 함께 돌릴 수 있으면 그렇게 하는 편이 낫지만, 두 시험 도구를
+    한 기계에서 동시에 띄우면 도구와 기기를 잇는 연결이 서로 방해한다.
+    그때는 한쪽을 여기로 대신한다 — 기기 입장에서는 남이 보낸 것을 방송으로
+    받는 것이라, 확인하려던 것은 그대로 확인된다.
+
+    되풀이해 보내는 이유: 기기는 빌드부터 하고 오므로 언제 붙을지 모른다.
+    한 번만 보내고 말면 기기가 붙기 전에 지나가 버린다.
+    """
+    token = login(base, args.email_b, args.password)
+    if not token:
+        no("상대역이 로그인된다", "실패")
+        return 1
+    s = await connect(ws_url, token)
+    if not s:
+        no("상대역이 붙는다", "CONNECTED 없음")
+        return 1
+    ok("상대역이 방에 붙었다")
+    await s.send("SUBSCRIBE",
+                 {"id": "p0", "destination": f"/topic/rooms/{args.schedule_id}"})
+
+    seen = False
+    for i in range(args.peer_seconds // 5):
+        await s.send("SEND",
+                     {"destination": f"/app/rooms/{args.schedule_id}/send",
+                      "content-type": "application/json"},
+                     json.dumps({"content": f"상대역 {args.peer_mark} #{i}",
+                                 "client_msg_id": f"peer-{args.peer_mark}-{i}"}))
+        got = await s.expect("MESSAGE", timeout=5,
+                             match=lambda f: args.expect_mark in f[2])
+        if got and not seen:
+            seen = True
+            ok(f"기기가 보낸 것({args.expect_mark})을 상대역이 받았다")
+    if not seen:
+        no("기기가 보낸 것을 상대역이 받았다", f"{args.peer_seconds}초 동안 못 받음")
+    await s.ws.close()
+    print(f"RESULT pass={PASS} fail={FAIL}")
+    return 1 if FAIL else 0
+
+
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:8090")
@@ -167,10 +209,19 @@ async def main() -> int:
     ap.add_argument("--email-a", default="maptester1@admin.map")
     ap.add_argument("--email-b", default="maptester2@admin.map")
     ap.add_argument("--password", default="admin123!")
+    # 상대역 모드에서는 --schedule-id 자리에 방 번호를 그대로 준다.
+    ap.add_argument("--peer", action="store_true",
+                    help="기기 시험의 상대역으로 돈다(방은 이미 있어야 한다)")
+    ap.add_argument("--peer-mark", default="py-mark")
+    ap.add_argument("--expect-mark", default="")
+    ap.add_argument("--peer-seconds", type=int, default=240)
     args = ap.parse_args()
 
     base = args.base.rstrip("/")
     ws_url = base.replace("https://", "wss://").replace("http://", "ws://") + "/ws/chat"
+
+    if args.peer:
+        return await peer(base, ws_url, args)
 
     ta = login(base, args.email_a, args.password)
     tb = login(base, args.email_b, args.password)

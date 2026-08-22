@@ -77,7 +77,7 @@ expect "장소 검색" "200,400" "$(code "$BASE/api/v1/places?province=서울특
 expect "일정 목록" "200" "$(code "${AUTH[@]}" "$BASE/api/v1/schedules")"
 
 sec "5. 일정 생성 — 이미 만들어 둔 조건 (캐시로 답해야 한다)"
-WARM='{"schedule":{"start_date":"2026-09-05","end_date":"2026-09-05","active_start_hour":10,"active_end_hour":18},"budget":{"min":0,"max":100000},"themes":["산책"],"transport":"WALK","location":{"province":"서울특별시","city":"종로구"}}'
+WARM='{"schedule":{"start_date":"2026-09-05","end_date":"2026-09-05","active_start_hour":10,"active_end_hour":18},"budget":{"min":0,"max":100000},"themes":["산책"],"transport":"walk","location":{"province":"서울특별시","city":"종로구"}}'
 t0=$(python3 -c 'import time;print(time.time())')
 resp=$(body -X POST "$BASE/api/v1/trip/generate" -H "Content-Type: application/json" "${AUTH[@]}" -d "$WARM")
 t1=$(python3 -c 'import time;print(time.time())')
