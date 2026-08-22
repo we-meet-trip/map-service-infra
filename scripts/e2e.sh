@@ -35,6 +35,14 @@ expect() {
 }
 
 code() { curl -s -o /dev/null -w "%{http_code}" "$@"; }
+
+# 상태코드와 본문을 함께 집는다. 마지막 줄이 코드고 나머지가 본문이다.
+# 400 이 났을 때 어떤 400 인지(형식 오류인지 규칙 위반인지)가 남아야 고칠 수 있다.
+code_body() {
+  local out; out=$(curl -s -w $'\n%{http_code}' "$@")
+  CODE=$(printf '%s' "$out" | tail -1)
+  BODY=$(printf '%s' "$out" | sed '$d')
+}
 body() { curl -s "$@"; }
 
 sec "1. 관문"
@@ -93,10 +101,22 @@ expect "없는 식별자는 진행 중으로 답한다" "202" "$(code "$BASE/api
 
 sec "7. 초안 수정 (소유권·기록)"
 if [ -n "$tid" ]; then
-  EDIT='{"places":[{"place_id":0,"day":1,"name":"E2E남은곳","address":"주소","lat":37.5,"lng":127.0,"recommended_visit_time":"10:00"}]}'
-  expect "본인 초안을 고칠 수 있다" "200,404" \
+  # 순서와 이동 구간은 장소를 자리 번호로 가리킨다. 셋을 함께 보내야 앞뒤가 맞는다.
+  ONEPLACE='{"place_id":0,"day":1,"name":"E2E남은곳","address":"주소","lat":37.5,"lng":127.0,"recommended_visit_time":"10:00"}'
+  code_body -X POST "$BASE/api/v1/recommend/$tid/edit" -H "Content-Type: application/json" \
+      -H "Idempotency-Key: e2e-$(date +%s)" "${AUTH[@]}" \
+      -d "{\"places\":[$ONEPLACE],\"visit_order\":[0],\"legs\":[]}"
+  case ",200,404," in
+    *",$CODE,"*) ok "본인 초안을 고칠 수 있다 ($CODE)";;
+    *) no "본인 초안을 고칠 수 있다" "기대 200,404, 실제 $CODE — $(printf '%s' "$BODY" | head -c 160)";;
+  esac
+
+  # 장소만 줄이고 순서를 그대로 두면 없는 자리를 가리킨다. 저장되면 그 일정은
+  # 다시 열 때 비어 보이므로, 저장하기 전에 막아야 한다.
+  expect "앞뒤가 안 맞는 수정은 거절된다" "400" \
     "$(code -X POST "$BASE/api/v1/recommend/$tid/edit" -H "Content-Type: application/json" \
-        -H "Idempotency-Key: e2e-$(date +%s)" "${AUTH[@]}" -d "$EDIT")"
+        -H "Idempotency-Key: e2e-bad-$(date +%s)" "${AUTH[@]}" \
+        -d "{\"places\":[$ONEPLACE],\"visit_order\":[0,1,2,3]}")"
 else
   sk "본인 초안을 고칠 수 있다" "직전 단계 실패"
 fi
@@ -122,6 +142,89 @@ q() { docker exec map-service-postgres psql -h 127.0.0.1 -At -U map -d map -c "$
   && ok "초안 수정 전후가 남는다" || no "초안 수정 전후가 남는다" "0건"
 [ "$(q "SELECT count(*) FROM user_service.recommend_jobs WHERE source='cache_hit';")" -gt 0 ] \
   && ok "캐시로 답한 잡이 구분된다" || no "캐시로 답한 잡이 구분된다" "0건"
+
+sec "10. 일정 저장 이후 (저장 → 목록 → 상세 → 시작)"
+SID=""
+if [ -n "$tid" ]; then
+  SAVE="{\"job_id\":\"$tid\",\"title\":\"E2E 종로 산책\",\"date_start\":\"2026-09-05\",\"date_end\":\"2026-09-05\",\"transport\":\"walk\",\"active_start_hour\":10,\"active_end_hour\":18}"
+  sresp=$(body -X POST "$BASE/api/v1/schedules" -H "Content-Type: application/json" "${AUTH[@]}" -d "$SAVE")
+  SID=$(printf '%s' "$sresp" | python3 -c "import sys,json;print(json.load(sys.stdin).get('schedule_id',''))" 2>/dev/null)
+  [ -n "$SID" ] && ok "만든 일정이 저장된다 (schedule_id=$SID)" \
+    || no "만든 일정이 저장된다" "본문: $(printf '%s' "$sresp" | head -c 120)"
+else
+  sk "만든 일정이 저장된다" "생성 단계 실패"
+fi
+
+if [ -n "$SID" ]; then
+  printf '%s' "$(body "${AUTH[@]}" "$BASE/api/v1/schedules")" \
+    | grep -q "\"schedule_id\":$SID" \
+    && ok "저장 목록에 나온다" || no "저장 목록에 나온다" "목록에 없음"
+
+  # 상세는 방문지까지 조립해서 온다 — 목록에는 제목과 기간뿐이라 여기서만 본다.
+  n=$(body "${AUTH[@]}" "$BASE/api/v1/schedules/$SID" \
+      | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('stops') or []))" 2>/dev/null)
+  [ "${n:-0}" -gt 0 ] && ok "상세에 방문지가 실려 온다 (${n}곳)" \
+    || no "상세에 방문지가 실려 온다" "stops 0개"
+
+  # 시작 시각은 처음 한 번만 새긴다. 두 번 눌러도 같아야 한다.
+  code -X POST "${AUTH[@]}" "$BASE/api/v1/schedules/$SID/start" >/dev/null
+  first=$(docker exec map-service-postgres psql -h 127.0.0.1 -At -U map -d map \
+          -c "SELECT started_at FROM user_service.schedules WHERE schedule_id=$SID;" 2>/dev/null)
+  code -X POST "${AUTH[@]}" "$BASE/api/v1/schedules/$SID/start" >/dev/null
+  second=$(docker exec map-service-postgres psql -h 127.0.0.1 -At -U map -d map \
+           -c "SELECT started_at FROM user_service.schedules WHERE schedule_id=$SID;" 2>/dev/null)
+  [ -n "$first" ] && ok "따라가기 시작이 새겨진다 ($first)" \
+    || no "따라가기 시작이 새겨진다" "started_at 비어 있음"
+  [ "$first" = "$second" ] && ok "두 번 눌러도 시작 시각은 그대로다" \
+    || no "두 번 눌러도 시작 시각은 그대로다" "$first → $second"
+else
+  sk "저장 이후 흐름" "저장 실패"
+fi
+
+sec "11. 채팅 (두 사람 · 관문 경유 소켓)"
+if [ -n "$SID" ]; then
+  chat_out=$(python3 "$(dirname "$0")/e2e_chat.py" --base "$BASE" --schedule-id "$SID" 2>&1)
+  echo "$chat_out" | grep -v "^RESULT" | sed 's/^/  /'
+  cp_=$(echo "$chat_out" | sed -n 's/.*RESULT pass=\([0-9]*\).*/\1/p')
+  cf_=$(echo "$chat_out" | sed -n 's/.*RESULT.*fail=\([0-9]*\).*/\1/p')
+  if [ -n "$cp_" ]; then
+    pass=$((pass + cp_)); fail=$((fail + cf_))
+  else
+    # RESULT 줄이 없으면 도중에 끊긴 것이다. 통과로 세면 안 된다.
+    no "채팅 검사가 끝까지 돈다" "RESULT 줄 없음"
+  fi
+else
+  sk "채팅" "일정 저장 실패 — 방을 열 대상이 없다"
+fi
+
+sec "12. 재탐색 (다시 짜기)"
+if [ -n "$tid" ]; then
+  # 재탐색은 만들 때와 같은 본문을 받아 초안을 버리고 다시 짠다. 여기서만
+  # 모델을 실제로 부른다 — 캐시로는 "다시 짜기" 를 검증할 수 없다.
+  RESEARCH='{"date":{"date_start":"2026-09-05","date_end":"2026-09-05","time_start":"10:00:00","time_end":"18:00:00"},"budget":100000,"theme":["산책"],"mobility":"walk","province":"서울특별시","city":"종로구"}'
+  rc=$(code -X POST "$BASE/api/v1/recommend/$tid/research" -H "Content-Type: application/json" \
+        "${AUTH[@]}" -d "$RESEARCH")
+  case ",202,200,409," in *",$rc,"*) ok "재탐색이 접수된다 ($rc)";; *) no "재탐색이 접수된다" "실제 $rc";; esac
+  if [ "$rc" = "202" ] || [ "$rc" = "200" ]; then
+    sleep 25
+    m=$(docker exec map-service-postgres psql -h 127.0.0.1 -At -U map -d map \
+        -c "SELECT count(*) FROM user_service.recommend_jobs WHERE mode='research' AND parent_job_id='$tid';" 2>/dev/null)
+    [ "${m:-0}" -gt 0 ] && ok "재탐색 잡이 원본과 이어진다 (parent_job_id)" \
+      || no "재탐색 잡이 원본과 이어진다" "0건"
+  else
+    sk "재탐색 잡이 원본과 이어진다" "접수 안 됨(응답 $rc)"
+  fi
+else
+  sk "재탐색" "생성 단계 실패"
+fi
+
+sec "13. 정리 (삭제)"
+if [ -n "$SID" ]; then
+  expect "저장한 일정을 지운다" "200,204" "$(code -X DELETE "${AUTH[@]}" "$BASE/api/v1/schedules/$SID")"
+  expect "지운 일정은 안 보인다" "404" "$(code "${AUTH[@]}" "$BASE/api/v1/schedules/$SID")"
+else
+  sk "삭제" "저장 실패"
+fi
 
 printf '\n\033[1m통과 %d · 실패 %d · 건너뜀 %d\033[0m\n' "$pass" "$fail" "$skip"
 [ "$fail" -eq 0 ]
