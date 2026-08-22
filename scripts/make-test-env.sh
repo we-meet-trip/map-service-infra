@@ -38,7 +38,7 @@ PROVIDER_KEYS=(
   KAKAO_OAUTH_CLIENT_ID KAKAO_OAUTH_CLIENT_SECRET KAKAO_REST_API_KEY KAKAO_MAPS_JS_KEY
   KMA_SERVICE_KEY AIRKOREA_SERVICE_KEY TOUR_API_SERVICE_KEY
   NAVER_CLIENT_ID NAVER_CLIENT_SECRET NAVER_MAP_CLIENT_ID NAVER_MAP_CLIENT_ID_FALLBACK
-  GOOGLE_MAPS_API_KEY GEMINI_API_KEY VISION_GEMINI_API_KEY
+  GOOGLE_MAPS_API_KEY VISION_GEMINI_API_KEY
   ODSAY_API_KEY ODSAY_API_KEY_FALLBACK SEOUL_OPENAPI_KEY PM_SERVICE_KEY
 )
 
@@ -49,6 +49,16 @@ declare -a OVERRIDES=(
   "INTERNAL_SERVICE_TOKEN=test-internal-token-not-for-production"
   "AUTH_ENFORCED=false"
   "TESTER_SEED_ENABLED=true"
+  # 비워 두면 agent 가 부팅을 거부한다(키 없이는 뜨지 않는 설계). 그렇다고
+  # 운영 키를 넣으면 시험이 운영 한도를 태운다. 누가 봐도 가짜인 값을 주어
+  # 부팅은 되게 하고, 실제 호출은 발급처에서 거절되게 한다 — 조용히 통과하는
+  # 것보다 그 자리에서 막히는 편이 낫다.
+  "GEMINI_API_KEY=test-not-a-real-key-calls-will-be-rejected"
+  # 접속 문자열 안의 비밀번호는 위 POSTGRES_PASSWORD 와 같아야 한다. 한쪽만
+  # 갈면 hub 와 admin 이 인증에서 막히는데, 그 실패는 부팅 로그를 봐야만
+  # 드러난다.
+  "HUB_DATABASE_URL=postgresql+psycopg://map:test-local-only@postgres:5432/map"
+  "ADMIN_DATABASE_URL=postgresql+psycopg://map_admin:test-local-only@postgres:5432/map"
 )
 
 cp "$SRC" "$OUT"
