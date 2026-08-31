@@ -1,0 +1,86 @@
+# 바깥에서 들어오는 자리. 기본 파일과 함께 쓴다.
+#
+#   docker compose --env-file ./.env \
+#     -f docker-compose.yml -f docker-compose.edge.yml \
+#     --profile full --profile edge up -d
+#
+# 지금까지는 맥에서 터널을 띄워 바깥과 이었다. 그 방식은 주소가 열 때마다
+# 달라지고 맥이 잠들면 함께 끊기므로, 늘 켜 두는 서버에는 쓸 수 없다.
+# 여기서는 서버 자신이 인증서를 받아 https 로 받는다.
+#
+# 관문(nginx)은 그대로 둔다. 바꾸면 경로 허용목록과 요청 상한이 함께 흔들린다.
+# 대신 이 앞단이 관문 뒤로 넘겨 주기만 한다.
+#
+# 한 가지 주의할 점이 있다. 관문은 실제 요청자 주소를 CF-Connecting-IP 에서
+# 읽는다. 앞단이 그 헤더를 채우지 않으면 모든 요청이 앞단의 주소 하나로
+# 보이고, 그러면 분당 상한이 사용자마다가 아니라 전체 하나로 걸린다 —
+# 한 사람이 상한을 채우면 나머지 전원이 함께 막힌다. 그래서 아래에서
+# 그 헤더를 앞단이 직접 채운다.
+
+services:
+  edge:
+    image: caddy:2-alpine
+    container_name: !reset null
+    restart: unless-stopped
+    profiles: ["edge"]
+    # 인증서를 받으려면 발급처가 이 서버의 80 번으로 들어올 수 있어야 한다.
+    # 다른 포트와 달리 이 둘만 바깥으로 연다.
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      EDGE_DOMAIN: ${EDGE_DOMAIN:?바깥에서 부를 주소를 정해야 한다}
+      EDGE_EMAIL: ${EDGE_EMAIL:?인증서 만료 알림을 받을 주소를 정해야 한다}
+    volumes:
+      - ./edge/Caddyfile:/etc/caddy/Caddyfile:ro
+      - edge-data:/data
+      - edge-config:/config
+    depends_on:
+      - proxy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128m
+
+  # 무료 동적 DNS 를 쓸 때만 띄운다. 도메인을 따로 가지고 있으면 필요 없다.
+  #
+  # 클라우드 서버의 바깥 주소는 껐다 켜면 바뀔 수 있다. 주소가 바뀌면 앱이
+  # 서버를 찾지 못하는데, 그 사실은 앱을 열어 봐야 드러난다. 그래서 주기적으로
+  # 지금 주소를 알려 이름이 늘 따라오게 한다.
+  #
+  # 발급처는 실패를 200 응답에 "KO" 라는 본문으로 알린다. 응답 코드만 보면
+  # 성공으로 읽히므로 본문을 확인한다.
+  dns:
+    image: curlimages/curl:8.11.1
+    container_name: !reset null
+    restart: unless-stopped
+    profiles: ["dns"]
+    environment:
+      DUCKDNS_SUBDOMAIN: ${DUCKDNS_SUBDOMAIN:?duckdns 에 만든 이름을 정해야 한다}
+      DUCKDNS_TOKEN: ${DUCKDNS_TOKEN:?duckdns 발급 토큰을 정해야 한다}
+    command:
+      - sh
+      - -c
+      - |
+        while :; do
+          body=$$(curl -fsS --max-time 20 \
+            "https://www.duckdns.org/update?domains=$$DUCKDNS_SUBDOMAIN&token=$$DUCKDNS_TOKEN&ip=" \
+            || echo "REQUEST_FAILED")
+          case "$$body" in
+            OK*) : ;;
+            *) echo "[dns] 주소 갱신 실패: $$body" ;;
+          esac
+          sleep 300
+        done
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: 16m
+
+volumes:
+  edge-data:
+    name: ${COMPOSE_PROJECT_NAME:-map}_edge-data
+  edge-config:
+    name: ${COMPOSE_PROJECT_NAME:-map}_edge-config
