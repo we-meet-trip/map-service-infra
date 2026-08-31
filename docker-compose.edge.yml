@@ -43,6 +43,42 @@ services:
           cpus: "0.5"
           memory: 128m
 
+  # 무료 동적 DNS 를 쓸 때만 띄운다. 도메인을 따로 가지고 있으면 필요 없다.
+  #
+  # 클라우드 서버의 바깥 주소는 껐다 켜면 바뀔 수 있다. 주소가 바뀌면 앱이
+  # 서버를 찾지 못하는데, 그 사실은 앱을 열어 봐야 드러난다. 그래서 주기적으로
+  # 지금 주소를 알려 이름이 늘 따라오게 한다.
+  #
+  # 발급처는 실패를 200 응답에 "KO" 라는 본문으로 알린다. 응답 코드만 보면
+  # 성공으로 읽히므로 본문을 확인한다.
+  dns:
+    image: curlimages/curl:8.11.1
+    container_name: !reset null
+    restart: unless-stopped
+    profiles: ["dns"]
+    environment:
+      DUCKDNS_SUBDOMAIN: ${DUCKDNS_SUBDOMAIN:?duckdns 에 만든 이름을 정해야 한다}
+      DUCKDNS_TOKEN: ${DUCKDNS_TOKEN:?duckdns 발급 토큰을 정해야 한다}
+    command:
+      - sh
+      - -c
+      - |
+        while :; do
+          body=$$(curl -fsS --max-time 20 \
+            "https://www.duckdns.org/update?domains=$$DUCKDNS_SUBDOMAIN&token=$$DUCKDNS_TOKEN&ip=" \
+            || echo "REQUEST_FAILED")
+          case "$$body" in
+            OK*) : ;;
+            *) echo "[dns] 주소 갱신 실패: $$body" ;;
+          esac
+          sleep 300
+        done
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: 16m
+
 volumes:
   edge-data:
     name: ${COMPOSE_PROJECT_NAME:-map}_edge-data
