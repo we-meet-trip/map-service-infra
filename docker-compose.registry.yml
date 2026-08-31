@@ -1,0 +1,32 @@
+# 서버가 이미지를 직접 만들지 않고 받아 쓰게 하는 덧칠.
+#
+#   docker compose --env-file ./.env \
+#     -f docker-compose.yml -f docker-compose.registry.yml --profile full up -d
+#
+# 왜 필요한가. 메모리가 작은 서버에서는 이미지를 만들 수 없다. BFF 는 빌드
+# 도중에 의존성을 받아 컴파일하느라 1GB 를 넘게 쓰고, 카메라 이미지는 계산
+# 라이브러리를 통째로 내려받는다. 1GB 짜리 서버에서 이 과정은 끝나지 않는다.
+#
+# 그래서 만드는 일은 넉넉한 곳에서 한 번 하고(scripts/images-push.sh),
+# 서버는 받아서 띄우기만 한다.
+#
+# 만드는 자리를 지우는 이유는, 남겨 두면 이미지가 없을 때 compose 가 조용히
+# 빌드로 넘어가기 때문이다. 작은 서버에서는 그 순간 서버가 멎는다. 여기서는
+# 이미지가 없으면 받아오기에 실패하고 멈추는 편이 낫다.
+
+services:
+  user:
+    build: !reset null
+    image: ${IMAGE_REGISTRY:?이미지를 받아올 곳을 정해야 한다}/map-service-user:${IMAGE_TAG:-latest}
+
+  agent:
+    build: !reset null
+    image: ${IMAGE_REGISTRY}/map-service-agent:${IMAGE_TAG:-latest}
+
+  hub:
+    build: !reset null
+    image: ${IMAGE_REGISTRY}/map-service-hub:${IMAGE_TAG:-latest}
+
+  yolo:
+    build: !reset null
+    image: ${IMAGE_REGISTRY}/map-service-yolo:${IMAGE_TAG:-latest}
