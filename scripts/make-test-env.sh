@@ -54,7 +54,10 @@ TEST_PW=test-local-only
 set_kv POSTGRES_DB   map_test
 set_kv POSTGRES_USER map
 set_kv POSTGRES_PASSWORD "$TEST_PW"
-set_kv HUB_DATABASE_URL   "postgresql+asyncpg://map:${TEST_PW}@postgres:5432/map_test"
+# 드라이버 이름은 hub 가 실제로 가진 것(psycopg)이어야 한다. 다른 이름을
+# 적으면 hub 는 그대로 뜨고 상태 확인도 통과하는데, 예약해 둔 수집 작업만
+# 조용히 실패한다.
+set_kv HUB_DATABASE_URL   "postgresql+psycopg://map:${TEST_PW}@postgres:5432/map_test"
 set_kv MAP_ADMIN_PASSWORD "$TEST_PW"
 set_kv ADMIN_DATABASE_URL "postgresql+psycopg://map_admin:${TEST_PW}@postgres:5432/map_test"
 set_kv INTERNAL_SERVICE_TOKEN test-internal-token-not-a-real-secret-value
