@@ -101,15 +101,34 @@ BFF 가 기동 도중 메모리 부족으로 죽었는데, **컨테이너는 살
 | IP 를 이름으로 바꿔 주는 서비스(sslip.io 등) | `1-2-3-4.sslip.io` | 무료. 서버 주소가 바뀌면 이름도 바뀐다 |
 | Cloudflare 터널 + 도메인 | `api.내도메인` | 도메인 값만 든다. 들어오는 포트를 아예 안 열어도 된다 |
 
-무료 동적 DNS 를 쓰기로 했다. 운영과 시험에 이름을 하나씩 만들고,
-`.env` 에 넣는다.
+무료 동적 DNS 를 쓰기로 했다. 이름은 둘이다.
+
+| | 이름 | 주소 |
+|---|---|---|
+| 운영 | `mapapp` | `https://mapapp.duckdns.org` |
+| 시험 | `mapapptest` | `https://mapapptest.duckdns.org` |
+
+운영 서버의 `.env`:
 
 ```
-EDGE_DOMAIN=<이름>.duckdns.org
-EDGE_EMAIL=<인증서 만료 알림을 받을 주소>
-DUCKDNS_SUBDOMAIN=<이름>
-DUCKDNS_TOKEN=<발급 토큰>
+EDGE_DOMAIN=mapapp.duckdns.org
+EDGE_EMAIL=mapadmin26@gmail.com
+DUCKDNS_SUBDOMAIN=mapapp
+DUCKDNS_TOKEN=<duckdns 계정 토큰>
 ```
+
+시험 서버의 `.env.test`:
+
+```
+EDGE_DOMAIN=mapapptest.duckdns.org
+EDGE_EMAIL=mapadmin26@gmail.com
+DUCKDNS_SUBDOMAIN=mapapptest
+DUCKDNS_TOKEN=<위와 같은 값>
+```
+
+토큰은 이름마다가 아니라 **계정마다 하나**라 두 서버가 같은 값을 쓴다.
+그래서 한쪽 서버가 상대의 이름도 바꿀 수 있다 — 시험 서버를 남에게 맡기게
+되면 계정을 나누는 편이 낫다.
 
 `--profile dns` 로 함께 띄우면 5분마다 지금 주소를 알려 이름이 따라온다.
 클라우드 서버의 바깥 주소는 껐다 켜면 바뀌는데, 바뀐 사실은 앱을 열어 봐야
@@ -149,11 +168,19 @@ DUCKDNS_TOKEN=<발급 토큰>
 | `TESTER_SEED_ENABLED` | `true` | `false` |
 | `AUTH_ENFORCED` | `false` | `true` |
 | `ADMIN_SESSION_COOKIE_SECURE` | 없음 | `true` |
-| `CORS_ALLOWED_ORIGINS` | 호스팅 주소 | 새 주소 포함 |
-| `CHAT_INVITE_BASE_URL` | 없음(기본값 사용) | 새 초대 주소 |
+| `CORS_ALLOWED_ORIGINS` | 호스팅 주소 | `https://mapapp.duckdns.org,https://mapcenter-b59ca.web.app` |
+| `CHAT_INVITE_BASE_URL` | 없음(기본값 사용) | `https://mapcenter-b59ca.web.app/invite/` |
+| `LOCATION_ENC_KEYS` | 개발용 값 | `openssl rand -base64 32` 로 새로 |
 
 `TESTER_SEED_ENABLED=true` 는 비밀번호가 공유된 계정 다섯을 부팅마다 만든다.
 주소를 모르는 임시 터널 뒤에서는 가려져 있었지만 고정 주소에서는 그렇지 않다.
+
+`AUTH_ENFORCED=true` 로 켜면 서명 열쇠(`JWT_PRIVATE_KEY`/`JWT_PUBLIC_KEY`)가
+있어야 부팅한다. 없으면 뜨다 멈춘다.
+
+**초대 주소는 서버 주소와 다르다.** 초대 링크가 앱을 열게 하는 검증 파일
+(`assetlinks.json`)이 호스팅 쪽에 올라가 있어서, 그 파일이 있는 주소를 그대로
+써야 한다. 서버 주소로 바꾸면 링크가 브라우저로만 열린다.
 
 ### 5.3 기동
 
@@ -164,11 +191,24 @@ DUCKDNS_TOKEN=<발급 토큰>
 ```
 
 메모리가 작아 이미지를 만들 수 없는 서버라면, 넉넉한 컴퓨터에서 먼저 만들어
-올려 둔다.
+올려 둔다. 받아갈 곳은 저장소와 같은 곳(`ghcr.io/we-meet-trip`)을 쓴다.
 
 ```
-IMAGE_REGISTRY=ghcr.io/<계정> ./scripts/images-push.sh
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u <계정> --password-stdin
+IMAGE_REGISTRY=ghcr.io/we-meet-trip IMAGE_TAG=$(date +%Y-%m-%d) ./scripts/images-push.sh
 ```
+
+토큰은 `write:packages` 권한만 있으면 된다. **처음 한 번은 올린 뒤 패키지를
+공개로 바꾼다** — 기본이 비공개라 그대로 두면 서버가 받으려 할 때 인증을
+요구한다. 공개로 바꾸면 서버에는 레지스트리 자격증명을 두지 않아도 된다.
+서버에 두는 비밀값이 하나라도 줄어드는 것이 이 선택의 이유다.
+
+이미지를 공개해도 되는 근거는 둘이다. 저장소가 이미 공개라 소스가 새로
+드러나지 않고, 이미지 안에 `.env`·서명키·인증키가 들어가지 않는다(빌드 무시
+목록이 걸러 낸다). **저장소를 비공개로 돌리게 되면 이미지도 함께 돌린다.**
+
+`latest` 대신 날짜를 붙이는 이유는 되돌릴 자리를 남기기 위해서다. 무엇이
+돌고 있는지도 태그로 바로 보인다.
 
 서버는 받아서 쓴다. `docker-compose.registry.yml` 은 만드는 자리를 지워 두므로,
 이미지가 없으면 조용히 빌드로 넘어가지 않고 멈춘다 — 작은 서버에서 빌드가
@@ -185,15 +225,20 @@ IMAGE_REGISTRY=ghcr.io/<계정> ./scripts/images-push.sh
 ### 5.4 확인
 
 ```
-curl -s https://<주소>/healthz                       # ok
-curl -s -o /dev/null -w '%{http_code}' https://<주소>/actuator/health   # 404 여야 한다
+curl -s https://mapapp.duckdns.org/healthz                        # ok
+curl -s -o /dev/null -w '%{http_code}' \
+  https://mapapp.duckdns.org/actuator/health                      # 404 여야 한다
+curl -s -o /dev/null -w '%{http_code}' \
+  https://mapapp.duckdns.org/api/v1/schedules                     # 401 여야 한다
 for i in $(seq 1 10); do curl -s -o /dev/null -w '%{http_code} ' \
-  -X POST https://<주소>/api/v1/trip/generate; done                     # 뒤쪽에 429
-sudo reboot                                          # 90초 뒤 healthz 가 다시 ok
+  -X POST https://mapapp.duckdns.org/api/v1/trip/generate; done   # 뒤쪽에 429
+sudo reboot                                                       # 90초 뒤 healthz 가 다시 ok
 ```
 
 `/actuator` 가 404 인지 보는 이유는, 그 경로가 열려 있으면 설정과 내부 상태가
-그대로 나가기 때문이다. 429 가 하나도 없으면 요청자 주소가 앞단 주소 하나로
+그대로 나가기 때문이다. 토큰 없는 일정 조회가 401 인지 보는 이유는, 인증을
+켰다고 믿는데 실제로는 열려 있는 상태를 잡기 위해서다 — 200 이 오면 켜지지
+않은 것이다. 429 가 하나도 없으면 요청자 주소가 앞단 주소 하나로
 접히고 있다는 뜻이다 — 3장의 헤더 처리를 다시 본다.
 
 ### 5.5 백업
@@ -207,12 +252,12 @@ sudo reboot                                          # 90초 뒤 healthz 가 다
 
 ## 6. 정해 주셔야 하는 것
 
-1. **동적 DNS 이름 두 개와 토큰** (`DUCKDNS_SUBDOMAIN`, `DUCKDNS_TOKEN`).
-2. **인증서 알림을 받을 메일 주소** (`EDGE_EMAIL`).
+1. **duckdns 계정 토큰** — 이름 두 개(`mapapp`, `mapapptest`)는 정해졌다.
+2. ~~인증서 알림 주소~~ — `mapadmin26@gmail.com` 으로 정했다.
 3. **네이버 클라우드 서버 종류** — 크레딧으로 최소 운영이라면 4 vCPU / 8 GB 가
    `full` + 관리자까지의 하한이다. 경로 엔진이나 카메라를 올릴 계획이면 16 GB.
-4. **이미지를 받아갈 곳** (`IMAGE_REGISTRY`). 저장소가 GitHub 에 있으므로
-   같은 곳의 이미지 저장소를 쓰는 것이 접근 권한을 따로 만들지 않아도 된다.
+4. ~~이미지를 받아갈 곳~~ — `ghcr.io/we-meet-trip` 공개 패키지로 정했다.
+   필요한 것은 올릴 때 쓸 `write:packages` 토큰 하나뿐이다.
 5. **GCP 지역** — 무료 등급 서버는 미국 세 곳에서만 준다. 한국에서 쓰면
    왕복이 150ms 안팎 늘어난다. 기능 확인에는 지장이 없고 속도 감각만 다르다.
 6. **`AUTH_ENFORCED`** — 켜면 앱의 모든 호출이 토큰을 실어 보내는지 먼저
