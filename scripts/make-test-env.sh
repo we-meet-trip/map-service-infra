@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# 시험 스택용 .env.test 를 만든다.
+#
+# 원본은 반드시 .env.example 이다. .env 를 원본으로 삼으면 실제 발급처 키가
+# 시험 스택으로 새어 들어가고, 그러면 시험이 운영의 하루 한도를 대신 태운다.
+# 특히 기상청·두루누비 계열은 같은 발급 계정을 쓰므로 한 번 소진되면 운영의
+# 예보 폴링과 코스 동기화가 함께 멈춘다. 원본을 example 로 고정하는 것이
+# 그 사고를 구조적으로 막는 유일한 방법이라 여기서 선택지를 두지 않는다.
+#
+# 사용: ./scripts/make-test-env.sh [--force]
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+SRC=.env.example
+DST=.env.test
+
+[ -f "$SRC" ] || { echo "원본이 없다: $SRC" >&2; exit 1; }
+
+if [ -f "$DST" ] && [ "${1:-}" != "--force" ]; then
+  echo "이미 있다: $DST (덮어쓰려면 --force)" >&2
+  exit 1
+fi
+
+TMP=$(mktemp)
+trap 'rm -f "$TMP"' EXIT
+cp "$SRC" "$TMP"
+
+# 값 하나를 바꾼다. 키가 없으면 끝에 붙인다.
+# sed -i 는 BSD 와 GNU 의 인자 형태가 달라 쓰지 않는다.
+set_kv() {
+  local key=$1 val=$2 out
+  if grep -qE "^${key}=" "$TMP"; then
+    out=$(awk -v k="$key" -v v="$val" \
+      'BEGIN{FS=OFS="="} $1==k {print k "=" v; next} {print}' "$TMP")
+    printf '%s\n' "$out" > "$TMP"
+  else
+    printf '%s=%s\n' "$key" "$val" >> "$TMP"
+  fi
+}
+
+# (1) 발급처 키를 전부 비운다. example 이 이미 비어 있어도 방어적으로 다시 비운다 —
+#     누군가 템플릿에 실제 값을 적어 넣었을 때 그것이 시험으로 넘어가면 안 된다.
+for k in KAKAO_REST_API_KEY KAKAO_MAPS_JS_KEY KAKAO_OAUTH_CLIENT_ID \
+         KAKAO_OAUTH_CLIENT_SECRET KMA_SERVICE_KEY AIRKOREA_SERVICE_KEY \
+         TOUR_API_SERVICE_KEY NAVER_CLIENT_ID NAVER_CLIENT_SECRET \
+         NAVER_MAP_CLIENT_ID NAVER_MAP_CLIENT_ID_FALLBACK GOOGLE_MAPS_API_KEY \
+         ODSAY_API_KEY ODSAY_API_KEY_FALLBACK SEOUL_OPENAPI_KEY PM_SERVICE_KEY \
+         VISION_GEMINI_API_KEY JWT_PRIVATE_KEY JWT_PUBLIC_KEY; do
+  set_kv "$k" ""
+done
+
+# (2) 시험 전용 자격증명. 운영과 겹치지 않게 한눈에 보이는 값으로 둔다.
+TEST_PW=test-local-only
+set_kv POSTGRES_DB   map_test
+set_kv POSTGRES_USER map
+set_kv POSTGRES_PASSWORD "$TEST_PW"
+set_kv HUB_DATABASE_URL   "postgresql+asyncpg://map:${TEST_PW}@postgres:5432/map_test"
+set_kv MAP_ADMIN_PASSWORD "$TEST_PW"
+set_kv ADMIN_DATABASE_URL "postgresql+psycopg://map_admin:${TEST_PW}@postgres:5432/map_test"
+set_kv INTERNAL_SERVICE_TOKEN test-internal-token-not-a-real-secret-value
+set_kv ADMIN_BOOTSTRAP_PASSWORD "$TEST_PW"
+set_kv GF_SECURITY_ADMIN_PASSWORD "$TEST_PW"
+
+# (3) agent 는 이 값이 비면 부팅을 멈춘다. 뜨기는 하되 실제 호출은 거절당하도록
+#     한눈에 가짜인 값을 넣는다. 비워 두면 부팅 실패와 구분이 안 된다.
+set_kv GEMINI_API_KEY test-not-a-real-key-calls-will-be-rejected
+
+# (4) 외부 호출을 전부 스텁으로 돌린다. 키가 비어도 스텁으로 떨어지지만,
+#     그 경우와 의도적으로 끈 경우를 로그에서 가를 수 없어 명시한다.
+set_kv PLACES_STUB_MODE true
+
+# (5) 오버레이가 요구하는 표식. 이 값이 없으면 시험 오버레이가 뜨지 않는다.
+set_kv MAP_STACK_ENV test
+
+# (6) 시험 계정은 시험 스택에서만 켠다.
+set_kv TESTER_SEED_ENABLED true
+set_kv TESTER_SEED_PASSWORD "$TEST_PW"
+
+mv "$TMP" "$DST"
+trap - EXIT
+chmod 600 "$DST"
+echo "생성: $DST (권한 600)"

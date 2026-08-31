@@ -1,0 +1,130 @@
+# 시험 스택 오버레이. 반드시 기본 파일과 함께, 그리고 시험용 환경파일과 함께 쓴다.
+#
+#   docker compose --env-file ./.env.test \
+#     -f docker-compose.yml -f docker-compose.test.yml --profile full up -d
+#
+# 환경파일이 두 겹인 것에 주의한다.
+#   --env-file  : 이 YAML 안의 ${...} 를 채운다(호스트 쪽). POSTGRES_PASSWORD 같은 값.
+#   env_file:   : 컨테이너 안으로 주입한다(컨테이너 쪽). 아래에서 .env.test 로 덮는다.
+# --env-file 을 빠뜨리면 compose 는 기본값인 ./.env 를 읽는다. 그러면 컨테이너는
+# 시험 값을 받는데 postgres 는 운영 비밀번호로 뜨고, 아무 오류도 나지 않는다.
+# scripts/env-guard.sh 가 이 조합을 강제한다.
+#
+# 겹치면 안 되는 축이 다섯이다. 하나라도 빠지면 격리가 아니다.
+#   1) 프로젝트명   map-service      → map-test
+#   2) 볼륨 이름    map_*            → map-test_*
+#   3) 네트워크     map-net          → map-test-net
+#   4) 컨테이너명   map-service-*    → 자동 생성(!reset 으로 고정 이름을 푼다)
+#   5) 호스트 포트  각 포트          → 각 포트 + 200
+#
+# 2번이 가장 위험하다. 프로젝트명만 바꾸고 볼륨을 그대로 두면 시험 스택이
+# 운영 데이터베이스를 마운트해 그 위에 마이그레이션을 돌린다.
+#
+# 기동하지 않는 서비스(osrm-*, yolo)도 전부 적는다. 지금 안 뜨니 괜찮다고 두면,
+# 나중에 누가 --profile routing 을 붙이는 순간 운영 그래프 볼륨을 물게 된다.
+
+name: map-test
+
+services:
+  postgres:
+    # --env-file 을 빠뜨리면 compose 는 기본값 ./.env 를 읽는데, 그 파일에는
+    # 이 변수가 없어 여기서 즉시 멈춘다. 오버레이만 붙이고 환경파일을 운영 것으로
+    # 둔 채 뜨는 사고를 사람 기억이 아니라 파일이 막게 하려는 장치다.
+    labels:
+      map.stack: "${MAP_STACK_ENV:?시험 스택은 --env-file ./.env.test 와 함께 실행한다}"
+    container_name: !reset null
+    ports: !override
+      - "127.0.0.1:5632:5432"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
+
+  redis:
+    container_name: !reset null
+    ports: !override
+      - "127.0.0.1:16579:6379"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128m
+
+  osrm-foot:
+    container_name: !reset null
+    ports: !override
+      - "127.0.0.1:5200:5000"
+
+  osrm-bicycle:
+    container_name: !reset null
+    ports: !override
+      - "127.0.0.1:5201:5000"
+
+  user:
+    container_name: !reset null
+    env_file: !override
+      - ./.env.test
+    ports: !override
+      - "127.0.0.1:8280:8080"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1g
+    environment:
+      # 운영과 같은 비율을 유지한다. 상한이 절반이므로 힙도 함께 절반이 된다.
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=70"
+
+  agent:
+    container_name: !reset null
+    env_file: !override
+      - ./.env.test
+    ports: !override
+      - "127.0.0.1:8200:8000"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 384m
+
+  hub:
+    container_name: !reset null
+    env_file: !override
+      - ./.env.test
+    ports: !override
+      - "127.0.0.1:8201:8000"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 384m
+
+  yolo:
+    container_name: !reset null
+    env_file: !override
+      - ./.env.test
+    ports: !override
+      - "127.0.0.1:8204:8000"
+
+  proxy:
+    container_name: !reset null
+    ports: !override
+      - "127.0.0.1:8290:80"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64m
+
+volumes:
+  postgres-data:
+    name: map-test_postgres-data
+  redis-data:
+    name: map-test_redis-data
+  osrm-data:
+    name: map-test_osrm-data
+
+networks:
+  default:
+    name: map-test-net
