@@ -13,6 +13,8 @@
 #   ./scripts/cloud-up.sh                    운영
 #   ./scripts/cloud-up.sh --test             시험(오버레이·시험 환경파일)
 #   ./scripts/cloud-up.sh --edge             바깥 노출까지 함께
+#   ./scripts/cloud-up.sh --test --micro     메모리 1GB 서버
+#   ./scripts/cloud-up.sh --registry         이미지를 만들지 않고 받아 쓴다
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -21,11 +23,16 @@ ENV_FILE=./.env
 FILES=(-f docker-compose.yml)
 PROFILES=(--profile full)
 LABEL=운영
+MICRO=0
+PULL=0
 
 for arg in "$@"; do
   case "$arg" in
     --test) ENV_FILE=./.env.test; FILES+=(-f docker-compose.test.yml); LABEL=시험 ;;
-    --edge) FILES+=(-f docker-compose.edge.yml); PROFILES+=(--profile edge) ;;
+    # 덧칠 순서가 중요하다. 나중에 붙은 것이 이긴다.
+    --micro) FILES+=(-f docker-compose.micro.yml); MICRO=1 ;;
+    --registry) FILES+=(-f docker-compose.registry.yml); PULL=1 ;;
+    --edge) FILES+=(-f docker-compose.edge.yml); PROFILES+=(--profile edge --profile dns) ;;
     *) echo "모르는 인자: $arg" >&2; exit 2 ;;
   esac
 done
@@ -42,6 +49,11 @@ for key in POSTGRES_PASSWORD HUB_DATABASE_URL GEMINI_API_KEY; do
     exit 1
   fi
 done
+
+if [ "$PULL" = 1 ]; then
+  echo "[$LABEL] 0/4 이미지 받기"
+  dc "${PROFILES[@]}" pull
+fi
 
 echo "[$LABEL] 1/4 저장소 기동"
 dc --profile infra up -d
@@ -74,3 +86,10 @@ dc "${PROFILES[@]}" up -d
 
 echo
 dc ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}'
+
+if [ "$MICRO" = 1 ]; then
+  echo
+  echo "메모리가 작은 서버다. 상태가 정상이어도 실제 요청을 한 번 보내 본다 —"
+  echo "메모리가 모자라 앱이 죽어도 컨테이너는 살아 있고 자원 한도에 걸린"
+  echo "표시도 남지 않아, 겉으로는 정상으로 보인다."
+fi
