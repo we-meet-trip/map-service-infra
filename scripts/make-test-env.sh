@@ -72,7 +72,31 @@ set_kv PLACES_STUB_MODE true
 # (5) 오버레이가 요구하는 표식. 이 값이 없으면 시험 오버레이가 뜨지 않는다.
 set_kv MAP_STACK_ENV test
 
-# (6) 시험 계정은 시험 스택에서만 켠다.
+# (6) 서명 열쇠 한 쌍을 그때그때 만들어 넣는다.
+#     인증을 켜면 이 값이 비어 있을 때 BFF 가 부팅하지 않는다. 비워 두면
+#     인증을 켜 보려는 사람이 매번 손으로 만들어야 하고, 그 번거로움 때문에
+#     시험을 인증 없이만 돌리게 된다 — 운영은 켜 두는데 시험은 그 경로를
+#     한 번도 지나지 않는 상태가 된다.
+#     저장소에 담기지 않는 파일이고 만들 때마다 달라지므로 운영과 섞이지 않는다.
+if command -v openssl >/dev/null 2>&1; then
+  KEYDIR=$(mktemp -d)
+  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+    -out "$KEYDIR/k.pem" 2>/dev/null
+  openssl rsa -in "$KEYDIR/k.pem" -pubout -out "$KEYDIR/k.pub" 2>/dev/null
+  # 설정 파일은 한 줄이어야 하므로 머리말과 줄바꿈을 걷어 낸다.
+  set_kv JWT_PRIVATE_KEY "$(grep -v -- '-----' "$KEYDIR/k.pem" | tr -d '\n')"
+  set_kv JWT_PUBLIC_KEY  "$(grep -v -- '-----' "$KEYDIR/k.pub" | tr -d '\n')"
+  rm -rf "$KEYDIR"
+else
+  echo "openssl 이 없어 서명 열쇠를 만들지 못했다. 인증을 켜려면 직접 넣는다." >&2
+fi
+
+# (7) 인증은 꺼진 채로 둔다. 켜 보려면 이 값만 true 로 바꾸면 된다 —
+#     열쇠와 허용 출처는 위에서 이미 맞춰 두었다.
+set_kv AUTH_ENFORCED false
+set_kv CORS_ALLOWED_ORIGINS "https://test.invalid"
+
+# (8) 시험 계정은 시험 스택에서만 켠다.
 set_kv TESTER_SEED_ENABLED true
 set_kv TESTER_SEED_PASSWORD "$TEST_PW"
 
