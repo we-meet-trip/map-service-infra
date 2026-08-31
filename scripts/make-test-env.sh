@@ -96,6 +96,21 @@ fi
 set_kv AUTH_ENFORCED false
 set_kv CORS_ALLOWED_ORIGINS "https://test.invalid"
 
+# (7-1) 저장 본문과 통신 본문을 감싸는 열쇠를 그때그때 만든다.
+#      본보기 파일의 값은 자리를 보여 주는 용도라 그대로 쓰면 모든 시험
+#      환경이 같은 열쇠를 쓰게 된다. 그리고 통신 열쇠가 비어 있으면 감싸기가
+#      아예 돌지 않아, 시험이 그 경로를 한 번도 지나지 않는다.
+#      두 열쇠를 다른 값으로 두는 이유는 쓰임과 나눠 가지는 상대가 달라서다.
+if command -v openssl >/dev/null 2>&1; then
+  set_kv LOCATION_ENC_ENABLED true
+  set_kv LOCATION_ENC_ACTIVE_KID k1
+  set_kv LOCATION_ENC_KEYS "k1:$(openssl rand -base64 32)"
+  set_kv LOCATION_WIRE_ENABLED true
+  set_kv LOCATION_WIRE_KEY "$(openssl rand -base64 32)"
+else
+  echo "openssl 이 없어 좌표 열쇠를 만들지 못했다. 직접 넣는다." >&2
+fi
+
 # (8) 시험 계정은 시험 스택에서만 켠다.
 set_kv TESTER_SEED_ENABLED true
 set_kv TESTER_SEED_PASSWORD "$TEST_PW"
