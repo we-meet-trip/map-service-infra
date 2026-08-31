@@ -126,6 +126,15 @@ def main() -> int:
     status, _ = http("GET", f"{base}/healthz")
     check("관문이 요청을 받는다", status == 200, f"healthz={status}")
 
+    # 위 /healthz 는 관문이 자답하므로 상류가 죽어도 200 을 준다. 바깥 감시가
+    # 그것만 보면 앱이 멎은 것을 영영 모르므로, 상류까지 실제로 닿는 경로가
+    # 살아 있는지 여기서 함께 본다. 본문까지 보는 이유는 관문이 502 를 감싸
+    # 200 으로 돌려주도록 설정이 바뀌어도 걸리게 하기 위해서다.
+    status, payload = http("GET", f"{base}/healthz/app")
+    check("상류까지 닿는 상태 확인이 열려 있다",
+          status == 200 and payload.get("status") == "UP",
+          f"healthz/app={status} {payload.get('status')}")
+
     status, _ = http("GET", f"{base}/actuator/health")
     # 이 경로가 열려 있으면 설정과 내부 상태가 그대로 나간다.
     check("관리 경로는 바깥에서 막혀 있다", status == 404, f"actuator={status}")
