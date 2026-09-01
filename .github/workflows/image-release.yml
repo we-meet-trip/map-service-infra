@@ -1,0 +1,172 @@
+# 배포에 쓸 세 이미지를 한 번에 만들어 올린다.
+#
+# 배포는 user·agent·hub 셋이 짝이 맞아야 성립한다. 레포마다 따로 만들면 셋이
+# 제각기 다른 시점에 올라가고, 어느 셋이 한 벌인지 남는 자리가 없다. 여기서는
+# 한 번의 실행이 곧 한 벌이다 — 네 레포를 같은 지점에서 받아 같은 이름을
+# 붙이고, 그때의 세 커밋을 함께 적어 둔다.
+#
+# 만드는 일 자체는 scripts/images-push.sh 가 한다. 같은 일을 여기에 다시 쓰면
+# 두 벌이 되어, 한쪽만 고쳐진 채 서로 다른 결과를 내게 된다. 이 파일이 맡는
+# 것은 넷뿐이다 — 레포를 형제로 받고, 판 이름을 정하고, 커밋을 이름에 남기고,
+# 무엇으로 만들었는지 적어 둔다.
+#
+# 서버에서는 이미지를 만들지 않는다. 메모리가 모자라 빌드가 끝나지 않기
+# 때문이고, 그래서 여기서 만든 것을 받아 쓰는 것이 전제다.
+name: image-release
+
+# 아무 가지에 밀 때마다 돌면 안 된다. 이미지가 쌓이는 것보다, 서버가 받아 갈
+# 이름이 뜻하지 않게 늘어나는 쪽이 더 나쁘다. 손으로 켤 때만 돈다.
+#
+# 태그를 밀어 실행하는 길은 두지 않았다. 그 태그는 이 레포의 것인데 만들 코드는
+# 아래 ref 에서 받아오므로, 태그 이름과 실제로 만든 내용이 어긋날 수 있다.
+# 이름이 내용을 가리키지 못하면 나중에 되짚을 때 그 이름을 믿을 수 없다.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "네 레포에서 받아올 지점. 가지·태그·커밋 모두 된다"
+        default: verify/integration
+      tag:
+        description: "이미지 판 이름. 비우면 날짜와 실행 회차로 만든다"
+        default: ""
+
+# 앞의 실행을 끊지 않는다. 올리는 도중에 끊기면 셋 중 일부만 올라간 상태가
+# 남는데, 그 상태는 밖에서 정상과 구분되지 않는다. 기다렸다 차례로 돈다.
+concurrency:
+  group: image-release
+  cancel-in-progress: false
+
+# 필요한 것은 만든 것을 올릴 권한 하나뿐이다. 이 블록을 적으면 여기 없는
+# 권한은 전부 없음이 된다. 네 레포가 공개라 받아오는 데 자격증명이 들어가지
+# 않으므로 읽을 권한도 필요 없다.
+permissions:
+  packages: write
+
+env:
+  IMAGE_REGISTRY: ghcr.io/we-meet-trip
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # 셋을 차례로 만드느라 길다. 여기를 넘기면 어딘가 멈춘 것이다.
+    timeout-minutes: 40
+    steps:
+      # 레포를 그대로 받지 않고 형제로 늘어놓는다. 만드는 스크립트와 compose 가
+      # ../map-service-user 같은 이웃 경로로 만들 자리를 가리키기 때문이다.
+      # 받는 자리를 한 칸 아래로 내려야 그 경로가 맞아떨어진다.
+      #
+      # 익명으로 받는다. 이 레포의 권한을 남의 레포에 쓰면 그 권한이 어디까지
+      # 닿는지 따져야 하는데, 익명으로 받으면 그 질문 자체가 없어진다.
+      #
+      # 받은 자리에서 커밋을 확정해 뒤로 넘긴다. 가지 이름은 실행 도중에도
+      # 움직일 수 있어, 이름만으로는 무엇을 만들었는지 나중에 되짚을 수 없다.
+      - name: 네 레포를 형제로 받기
+        id: src
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p src
+          for repo in infra user agent hub; do
+            dir="src/map-service-$repo"
+            git init -q "$dir"
+            git -C "$dir" remote add origin \
+              "https://github.com/we-meet-trip/map-service-$repo.git"
+            git -C "$dir" fetch -q --depth 1 origin "$REF"
+            git -C "$dir" checkout -q FETCH_HEAD
+          done
+          for svc in user agent hub; do
+            sha="$(git -C "src/map-service-$svc" rev-parse HEAD)"
+            echo "$svc=$sha" >> "$GITHUB_OUTPUT"
+            echo "$svc $sha"
+          done
+
+      # 셋은 반드시 같은 이름을 쓴다. 받아 쓰는 쪽 덧칠 파일이 세 서비스에 같은
+      # 값 하나를 끼워 넣기 때문이다. 그래서 세 커밋을 이 이름에 다 담을 수는
+      # 없고, 커밋은 아래에서 이미지마다 붙는 두 번째 이름에 남긴다.
+      #
+      # 값을 주지 않으면 날짜에 실행 회차를 붙인다. 같은 날 두 번 만들어도
+      # 이름이 겹치지 않아야 한다 — 겹치면 서버가 이미 받아 둔 이름이 가리키는
+      # 내용이 조용히 바뀐다. 날짜는 쓰는 사람의 시간대로 맞춘다.
+      - name: 판 이름 정하기
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="$(TZ=Asia/Seoul date +%Y-%m-%d)-${{ github.run_number }}"
+          fi
+          case "$tag" in
+            *[!A-Za-z0-9._-]*|-*|.*)
+              echo "이름에 쓸 수 없는 글자가 있다: $tag" >&2; exit 1 ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "판 이름: $tag"
+
+      # 기본 도구는 만든 것을 곧바로 올리지 못한다. 올릴 수 있는 도구를 따로
+      # 세운다. 러너가 서버와 같은 구조라 흉내 내기는 일어나지 않는다.
+      - name: 만들 도구 세우기
+        run: docker buildx create --name map --driver docker-container --use
+
+      - name: 레지스트리 로그인
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+      # 만드는 절차는 스크립트가 갖고 있다. 여기서 다시 쓰지 않는 이유는, 두 벌이
+      # 되면 한쪽만 고쳐진 채 서로 다른 결과를 내기 때문이다. 스크립트는 자기
+      # 위치를 기준으로 이웃 레포를 찾으므로 위에서 만든 배치가 그대로 맞는다.
+      - name: 세 이미지 만들어 올리기
+        working-directory: src/map-service-infra
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.tag }}
+        run: ./scripts/images-push.sh
+
+      # 판 이름 하나로는 어느 이미지가 어느 커밋인지 알 수 없다. 이미지마다
+      # 자기 커밋을 담은 이름을 하나 더 붙인다. 다시 만들지 않고 이름만 더하는
+      # 것이라 몇 초면 끝난다.
+      - name: 커밋을 이름에도 남기기
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.tag }}
+          USER_SHA: ${{ steps.src.outputs.user }}
+          AGENT_SHA: ${{ steps.src.outputs.agent }}
+          HUB_SHA: ${{ steps.src.outputs.hub }}
+        run: |
+          set -euo pipefail
+          add() {
+            docker buildx imagetools create \
+              -t "$IMAGE_REGISTRY/map-service-$1:sha-${2:0:7}" \
+              "$IMAGE_REGISTRY/map-service-$1:$IMAGE_TAG"
+          }
+          add user  "$USER_SHA"
+          add agent "$AGENT_SHA"
+          add hub   "$HUB_SHA"
+
+      # 무엇이 한 벌인지 실행 화면에 남긴다. 서버 환경파일에 옮겨 적을 때 보고
+      # 베낄 자리가 있어야 한다.
+      - name: 한 벌 적어 두기
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.tag }}
+          USER_SHA: ${{ steps.src.outputs.user }}
+          AGENT_SHA: ${{ steps.src.outputs.agent }}
+          HUB_SHA: ${{ steps.src.outputs.hub }}
+        run: |
+          {
+            echo "### $IMAGE_TAG"
+            echo
+            echo "| 서비스 | 커밋 |"
+            echo "|---|---|"
+            echo "| user | \`$USER_SHA\` |"
+            echo "| agent | \`$AGENT_SHA\` |"
+            echo "| hub | \`$HUB_SHA\` |"
+            echo
+            echo "서버 환경파일에 넣을 두 줄:"
+            echo '```'
+            echo "IMAGE_REGISTRY=$IMAGE_REGISTRY"
+            echo "IMAGE_TAG=$IMAGE_TAG"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
