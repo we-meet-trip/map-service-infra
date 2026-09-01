@@ -38,7 +38,11 @@ services:
     # 기본 파일과 같은 셸 형태를 유지한다. 배열로 바꾸면 비밀번호를 붙이는
     # 조건부가 함께 사라지는데, 값이 비어 있는 환경에서는 그 사실이 드러나지
     # 않다가 값을 넣는 순간 인증 없이 뜬다.
-    command: ["sh", "-c", "redis-server --appendonly yes --maxmemory 32mb --maxmemory-policy allkeys-lru $${REDIS_PASSWORD:+--requirepass $$REDIS_PASSWORD}"]
+    # 버리는 대상을 만료가 걸린 것으로 한정한다. 모든 키를 대상으로 두면
+    # 아직 확인되지 않은 작업 메시지까지 버려질 수 있는데, 그 키에는 만료가
+    # 없어 캐시와 구분되지 않는다. 그렇게 사라진 작업은 실패 통지도 없이
+    # 사라져, 기다리던 쪽이 사유 없는 시간 초과만 받는다.
+    command: ["sh", "-c", "redis-server --appendonly yes --maxmemory 32mb --maxmemory-policy volatile-lru $${REDIS_PASSWORD:+--requirepass $$REDIS_PASSWORD}"]
     deploy:
       resources:
         limits:
