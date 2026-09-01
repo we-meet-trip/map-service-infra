@@ -49,7 +49,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     # 셋을 차례로 만드느라 길다. 여기를 넘기면 어딘가 멈춘 것이다.
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       # 레포를 그대로 받지 않고 형제로 늘어놓는다. 만드는 스크립트와 compose 가
       # ../map-service-user 같은 이웃 경로로 만들 자리를 가리키기 때문이다.
@@ -105,6 +105,36 @@ jobs:
           esac
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "판 이름: $tag"
+
+      # 여기서만 남의 손을 빌린다. 검사를 각 레포의 검사와 같은 환경에서
+      # 돌려야 하기 때문이다 — 판이 다르면 한쪽에서 통과한 것이 다른 쪽에서
+      # 깨지고, 그 차이는 배포한 뒤에야 드러난다.
+      #
+      # 받아갈 곳에 로그인하기 **전에** 둔다. 검사가 먼저 끝나야 올릴 권한이
+      # 살아 있는 동안 남의 코드가 도는 시간이 없다.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 만들기 전에 돌린다. 여기서 막히면 이미지가 아예 생기지 않는다 —
+      # 검사를 지나지 않은 것이 서버에 뜨는 길을 형식으로 닫는다.
+      #
+      # BFF 는 이미지를 만들 때 검사를 건너뛴다. 만드는 시간을 줄이려고
+      # 그렇게 두었는데, 그러면 아무 데서도 안 도는 상태가 된다. 그 자리를
+      # 여기가 메운다.
+      - name: 세 서비스 검사
+        run: |
+          set -euo pipefail
+          (cd src/map-service-user && ./gradlew --no-daemon clean test)
+          for svc in agent hub; do
+            (cd "src/map-service-$svc" \
+              && pip install -q -r requirements.txt -r requirements-dev.txt \
+              && python -m pytest -q)
+          done
 
       # 기본 도구는 만든 것을 곧바로 올리지 못한다. 올릴 수 있는 도구를 따로
       # 세운다. 러너가 서버와 같은 구조라 흉내 내기는 일어나지 않는다.
