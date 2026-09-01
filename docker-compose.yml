@@ -167,6 +167,12 @@ services:
     container_name: map-service-agent
     <<: *app-env
     restart: unless-stopped
+    # 종료 신호를 받고 정리할 시간을 넉넉히 준다. 이 서비스는 진행 중인
+    # 생성 작업을 기다렸다가 못 끝낸 것에 실패를 알리고 나가도록 되어
+    # 있는데, 기본값 10초는 그 절차를 중간에 끊는다. 끊기면 기다리던
+    # 쪽은 아무 통지도 못 받고 시간 초과까지 그대로 매달린다.
+    # 할 일이 없으면 곧바로 나가므로 평소 배포가 느려지지는 않는다.
+    stop_grace_period: 320s
     profiles: ["backend", "full"]
     depends_on:
       postgres:
