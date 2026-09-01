@@ -13,20 +13,27 @@
 # 만드는 자리를 지우는 이유는, 남겨 두면 이미지가 없을 때 compose 가 조용히
 # 빌드로 넘어가기 때문이다. 작은 서버에서는 그 순간 서버가 멎는다. 여기서는
 # 이미지가 없으면 받아오기에 실패하고 멈추는 편이 낫다.
+#
+# 판 이름에 기본값을 두지 않는 것도 같은 이유다. 기본값이 있으면 서버가
+# 이름을 적지 않은 채로도 뜨는데, 그때 받아 오는 것은 예전에 아무렇게나
+# 올려 둔 이미지다. 무엇이 도는지 어디에도 적히지 않은 채 돌게 된다.
+#
+# yolo 는 만들어 올리지 않는다. vision 갈래라 배포 구성에 들어가지 않기
+# 때문이다. 그 갈래를 켜면 이 줄이 없는 이미지를 찾다가 멈춘다.
 
 services:
   user:
     build: !reset null
-    image: ${IMAGE_REGISTRY:?이미지를 받아올 곳을 정해야 한다}/map-service-user:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:?이미지를 받아올 곳을 정해야 한다}/map-service-user:${IMAGE_TAG:?어느 판을 받을지 정해야 한다}
 
   agent:
     build: !reset null
-    image: ${IMAGE_REGISTRY}/map-service-agent:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY}/map-service-agent:${IMAGE_TAG:?어느 판을 받을지 정해야 한다}
 
   hub:
     build: !reset null
-    image: ${IMAGE_REGISTRY}/map-service-hub:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY}/map-service-hub:${IMAGE_TAG:?어느 판을 받을지 정해야 한다}
 
   yolo:
     build: !reset null
-    image: ${IMAGE_REGISTRY}/map-service-yolo:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY}/map-service-yolo:${IMAGE_TAG:?어느 판을 받을지 정해야 한다}
