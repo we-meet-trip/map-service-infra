@@ -18,6 +18,7 @@ DST=.env.test
 
 if [ -f "$DST" ] && [ "${1:-}" != "--force" ]; then
   echo "이미 있다: $DST (덮어쓰려면 --force)" >&2
+  echo "  --force 로 다시 만들어도 좌표 열쇠와 서명 열쇠는 그대로 옮겨 온다." >&2
   exit 1
 fi
 
@@ -36,6 +37,17 @@ set_kv() {
   else
     printf '%s=%s\n' "$key" "$val" >> "$TMP"
   fi
+}
+
+# 이미 만들어 둔 값을 그대로 가져온다. 없으면 빈 문자열.
+#
+# 다시 만들면 안 되는 값이 있다. 좌표를 봉한 열쇠를 같은 이름에 다른 바이트로
+# 새로 넣으면, 그 열쇠로 봉해 둔 좌표를 영영 열지 못한다 — 되돌릴 옛 값이
+# 어디에도 남지 않고 백업의 암호문도 같은 이유로 못 읽는다. 서명 열쇠를 새로
+# 만들면 발급해 둔 토큰이 전부 무효가 되어 쓰던 사람이 모두 튕긴다.
+prev() {
+  [ -f "$DST" ] || return 0
+  grep -E "^$1=" "$DST" | head -1 | cut -d= -f2- | tr -d '\r'
 }
 
 # (1) 발급처 키를 전부 비운다. example 이 이미 비어 있어도 방어적으로 다시 비운다 —
@@ -81,7 +93,12 @@ set_kv MAP_STACK_ENV test
 #     시험을 인증 없이만 돌리게 된다 — 운영은 켜 두는데 시험은 그 경로를
 #     한 번도 지나지 않는 상태가 된다.
 #     저장소에 담기지 않는 파일이고 만들 때마다 달라지므로 운영과 섞이지 않는다.
-if command -v openssl >/dev/null 2>&1; then
+jwt_priv=$(prev JWT_PRIVATE_KEY)
+jwt_pub=$(prev JWT_PUBLIC_KEY)
+if [ -n "$jwt_priv" ] && [ -n "$jwt_pub" ]; then
+  set_kv JWT_PRIVATE_KEY "$jwt_priv"
+  set_kv JWT_PUBLIC_KEY  "$jwt_pub"
+elif command -v openssl >/dev/null 2>&1; then
   KEYDIR=$(mktemp -d)
   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
     -out "$KEYDIR/k.pem" 2>/dev/null
@@ -106,12 +123,22 @@ set_kv CORS_ALLOWED_ORIGINS "https://test.invalid"
 #      환경이 같은 열쇠를 쓰게 된다. 그리고 통신 열쇠가 비어 있으면 감싸기가
 #      아예 돌지 않아, 시험이 그 경로를 한 번도 지나지 않는다.
 #      두 열쇠를 다른 값으로 두는 이유는 쓰임과 나눠 가지는 상대가 달라서다.
-if command -v openssl >/dev/null 2>&1; then
+enc_keys=$(prev LOCATION_ENC_KEYS)
+enc_kid=$(prev LOCATION_ENC_ACTIVE_KID)
+wire_key=$(prev LOCATION_WIRE_KEY)
+if [ -z "$enc_keys" ] && command -v openssl >/dev/null 2>&1; then
+  enc_keys="k1:$(openssl rand -base64 32)"
+  enc_kid=k1
+fi
+if [ -z "$wire_key" ] && command -v openssl >/dev/null 2>&1; then
+  wire_key=$(openssl rand -base64 32)
+fi
+if [ -n "$enc_keys" ] && [ -n "$wire_key" ]; then
   set_kv LOCATION_ENC_ENABLED true
-  set_kv LOCATION_ENC_ACTIVE_KID k1
-  set_kv LOCATION_ENC_KEYS "k1:$(openssl rand -base64 32)"
+  set_kv LOCATION_ENC_ACTIVE_KID "${enc_kid:-k1}"
+  set_kv LOCATION_ENC_KEYS "$enc_keys"
   set_kv LOCATION_WIRE_ENABLED true
-  set_kv LOCATION_WIRE_KEY "$(openssl rand -base64 32)"
+  set_kv LOCATION_WIRE_KEY "$wire_key"
 else
   echo "openssl 이 없어 좌표 열쇠를 만들지 못했다. 직접 넣는다." >&2
 fi
