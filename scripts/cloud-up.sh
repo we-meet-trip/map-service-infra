@@ -25,6 +25,7 @@ PROFILES=(--profile full)
 LABEL=운영
 MICRO=0
 PULL=0
+ROUTING=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -33,6 +34,9 @@ for arg in "$@"; do
     --micro) FILES+=(-f docker-compose.micro.yml); MICRO=1 ;;
     --registry) FILES+=(-f docker-compose.registry.yml); PULL=1 ;;
     --edge) FILES+=(-f docker-compose.edge.yml); PROFILES+=(--profile edge --profile dns) ;;
+    # 경로 엔진을 함께 올린다. 켜지 않으면 hub 가 주소를 못 찾아 구간마다
+    # 실패 왕복을 반복하고, 화면에는 도로를 따르지 않는 직선이 그려진다.
+    --routing) PROFILES+=(--profile routing); ROUTING=1 ;;
     *) echo "모르는 인자: $arg" >&2; exit 2 ;;
   esac
 done
@@ -49,6 +53,18 @@ for key in POSTGRES_PASSWORD HUB_DATABASE_URL GEMINI_API_KEY; do
     exit 1
   fi
 done
+
+# 경로 데이터는 이미지 안이 아니라 따로 만들어 둔 저장 자리에 있다. 없으면
+# 엔진이 뜨자마자 죽는데, 그 모습은 다른 기동 실패와 구분되지 않는다.
+if [ "$ROUTING" = 1 ]; then
+  missing=$(docker run --rm -v osrm-data:/data alpine sh -c \
+    'for f in /data/foot/korea.osrm /data/bicycle/korea.osrm; do [ -e "$f" ] || echo "$f"; done' 2>/dev/null)
+  if [ -n "$missing" ]; then
+    echo "경로 데이터가 없다: $missing" >&2
+    echo "먼저 ./scripts/osrm-rebuild.sh 로 만든다. 내려받기와 손질에 시간이 걸린다." >&2
+    exit 1
+  fi
+fi
 
 if [ "$PULL" = 1 ]; then
   echo "[$LABEL] 0/4 이미지 받기"
