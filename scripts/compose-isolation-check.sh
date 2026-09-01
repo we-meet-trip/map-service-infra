@@ -6,6 +6,10 @@
 # 서비스(osrm-*, yolo)가 갈라지지 않은 채로 남아 있어도 통과해 버리기 때문이다.
 # 그 상태로 나중에 --profile routing 을 붙이면 시험이 운영 그래프를 물게 된다.
 #
+# 만들어 쓰는 조합과 받아 쓰는 조합을 둘 다 본다. 실제 배포는 받아 쓰는
+# 쪽인데 그 조합을 한 번도 안 보면, 정작 서버에 올라가는 구성이 검사 밖에
+# 남는다.
+#
 # 도커 데몬은 필요 없다. 렌더링만 한다.
 set -euo pipefail
 
@@ -19,15 +23,27 @@ for f in "$PROD_ENV" "$TEST_ENV"; do
   [ -f "$f" ] || { echo "환경파일이 없다: $f" >&2; exit 1; }
 done
 
-render() {
-  docker compose --env-file "$1" -f docker-compose.yml ${2:+-f "$2"} \
-    "${PROFILES[@]}" config --format json
+# 받아 쓰는 조합은 어느 판을 받을지가 비어 있으면 렌더링 자체가 멈춘다.
+# 이 검사는 이름이 겹치는지만 보므로 값의 내용은 상관없다. 여기서만 세운다.
+export IMAGE_REGISTRY="${IMAGE_REGISTRY:-겹침검사}"
+export IMAGE_TAG="${IMAGE_TAG:-겹침검사}"
+
+# 받아 쓰는 조합에서는 카메라 갈래를 빼고 본다. 그 갈래는 만들어 올리는
+# 목록에 없어서, 켜면 렌더링이 멈추는 것이 정상 동작이다. 그 사실 자체는
+# 아래에서 따로 확인한다.
+RENDER_PROFILES=("${PROFILES[@]}")
+
+render() {  # $1=환경파일  $2..=덧칠 파일들
+  local env=$1; shift
+  local files=(-f docker-compose.yml)
+  local f
+  for f in "$@"; do files+=(-f "$f"); done
+  docker compose --env-file "$env" "${files[@]}" "${RENDER_PROFILES[@]}" config --format json
 }
 
-PROD_JSON=$(render "$PROD_ENV" "")
-TEST_JSON=$(render "$TEST_ENV" docker-compose.test.yml)
-
-PROD_JSON="$PROD_JSON" TEST_JSON="$TEST_JSON" python3 - <<'PY'
+compare() {  # $1=이름  $2=운영 json  $3=시험 json
+  echo "### $1"
+  LABEL="$1" PROD_JSON="$2" TEST_JSON="$3" python3 - <<'AXES'
 import json, os, sys
 
 def axes(doc):
@@ -66,5 +82,25 @@ for axis in prod:
 if bad:
     print(f"겹침 {bad}건 — 시험 스택이 운영을 침범한다", file=sys.stderr)
     sys.exit(1)
-print("겹침 0건")
-PY
+AXES
+}
+
+compare "만들어 쓰기" \
+  "$(render "$PROD_ENV")" \
+  "$(render "$TEST_ENV" docker-compose.test.yml)"
+
+RENDER_PROFILES=(--profile infra --profile backend --profile full --profile routing)
+compare "받아 쓰기" \
+  "$(render "$PROD_ENV" docker-compose.registry.yml)" \
+  "$(render "$TEST_ENV" docker-compose.test.yml docker-compose.registry.yml docker-compose.micro.yml)"
+
+# 받아 쓰는 조합에 카메라 갈래를 켜면 만들 자리도 받을 이름도 없어 멈춰야 한다.
+# 여기가 통과하면 작은 서버가 조용히 빌드로 넘어가는 길이 다시 열린 것이다.
+if docker compose --env-file "$PROD_ENV" \
+     -f docker-compose.yml -f docker-compose.registry.yml \
+     --profile vision config -q >/dev/null 2>&1; then
+  echo "받아 쓰기에서 카메라 갈래가 그대로 뜬다" >&2
+  exit 1
+fi
+
+echo "겹침 0건"

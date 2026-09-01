@@ -35,5 +35,8 @@ services:
     image: ${IMAGE_REGISTRY}/map-service-hub:${IMAGE_TAG:?어느 판을 받을지 정해야 한다}
 
   yolo:
+    # 받아올 이름을 주지 않는다. 이 갈래는 만들어 올리는 목록에 없어서 받을
+    # 것이 애초에 없다. 만드는 자리만 지워 두면 갈래를 켰을 때 만들 것도
+    # 받을 것도 없다고 이름을 대며 멈춘다 — 만드는 자리를 남기면 작은 서버가
+    # 조용히 빌드로 넘어가고, 받을 이름을 적으면 없는 것을 받으러 간다.
     build: !reset null
-    image: ${IMAGE_REGISTRY}/map-service-yolo:${IMAGE_TAG:?어느 판을 받을지 정해야 한다}
