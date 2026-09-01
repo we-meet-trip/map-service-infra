@@ -52,7 +52,16 @@ done
 
 if [ "$PULL" = 1 ]; then
   echo "[$LABEL] 0/4 이미지 받기"
-  dc "${PROFILES[@]}" pull
+  # 받는 곳은 네 가지 사정을 모두 같은 글자(denied)로 답한다 — 로그인을 안
+  # 했을 때, 토큰이 만료됐을 때, 판 이름을 잘못 적었을 때, 이름이 바뀌었을 때.
+  # 그 넷을 구분해 주지 않으므로 여기서 무엇을 봐야 하는지 대신 적어 준다.
+  if ! dc "${PROFILES[@]}" pull; then
+    echo "이미지를 받지 못했다. 아래를 차례로 본다." >&2
+    echo "  1) 이 계정으로 받을 수 있는가 — docker login ghcr.io (패키지가 비공개면 필요하다)" >&2
+    echo "  2) 판 이름이 실제로 올라간 이름인가 — $ENV_FILE 의 IMAGE_TAG" >&2
+    echo "  3) sudo 로 돌리고 있다면 로그인한 계정과 같은 계정인가" >&2
+    exit 1
+  fi
 fi
 
 echo "[$LABEL] 1/4 저장소 기동"
@@ -82,10 +91,18 @@ fi
 echo "     hub_data 표 ${tables}개"
 
 echo "[$LABEL] 4/4 애플리케이션 기동"
-dc "${PROFILES[@]}" up -d
+# 상태가 정상이 될 때까지 기다린다. 기다리지 않으면 표 손질에 실패해 뜨다
+# 죽기를 반복하는 상태에서도 이 스크립트가 성공으로 끝나고, 바로 아래 목록은
+# 아직 기동 중이라 그 실패와 구분되지 않는다.
+if ! dc "${PROFILES[@]}" up -d --wait --wait-timeout 180; then
+  echo "정해진 시간 안에 정상이 되지 않았다. 어느 서비스인지 아래에서 보고" >&2
+  echo "그 서비스의 기록을 본다: dc logs <서비스>" >&2
+  dc ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}' >&2
+  exit 1
+fi
 
 echo
-dc ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}'
+dc ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}\t{{.Image}}'
 
 if [ "$MICRO" = 1 ]; then
   echo
