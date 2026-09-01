@@ -101,6 +101,7 @@ def main() -> int:
     proxy = f"{prefix}-proxy-1" if is_test else "map-service-proxy"
     hub = f"{prefix}-hub-1" if is_test else "map-service-hub"
     user = f"{prefix}-user-1" if is_test else "map-service-user"
+    agent = f"{prefix}-agent-1" if is_test else "map-service-agent"
 
     db = env_value(env_file, "POSTGRES_DB") or "map"
     db_user = env_value(env_file, "POSTGRES_USER") or "map"
@@ -261,10 +262,15 @@ def main() -> int:
           "; ".join(f"{n}={m[:60]}" for n, m in boot_fail[:3]))
 
     # 어느 서비스든 예외 자취가 남았으면 그 자체가 신호다.
-    for name, cid in (("hub", hub), ("BFF", user), ("agent", f"{prefix}-agent-1")):
+    # 로그를 못 읽었으면 통과로 보지 않는다. 이름이 어긋나면 명령이 조용히
+    # 실패해 빈 문자열이 오는데, 그것을 "예외가 없다" 로 읽으면 실제로 예외를
+    # 쏟고 있어도 초록이 된다.
+    for name, cid in (("hub", hub), ("BFF", user), ("agent", agent)):
         log = sh("docker", "logs", "--tail", "400", cid)
         check(f"{name} 로그에 예외 자취가 없다",
-              "Traceback" not in log and "Exception in thread" not in log)
+              bool(log) and "Traceback" not in log
+              and "Exception in thread" not in log,
+              "로그를 읽지 못했다" if not log else "")
 
     proxy_log = sh("docker", "logs", "--tail", "300", proxy)
     check("관문 기록에 좌표 질의가 없다",
