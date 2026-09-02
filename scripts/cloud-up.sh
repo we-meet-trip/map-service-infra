@@ -95,6 +95,17 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 
+# 아래 단계는 표를 바꾸고 되돌아가지 않는다. 백업의 옳은 자리는 여기 하나뿐이다 —
+# 지나간 뒤에 뜨면 이미 바뀐 것을 뜬다. 뜨지 못하면 되돌릴 자리가 없다는 뜻이므로
+# 표를 건드리지 않고 멈춘다.
+echo "[$LABEL] 표를 바꾸기 전에 지금 상태를 떠 둔다"
+backup_args=()
+[ "$ENV_FILE" = ./.env.test ] && backup_args=(--test)
+if ! ./scripts/pg-backup.sh "${backup_args[@]}"; then
+  echo "백업하지 못했다. 되돌릴 자리가 없으므로 표를 바꾸는 단계로 넘어가지 않는다." >&2
+  exit 1
+fi
+
 echo "[$LABEL] 3/4 hub 표 만들기"
 dc run --rm --no-deps --entrypoint alembic hub upgrade head
 
