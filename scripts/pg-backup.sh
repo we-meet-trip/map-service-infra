@@ -21,10 +21,13 @@
 #     docker compose --env-file ./.env -f docker-compose.yml \
 #       exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
 #
-#   되돌릴 때 이 덤프만으로는 모자란다. pg_dump 는 DB 하나만 담고 역할과
-#   비밀번호는 담지 않는데, 스키마 하나는 소유자가 따로 있다. 빈 저장소에
-#   넣을 때는 db/init 의 두 파일을 먼저 돌려 역할과 스키마를 만들어야 한다 —
-#   cloud-up.sh 가 기동 때 하는 일과 같다.
+#   되돌리는 순서가 중요하다. pg_dump 는 DB 하나만 담고 역할과 비밀번호는
+#   담지 않는데, 스키마 하나는 소유자가 따로 있다. 그래서 빈 저장소를 먼저
+#   띄워 db/init 이 역할을 만들게 한 뒤 이 덤프를 붓는다. 덤프가 지울 것을
+#   먼저 지우므로 초기화가 만들어 둔 스키마와 부딪히지 않는다.
+#
+#   실제로 되살려 본 적 없는 백업은 백업이 아니다. 분기에 한 번은 빈 저장소에
+#   부어 표 개수와 행 수를 원본과 대조한다.
 #
 # cron 등록 예(매일 04:00):
 #   0 4 * * * cd /path/to/map-service-infra && BACKUP_REMOTE=사용자@호스트:/경로 \
@@ -77,7 +80,14 @@ echo "[pg-backup] dumping ${POSTGRES_DB} as ${POSTGRES_USER} -> ${OUT}"
 # 받는 파일을 먼저 만들고 다 뜬 것만 제자리로 옮긴다. 곧바로 최종 이름에 쓰면
 # 뜨다 실패했을 때 이미 잘라 둔 빈 파일이 성공한 백업 자리에 남는다.
 # -T: TTY 비할당(cron 안전).
-dc exec -T postgres pg_dump -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+# --clean --if-exists 로 뜬다. 이것이 없으면 되살릴 수 없다.
+#
+# 빈 저장소는 처음 뜰 때 초기화가 스키마를 먼저 만든다. 그 위에 덤프를 부으면
+# 첫 줄 CREATE SCHEMA 에서 이미 있다며 멈추고, 아무것도 복원되지 않는다.
+# 오류를 무시하고 밀어 넣으면 이번엔 실패를 못 보게 된다.
+# 지울 것을 먼저 지우게 만들면 초기화가 무엇을 만들어 두었든 그대로 덮인다.
+dc exec -T postgres pg_dump --clean --if-exists \
+  -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
   | gzip -c > "${PART}"
 mv "${PART}" "${OUT}"
 
