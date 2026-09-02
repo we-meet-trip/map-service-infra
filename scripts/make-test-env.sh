@@ -52,7 +52,7 @@ prev() {
 
 # (1) 발급처 키를 전부 비운다. example 이 이미 비어 있어도 방어적으로 다시 비운다 —
 #     누군가 템플릿에 실제 값을 적어 넣었을 때 그것이 시험으로 넘어가면 안 된다.
-for k in KAKAO_REST_API_KEY KAKAO_MAPS_JS_KEY KAKAO_OAUTH_CLIENT_ID \
+for k in KAKAO_REST_API_KEY KAKAO_OAUTH_CLIENT_ID \
          KAKAO_OAUTH_CLIENT_SECRET KMA_SERVICE_KEY AIRKOREA_SERVICE_KEY \
          TOUR_API_SERVICE_KEY NAVER_CLIENT_ID NAVER_CLIENT_SECRET \
          NAVER_MAP_CLIENT_ID NAVER_MAP_CLIENT_ID_FALLBACK GOOGLE_MAPS_API_KEY \
