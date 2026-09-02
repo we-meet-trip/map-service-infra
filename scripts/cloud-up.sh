@@ -130,7 +130,23 @@ dc exec -T \
   postgres bash /docker-entrypoint-initdb.d/10-admin.sh
 
 echo "[$LABEL] 3/4 hub 표 만들기"
-dc run --rm --no-deps --entrypoint alembic hub upgrade head
+# 표를 손질하지 못했는데 넘어가면 안 된다. 이 도구는 리비전을 못 찾아도 0 으로
+# 끝나므로 종료코드만으로는 실패를 알 수 없다 — 실제 판이 코드가 아는 자리로
+# 옮겨졌는지를 뒤에서 다시 확인한다.
+#
+# 되돌리는 배포에서 특히 그렇다. 새 판이 표를 한 단계 올려 두면 옛 이미지의
+# 도구는 그 리비전을 모른다. 그때 "못 찾았다" 한 줄만 남기고 지나가면, 표는
+# 새 판이고 코드는 옛 판인 상태로 뜬다.
+migrate_log=$(dc run --rm --no-deps --entrypoint alembic hub upgrade head 2>&1) || true
+printf '%s\n' "$migrate_log"
+if printf '%s' "$migrate_log" | grep -q "Can't locate revision"; then
+  cur=$(dc exec -T postgres psql -U "$db_user" -d "$db_name" -tAc \
+    "select version_num from hub_data.alembic_version" | tr -d '[:space:]')
+  echo "이 판의 표 손질 도구는 지금 표의 판($cur)을 모른다." >&2
+  echo "  되돌리는 중이라면, 되돌리기 전 판으로 먼저 표를 한 단계 내린 뒤에 옮긴다:" >&2
+  echo "    dc run --rm --no-deps --entrypoint alembic hub downgrade <되돌릴 판>" >&2
+  exit 1
+fi
 
 tables=$(dc exec -T postgres psql -U "$db_user" -d "$db_name" -tAc \
   "select count(*) from information_schema.tables where table_schema='hub_data'" | tr -d '[:space:]')
