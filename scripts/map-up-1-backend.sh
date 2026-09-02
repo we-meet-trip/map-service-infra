@@ -38,7 +38,7 @@ echo "== [1/5] postgres · redis 기동 =="
 echo "  postgres 준비 대기..."
 pg_ok=0
 for i in $(seq 1 30); do
-  if "${COMPOSE[@]}" exec -T postgres pg_isready -U map -d map >/dev/null 2>&1; then pg_ok=1; break; fi
+  if "${COMPOSE[@]}" exec -T postgres pg_isready -h 127.0.0.1 -U map -d map >/dev/null 2>&1; then pg_ok=1; break; fi
   sleep 2
 done
 [ "$pg_ok" = 1 ] || { echo "  ✗ postgres 준비 타임아웃"; exit 1; }

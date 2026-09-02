@@ -74,7 +74,10 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      # -h 를 준다. 빼면 초기화 중에 잠깐 뜨는 내부 서버에도 응답이 와서,
+      # 아직 받을 수 없는 상태를 준비됐다고 읽는다. 빈 볼륨 첫 부팅에서만
+      # 열리는 창이라 평소에는 드러나지 않는다.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 6

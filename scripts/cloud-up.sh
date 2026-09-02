@@ -106,6 +106,24 @@ if ! ./scripts/pg-backup.sh "${backup_args[@]}"; then
   exit 1
 fi
 
+# 저장소 초기화를 다시 적용한다.
+#
+# 이 두 파일은 데이터 자리가 빌 때만 저절로 돈다. 두 번째 배포부터는 스키마나
+# 권한이 바뀌어도 반영되지 않는데, 아래의 표 개수 확인은 그대로 통과한다.
+# 둘 다 몇 번을 돌려도 같은 결과라 매번 건다.
+#
+# psql 은 파일 안에서 오류가 나도 0 으로 끝난다. 그대로 두면 초기화가 실패해도
+# 다음 단계로 넘어가, 이 스크립트가 없애려는 조용한 통과를 새로 하나 만든다.
+#
+# 비밀번호는 환경파일에서 다시 준다. 컨테이너가 들고 있는 값은 만들어질 때
+# 박힌 것이라, 환경파일만 고친 상태에서 재적용하면 옛 값으로 되맞춰 버린다.
+echo "[$LABEL] 저장소 초기화 다시 적용"
+dc exec -T postgres psql -v ON_ERROR_STOP=1 -U "$db_user" -d "$db_name" \
+  -f /docker-entrypoint-initdb.d/00-create-schemas.sql
+dc exec -T \
+  -e MAP_ADMIN_PASSWORD="$(grep -E '^MAP_ADMIN_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)" \
+  postgres bash /docker-entrypoint-initdb.d/10-admin.sh
+
 echo "[$LABEL] 3/4 hub 표 만들기"
 dc run --rm --no-deps --entrypoint alembic hub upgrade head
 
