@@ -92,7 +92,7 @@ FOLD = {
         (r"oO0OoO0OoO0Oo|Redis version|Running mode|Configuration loaded", "boot", "기동 배너"),
     ],
     "hub": [
-        (r"GET /health .*200", "run", "상태 확인. 개수가 0 이 되면 그 자체가 신호다"),
+        (r"GET /health(/ready)? .*200", "run", "상태 확인. 개수가 0 이 되면 그 자체가 신호다"),
         (r'INFO:\s+[\d.]+:\d+ - "(GET|POST|PUT|DELETE|PATCH) [^"]*" (2\d\d|3\d\d|40[0-4])',
          "any", "접근 기록. 5xx 는 위에서 실패로 센다"),
         (r"polling skipped — 키가 없어", "any", "시험은 발급처를 안 부른다. 운영이면 위에서 실패로 센다"),
@@ -110,7 +110,7 @@ FOLD = {
         (r"Added job |Scheduler started|Application startup complete", "boot", "기동 안내"),
     ],
     "agent": [
-        (r"GET /health .*200", "run", "상태 확인. 개수가 0 이 되면 그 자체가 신호다"),
+        (r"GET /health(/ready)? .*200", "run", "상태 확인. 개수가 0 이 되면 그 자체가 신호다"),
         (r'INFO:\s+[\d.]+:\d+ - "(GET|POST|PUT|DELETE|PATCH) [^"]*" (2\d\d|3\d\d|40[0-4])',
          "any", "접근 기록. 5xx 는 위에서 실패로 센다"),
         (r"Application startup complete|Started server process|Waiting for application", "boot", "기동 안내"),

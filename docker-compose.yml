@@ -152,6 +152,15 @@ services:
     command: ["osrm-routed", "--algorithm", "mld", "--mmap", "1", "/data/foot/korea.osrm"]
     ports:
       - "127.0.0.1:5000:5000"
+    healthcheck:
+      # 뿌리 주소는 그래프를 읽지 않고도 답한다. 좌표를 도로에 붙여 보는 조회로
+      # 물어야 포트만 열린 상태와 길을 낼 수 있는 상태가 갈린다.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5000/nearest/v1/foot/126.9780,37.5665 | grep -q '\"code\":\"Ok\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # 그래프를 여는 동안의 실패는 세지 않는다.
+      start_period: 30s
     volumes:
       - osrm-data:/data:ro
 
@@ -174,6 +183,15 @@ services:
     command: ["osrm-routed", "--algorithm", "mld", "--mmap", "1", "/data/bicycle/korea.osrm"]
     ports:
       - "127.0.0.1:5001:5000"
+    healthcheck:
+      # 뿌리 주소는 그래프를 읽지 않고도 답한다. 좌표를 도로에 붙여 보는 조회로
+      # 물어야 포트만 열린 상태와 길을 낼 수 있는 상태가 갈린다.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5000/nearest/v1/bicycle/126.9780,37.5665 | grep -q '\"code\":\"Ok\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # 그래프를 여는 동안의 실패는 세지 않는다.
+      start_period: 30s
     volumes:
       - osrm-data:/data:ro
 
@@ -245,10 +263,12 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)\" || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3).status==200 else 1)\" || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
+      # 저장소에 처음 붙는 동안의 실패는 세지 않는다.
+      start_period: 20s
 
   # hub — 외부 데이터 게이트웨이 애플리케이션.
   # postgres / redis 가 살아있어야 기동된다.
@@ -275,10 +295,12 @@ services:
     ports:
       - "127.0.0.1:8001:8000"
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)\" || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3).status==200 else 1)\" || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
+      # 저장소에 처음 붙는 동안의 실패는 세지 않는다.
+      start_period: 20s
 
   # yolo — 카메라 실시간 인식 서비스 (YOLO 추론 + Gemini Vision 식별).
   # 클라이언트가 WebSocket(/ws/vision)으로 프레임을 보내면 객체를 찾아
