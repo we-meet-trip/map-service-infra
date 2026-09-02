@@ -93,6 +93,8 @@ FOLD = {
     ],
     "hub": [
         (r"GET /health(/ready)? .*200", "run", "상태 확인. 개수가 0 이 되면 그 자체가 신호다"),
+        (r"GET /health/ready .*503|cache ping failed", "any",
+         "저장소가 끊긴 동안의 준비 확인. 되살아났는지는 위에서 짝으로 본다"),
         (r'INFO:\s+[\d.]+:\d+ - "(GET|POST|PUT|DELETE|PATCH) [^"]*" (2\d\d|3\d\d|40[0-4])',
          "any", "접근 기록. 5xx 는 위에서 실패로 센다"),
         (r"polling skipped — 키가 없어", "any", "시험은 발급처를 안 부른다. 운영이면 위에서 실패로 센다"),
@@ -111,6 +113,8 @@ FOLD = {
     ],
     "agent": [
         (r"GET /health(/ready)? .*200", "run", "상태 확인. 개수가 0 이 되면 그 자체가 신호다"),
+        (r"GET /health/ready .*503|streams ping failed", "any",
+         "저장소가 끊긴 동안의 준비 확인. 되살아났는지는 위에서 짝으로 본다"),
         (r'INFO:\s+[\d.]+:\d+ - "(GET|POST|PUT|DELETE|PATCH) [^"]*" (2\d\d|3\d\d|40[0-4])',
          "any", "접근 기록. 5xx 는 위에서 실패로 센다"),
         (r"Application startup complete|Started server process|Waiting for application", "boot", "기동 안내"),
@@ -119,6 +123,21 @@ FOLD = {
         (r"langgraph checkpointer ready|lifespan initialized", "boot", "기동 안내"),
     ],
     "user": [
+        (r"^java\.net\.UnknownHostException: redis\b", "any",
+         "저장소 이름이 잠시 풀리지 않았다. 되살아났는지는 아래에서 짝으로 본다"),
+        (r"^Caused by: io\.lettuce\.core\.RedisCommandTimeoutException", "any",
+         "위 예외의 뿌리. 저장소가 끊긴 동안의 증상"),
+        (r"QueryTimeoutException: Redis command timed out", "any",
+         "저장소가 끊긴 동안의 증상. 되살아났는지는 아래에서 짝으로 본다"),
+        # 자취 줄만 접는다. 머리 줄은 따로 판정되므로, 모르는 예외는 그대로 드러난다.
+        (r"^\s+at [\w.$/]+\(|^\s+\.\.\. \d+ (more|common frames omitted)", "any",
+         "위 예외에 딸린 자취"),
+        (r"Cannot reconnect to|Reconnected to", "any",
+         "저장소가 끊긴 동안의 재접속 시도. 되살아났는지는 아래에서 짝으로 본다"),
+        (r"stream 구독이 비활성 상태여서 재구독함", "any",
+         "지켜보던 쪽이 끊긴 구독을 스스로 되살린 자취"),
+        (r"Redis health check failed|reclaim pending query failed", "any",
+         "저장소가 끊긴 동안의 증상. 되살아났는지는 아래에서 짝으로 본다"),
         (r"spring\.jpa\.open-in-view is enabled", "boot", "설정 안내"),
         # 기동 배너. 앞머리에 날짜가 없고 콜론도 없는 줄은 이 배너뿐이다 —
         # 스프링이 남기는 진짜 기록은 전부 날짜로 시작하고, 그 밖의 오류도
@@ -184,7 +203,8 @@ FATAL = [
     (r"osrm route failed", "경로 엔진이 답하지 못했다"),
     (r"shutdown grace exceeded|did not settle within grace", "정리 절차가 시간 안에 못 끝났다"),
     (r"MISCONF", "저장이 막혀 있다"),
-    (r'"(GET|POST|PUT|DELETE|PATCH) [^"]*" 5\d\d', "관문이 5xx 를 돌려줬다"),
+    (r'"(GET|POST|PUT|DELETE|PATCH) (?!/health/ready )[^"]*" 5\d\d',
+     "관문이 5xx 를 돌려줬다"),
 ]
 
 # 운영에서만 실패로 세는 것. 시험에서는 정상이라 접는다.
@@ -203,6 +223,14 @@ NUMERIC = [
 
 # 짝이 있어야 하는 줄. 앞이 나오면 뒤가 따라와야 한다.
 PAIRED = {
+    "hub": [
+        (r"cache ping failed", r"GET /health/ready .*200", "캐시가 끊긴 뒤 준비 확인이 돌아오지 않았다"),
+        (r"GET /health/ready .*503", r"GET /health/ready .*200", "준비 확인이 접힌 채로 남았다"),
+    ],
+    "agent": [
+        (r"streams ping failed", r"GET /health/ready .*200", "저장소가 끊긴 뒤 준비 확인이 돌아오지 않았다"),
+        (r"GET /health/ready .*503", r"GET /health/ready .*200", "준비 확인이 접힌 채로 남았다"),
+    ],
     "user": [
         (r"Cannot reconnect to", r"Reconnected to", "저장소에 다시 붙지 못했다"),
         (r"stream poll error", r"재구독", "스트림 구독이 되살아나지 않았다"),
@@ -293,10 +321,14 @@ def audit_service(svc: str, cid: str) -> dict:
               "" if want in body else "그 일을 하지 않았다")
 
     for pat, mate, why in PAIRED.get(svc, []):
-        n_a = len(re.findall(pat, body))
-        if n_a:
-            check(f"{svc} '{pat[:24]}' 에 짝이 있다",
-                  len(re.findall(mate, body)) >= n_a, why)
+        # 횟수로 견주면 안 된다. 다시 붙으려는 시도는 여러 줄 남기고 성공은
+        # 한 줄만 남기므로, 제대로 되살아났는데도 모자란 것으로 읽힌다.
+        # 마지막 사고 뒤에 되살아난 줄이 있는지만 본다.
+        bad = [m.end() for m in re.finditer(pat, body)]
+        if bad:
+            good = [m.end() for m in re.finditer(mate, body)]
+            check(f"{svc} '{pat[:24]}' 뒤에 되살아난 줄이 있다",
+                  bool(good) and max(good) > max(bad), why)
 
     check(f"{svc} 곧바로 실패로 세는 줄이 없다", not fatals,
           "; ".join(fatals[:2]))
