@@ -46,6 +46,30 @@ def sh(*args: str) -> str:
     return subprocess.run(args, capture_output=True, text=True).stdout.strip()
 
 
+def logs(cid: str, stream: str = "both") -> str:
+    """컨테이너가 이번에 뜬 뒤로 남긴 것을 전부 읽는다.
+
+    끝에서 몇 줄만 읽으면 안 된다. 상태 확인이 몇 분에 한 번씩 줄을 남기는
+    서비스에서는 그 줄이 창을 채워, 정작 봐야 할 부팅 기록이 밀려난다. 그러면
+    "부팅 때 실패한 것이 없다" 는 검사가 볼 것이 없어서 늘 통과한다.
+
+    다시 뜬 적이 있으면 도커는 이전 생애까지 들고 있으므로 시작 시각으로 자른다.
+
+    관문은 접근 기록을 표준출력에, 오류를 표준오류에 낸다. 섞어 읽으면 좌표가
+    새는지 보는 검사에 상한이 걸린 기록이 함께 들어와 서로를 가린다.
+    """
+    started = sh("docker", "inspect", cid, "--format", "{{.State.StartedAt}}")
+    args = ["docker", "logs", cid]
+    if started:
+        args += ["--since", started]
+    r = subprocess.run(args, capture_output=True, text=True)
+    if stream == "out":
+        return r.stdout.strip()
+    if stream == "err":
+        return r.stderr.strip()
+    return (r.stdout + r.stderr).strip()
+
+
 def _body(raw: str) -> dict:
     """본문을 사전으로 접는다.
 
@@ -217,7 +241,7 @@ def main() -> int:
                      token)
     check("좌표를 쓰는 조회가 동작한다", status == 200, f"status={status}")
 
-    hub_log = sh("docker", "logs", "--tail", "200", hub)
+    hub_log = logs(hub)
     if wire_on:
         opened = "location seal opened" in hub_log
         check("hub 가 감싼 좌표를 열어 처리한다", opened)
@@ -257,6 +281,11 @@ def main() -> int:
     # 부팅 때 실패한 예약 작업이 있는지 본다. hub 는 이것들이 전부 죽어도
     # 상태 확인에는 정상이라고 답하므로, 로그를 보지 않으면 날씨와 코스가
     # 영영 채워지지 않는 것을 아무도 모른다.
+    # 오류를 찾기 전에 부팅 기록을 실제로 읽었는지부터 본다. 못 읽은 채로
+    # "실패가 없다" 를 통과시키면, 전부 실패했을 때와 구분되지 않는다.
+    check("hub 부팅 기록을 읽었다", "Scheduler started" in hub_log,
+          "부팅 자취가 없다 — 창이 막혔거나 아직 안 떴다")
+
     boot_fail = re.findall(r"startup task (\S+) failed: ([^\n]+)", hub_log)
     check("부팅 때 실패한 예약 작업이 없다", not boot_fail,
           "; ".join(f"{n}={m[:60]}" for n, m in boot_fail[:3]))
@@ -266,17 +295,17 @@ def main() -> int:
     # 실패해 빈 문자열이 오는데, 그것을 "예외가 없다" 로 읽으면 실제로 예외를
     # 쏟고 있어도 초록이 된다.
     for name, cid in (("hub", hub), ("BFF", user), ("agent", agent)):
-        log = sh("docker", "logs", "--tail", "400", cid)
+        log = logs(cid)
         check(f"{name} 로그에 예외 자취가 없다",
               bool(log) and "Traceback" not in log
               and "Exception in thread" not in log,
               "로그를 읽지 못했다" if not log else "")
 
-    proxy_log = sh("docker", "logs", "--tail", "300", proxy)
+    proxy_log = logs(proxy, "out")
     check("관문 기록에 좌표 질의가 없다",
           not re.search(r"lat=\d|lng=\d", proxy_log))
 
-    user_log = sh("docker", "logs", "--tail", "400", user)
+    user_log = logs(user)
     check("BFF 기록에 좌표가 없다",
           not re.search(r"35\.1532|129\.1187|광안리", user_log))
 
