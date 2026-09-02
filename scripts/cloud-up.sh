@@ -56,6 +56,12 @@ done
 
 # 경로 데이터는 이미지 안이 아니라 따로 만들어 둔 저장 자리에 있다. 없으면
 # 엔진이 뜨자마자 죽는데, 그 모습은 다른 기동 실패와 구분되지 않는다.
+#
+# korea.osrm 이라는 파일은 없다. 그건 접두사이고 실제로는 korea.osrm.* 여러
+# 개다. 접두사를 파일로 알고 확인하면 데이터가 온전해도 늘 없다고 답한다.
+#
+# 손질은 세 단계로 나뉘고 중간에 끊길 수 있다. 앞 단계 산출물은 남고 뒤
+# 단계 것만 없는데 엔진은 뒤 단계 것을 읽으므로, 단계마다 하나씩 본다.
 if [ "$ROUTING" = 1 ]; then
   # 볼륨 이름을 렌더링에서 가져온다. 못박아 두면 시험 스택에서 운영 볼륨을
   # 보고 판단해, 시험 쪽 자리가 비어 있어도 통과시킨다.
@@ -63,7 +69,11 @@ if [ "$ROUTING" = 1 ]; then
     | python3 -c "import json,sys;print(json.load(sys.stdin)['volumes']['osrm-data']['name'])" \
     2>/dev/null || echo osrm-data)
   missing=$(docker run --rm -v "$osrm_vol:/data" alpine sh -c \
-    'for f in /data/foot/korea.osrm /data/bicycle/korea.osrm; do [ -e "$f" ] || echo "$f"; done' 2>/dev/null)
+    'for p in foot bicycle; do
+       for f in edges partition cells mldgr; do
+         [ -e "/data/$p/korea.osrm.$f" ] || echo "/data/$p/korea.osrm.$f"
+       done
+     done' 2>/dev/null)
   if [ -n "$missing" ]; then
     echo "경로 데이터가 없다: $missing" >&2
     echo "먼저 ./scripts/osrm-rebuild.sh 로 만든다. 내려받기와 손질에 시간이 걸린다." >&2

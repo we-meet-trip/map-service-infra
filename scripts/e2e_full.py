@@ -130,7 +130,13 @@ def main() -> int:
     db = env_value(env_file, "POSTGRES_DB") or "map"
     db_user = env_value(env_file, "POSTGRES_USER") or "map"
     db_pw = env_value(env_file, "POSTGRES_PASSWORD")
-    password = env_value(env_file, "TESTER_SEED_PASSWORD") or "admin123!"
+    # 비밀번호는 환경파일에서만 읽는다. 예비값을 코드에 두면 그 값이 저장소에
+    # 남고, 시험 계정이 켜진 스택이 고정 주소로 열리는 순간 그것만으로 들어올 수
+    # 있다. 없으면 여기서 멈추는 편이 낫다.
+    password = env_value(env_file, "TESTER_SEED_PASSWORD")
+    if not password:
+        print(f"{env_file} 에 TESTER_SEED_PASSWORD 가 없다", file=sys.stderr)
+        return 1
     auth_on = env_value(env_file, "AUTH_ENFORCED").lower() == "true"
     wire_on = bool(env_value(env_file, "LOCATION_WIRE_KEY"))
     store_on = env_value(env_file, "LOCATION_ENC_ENABLED").lower() == "true"

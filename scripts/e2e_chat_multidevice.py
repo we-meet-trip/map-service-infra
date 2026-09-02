@@ -100,7 +100,9 @@ async def main():
     ap.add_argument("--base", default="http://127.0.0.1:8090")
     ap.add_argument("--redis", default="map-service-redis")
     ap.add_argument("--redis-db", default="4")
-    ap.add_argument("--password", default="admin123!")
+    # 예비값을 두지 않는다. 코드에 남은 비밀번호는 저장소에 남고,
+    # 시험 계정이 켜진 스택이 고정 주소로 열리면 그것만으로 들어올 수 있다.
+    ap.add_argument("--password", required=True)
     args = ap.parse_args()
     base = args.base.rstrip("/")
     ws_url = base.replace("https://", "wss://").replace("http://", "ws://") + "/ws/chat"

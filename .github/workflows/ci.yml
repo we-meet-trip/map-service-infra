@@ -47,6 +47,19 @@ jobs:
         run: |
           docker compose --env-file ./.env -f docker-compose.yml config -q
           docker compose --env-file ./.env -f docker-compose.admin.yml config -q
+          # 실제로 배포하는 조합까지 본다. 이 둘을 안 보면, 그 덧칠이 요구하는
+          # 값이 환경파일에 없다는 사실이 서버에서 처음 드러난다 — 실제로 그렇게
+          # 됐다. 값은 검사용으로 세운다. 여기서 보려는 것은 값의 내용이 아니라
+          # 요구하는 자리가 다 채워지는지다.
+          IMAGE_REGISTRY=검사용 IMAGE_TAG=검사용 \
+            docker compose --env-file ./.env \
+              -f docker-compose.yml -f docker-compose.registry.yml \
+              --profile full --profile routing config -q
+          EDGE_DOMAIN=example.invalid EDGE_EMAIL=ci@example.invalid \
+          DUCKDNS_SUBDOMAIN=ci DUCKDNS_TOKEN=ci \
+            docker compose --env-file ./.env \
+              -f docker-compose.yml -f docker-compose.edge.yml \
+              --profile full --profile edge --profile dns config -q
 
       - name: stack isolation
         run: ./scripts/compose-isolation-check.sh
