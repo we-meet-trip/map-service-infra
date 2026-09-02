@@ -306,8 +306,10 @@ def main() -> int:
           not re.search(r"lat=\d|lng=\d", proxy_log))
 
     user_log = logs(user)
+    # 방금 실제로 보낸 좌표를 찾는다. 다른 좌표를 찾으면 이 검사는 아무것도
+    # 보지 않으면서 늘 통과한다 — 보낸 적 없는 값이 로그에 있을 리 없다.
     check("BFF 기록에 좌표가 없다",
-          not re.search(r"35\.1532|129\.1187|광안리", user_log))
+          not re.search(r"35\.1587|129\.1604|35\.1532|129\.1187|광안리", user_log))
 
     return report()
 

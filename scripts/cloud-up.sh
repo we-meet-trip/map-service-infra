@@ -57,7 +57,12 @@ done
 # 경로 데이터는 이미지 안이 아니라 따로 만들어 둔 저장 자리에 있다. 없으면
 # 엔진이 뜨자마자 죽는데, 그 모습은 다른 기동 실패와 구분되지 않는다.
 if [ "$ROUTING" = 1 ]; then
-  missing=$(docker run --rm -v osrm-data:/data alpine sh -c \
+  # 볼륨 이름을 렌더링에서 가져온다. 못박아 두면 시험 스택에서 운영 볼륨을
+  # 보고 판단해, 시험 쪽 자리가 비어 있어도 통과시킨다.
+  osrm_vol=$(dc --profile routing config --format json 2>/dev/null \
+    | python3 -c "import json,sys;print(json.load(sys.stdin)['volumes']['osrm-data']['name'])" \
+    2>/dev/null || echo osrm-data)
+  missing=$(docker run --rm -v "$osrm_vol:/data" alpine sh -c \
     'for f in /data/foot/korea.osrm /data/bicycle/korea.osrm; do [ -e "$f" ] || echo "$f"; done' 2>/dev/null)
   if [ -n "$missing" ]; then
     echo "경로 데이터가 없다: $missing" >&2
