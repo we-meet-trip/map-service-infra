@@ -51,7 +51,19 @@ for svc in $SERVICES; do
   echo "== $svc → $ref ($PLATFORM)"
   # --push 로 곧바로 올린다. 중간에 로컬로 받아 두면 다른 구조의 이미지가
   # 로컬 이름을 차지해, 이후 로컬 실행이 조용히 그것을 쓴다.
-  docker buildx build --platform "$PLATFORM" -t "$ref" --push "${CONTEXT[$svc]}"
+  # 서버에서 무엇이 도는지 되짚을 유일한 자리다. 판 이름은 셋이 같아서 어느
+  # 이미지가 어느 커밋인지 가리지 못한다. 만든 자리의 커밋을 이미지 안에 박는다.
+  #
+  # 만든 자리가 저장소가 아니면(압축 해제본 등) 되짚을 값이 없다는 사실만
+  # 남기고 계속 간다 — 그것 때문에 만들기 자체가 멈추면 안 된다.
+  # 손으로 부를 때 작업 트리가 더러우면 이 값과 실제로 만든 내용이 다르다.
+  rev=$(git -C "${CONTEXT[$svc]}" rev-parse HEAD 2>/dev/null || echo unknown)
+  src=$(git -C "${CONTEXT[$svc]}" remote get-url origin 2>/dev/null || echo unknown)
+  docker buildx build --platform "$PLATFORM" -t "$ref" \
+    --label "org.opencontainers.image.revision=$rev" \
+    --label "org.opencontainers.image.version=$IMAGE_TAG" \
+    --label "org.opencontainers.image.source=$src" \
+    --push "${CONTEXT[$svc]}"
 done
 
 echo

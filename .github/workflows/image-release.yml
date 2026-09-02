@@ -75,7 +75,7 @@ jobs:
             git -C "$dir" fetch -q --depth 1 origin "$REF"
             git -C "$dir" checkout -q FETCH_HEAD
           done
-          for svc in user agent hub; do
+          for svc in infra user agent hub; do
             sha="$(git -C "src/map-service-$svc" rev-parse HEAD)"
             echo "$svc=$sha" >> "$GITHUB_OUTPUT"
             echo "$svc $sha"
@@ -184,6 +184,7 @@ jobs:
           USER_SHA: ${{ steps.src.outputs.user }}
           AGENT_SHA: ${{ steps.src.outputs.agent }}
           HUB_SHA: ${{ steps.src.outputs.hub }}
+          INFRA_SHA: ${{ steps.src.outputs.infra }}
         run: |
           {
             echo "### $IMAGE_TAG"
@@ -193,6 +194,7 @@ jobs:
             echo "| user | \`$USER_SHA\` |"
             echo "| agent | \`$AGENT_SHA\` |"
             echo "| hub | \`$HUB_SHA\` |"
+            echo "| infra | \`$INFRA_SHA\` |"
             echo
             echo "서버 환경파일에 넣을 두 줄:"
             echo '```'

@@ -146,6 +146,15 @@ if ! dc "${PROFILES[@]}" up -d --wait --wait-timeout 180; then
   exit 1
 fi
 
+# 성공한 배포를 한 줄씩 덧붙인다. 시각 형식은 양쪽 date 가 같게 받는 것을 쓴다. 되돌릴 때 이전 판 이름을 찾을 데가 없어서,
+# 지금까지는 실행 기록을 뒤지는 수밖에 없었다. 바로 앞 줄이 되돌릴 자리다.
+{
+  printf '%s\t%s\t%s\t%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$LABEL" \
+    "$(grep -E '^IMAGE_TAG=.+' "$ENV_FILE" | cut -d= -f2- || echo 만들어씀)" \
+    "$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+} >> ./.deploy-history
+
 echo
 dc ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}\t{{.Image}}'
 

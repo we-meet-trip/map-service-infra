@@ -43,3 +43,6 @@ __pycache__/
 
 # 커밋 메시지 초안 (로컬 전용, 커밋 대상 아님)
 commit_contents.md
+
+# 배포한 판을 한 줄씩 쌓는다. 되돌릴 때 이전 이름을 여기서 찾는다.
+.deploy-history
