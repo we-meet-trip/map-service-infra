@@ -45,6 +45,15 @@ for arg in "$@"; do
   esac
 done
 
+# 작은 서버 덧칠은 1GB 급을 겨냥한다. 카메라 인식은 모델을 들고 있어 그 위에
+# 더 얹을 자리가 없다 — 재 보니 나머지 여섯만으로 부하 중 838 MiB 였고 거기에
+# 279 MiB 가 더 붙는다. 뜨기는 하다가 무엇이 먼저 죽을지 모르는 상태가 된다.
+if [ "$MICRO" = 1 ] && [ "$VISION" = 1 ]; then
+  echo "작은 서버 덧칠과 카메라 인식은 함께 쓸 수 없다." >&2
+  echo "  둘 중 하나를 빼거나, 메모리가 더 큰 서버를 쓴다." >&2
+  exit 2
+fi
+
 [ -f "$ENV_FILE" ] || { echo "환경파일이 없다: $ENV_FILE" >&2; exit 1; }
 
 dc() { docker compose --env-file "$ENV_FILE" "${FILES[@]}" "$@"; }
