@@ -143,6 +143,15 @@ else
   echo "openssl 이 없어 좌표 열쇠를 만들지 못했다. 직접 넣는다." >&2
 fi
 
+# (7-2) 바깥에서 받아 온 값은 손으로 넣는 것이라, 다시 만들 때 살려 둔다.
+#      본보기 파일에는 빈칸으로만 있어서 그대로 두면 다시 만들 때마다 지워지고,
+#      그 사실은 앞단이 뜨지 않을 때에야 드러난다. 붙여 넣은 이름과 토큰,
+#      그리고 어느 판을 받아 쓸지 고른 값이 여기에 해당한다.
+for k in EDGE_DOMAIN EDGE_EMAIL DUCKDNS_SUBDOMAIN DUCKDNS_TOKEN IMAGE_TAG; do
+  kept=$(prev "$k")
+  [ -n "$kept" ] && set_kv "$k" "$kept"
+done
+
 # (8) 시험 계정은 시험 스택에서만 켠다.
 set_kv TESTER_SEED_ENABLED true
 set_kv TESTER_SEED_PASSWORD "$TEST_PW"
