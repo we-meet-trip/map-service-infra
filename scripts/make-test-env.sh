@@ -126,6 +126,8 @@ set_kv CORS_ALLOWED_ORIGINS "https://test.invalid"
 enc_keys=$(prev LOCATION_ENC_KEYS)
 enc_kid=$(prev LOCATION_ENC_ACTIVE_KID)
 wire_key=$(prev LOCATION_WIRE_KEY)
+ckpt_keys=$(prev CHECKPOINT_ENC_KEYS)
+ckpt_kid=$(prev CHECKPOINT_ENC_ACTIVE_KID)
 if [ -z "$enc_keys" ] && command -v openssl >/dev/null 2>&1; then
   enc_keys="k1:$(openssl rand -base64 32)"
   enc_kid=k1
@@ -133,14 +135,35 @@ fi
 if [ -z "$wire_key" ] && command -v openssl >/dev/null 2>&1; then
   wire_key=$(openssl rand -base64 32)
 fi
-if [ -n "$enc_keys" ] && [ -n "$wire_key" ]; then
+# 체크포인트 열쇠도 매번 새로 만든다. 본보기의 자리표시자가 그대로 남으면
+# agent 가 부팅을 거부해, 스택이 서다 마는 모습으로만 드러난다.
+if [ -z "$ckpt_keys" ] && command -v openssl >/dev/null 2>&1; then
+  ckpt_keys="k1:$(openssl rand -base64 32)"
+  ckpt_kid=k1
+fi
+if [ -n "$enc_keys" ] && [ -n "$wire_key" ] && [ -n "$ckpt_keys" ]; then
   set_kv LOCATION_ENC_ENABLED true
   set_kv LOCATION_ENC_ACTIVE_KID "${enc_kid:-k1}"
   set_kv LOCATION_ENC_KEYS "$enc_keys"
   set_kv LOCATION_WIRE_ENABLED true
   set_kv LOCATION_WIRE_KEY "$wire_key"
+  set_kv CHECKPOINT_ENC_ACTIVE_KID "${ckpt_kid:-k1}"
+  set_kv CHECKPOINT_ENC_KEYS "$ckpt_keys"
 else
-  echo "openssl 이 없어 좌표 열쇠를 만들지 못했다. 직접 넣는다." >&2
+  echo "openssl 이 없어 좌표·체크포인트 열쇠를 만들지 못했다. 직접 넣는다." >&2
+fi
+
+# (7-1b) 저장소 비밀번호도 켠 채로 만든다. 시험 스택도 바깥에 노출될 수
+#      있고, 스트림에 아무나 쓸 수 있으면 봉투 재주입의 입구가 된다.
+#      hub·agent·admin 은 URL 로 읽으므로 같은 값으로 함께 맞춘다.
+redis_pw=$(prev REDIS_PASSWORD)
+if [ -z "$redis_pw" ] && command -v openssl >/dev/null 2>&1; then
+  redis_pw=$(openssl rand -hex 24)
+fi
+if [ -n "$redis_pw" ]; then
+  set_kv REDIS_PASSWORD "$redis_pw"
+  set_kv REDIS_URL "redis://:${redis_pw}@redis:6379"
+  set_kv ADMIN_REDIS_URL "redis://:${redis_pw}@redis:6379"
 fi
 
 # (7-2) 바깥에서 받아 온 값은 손으로 넣는 것이라, 다시 만들 때 살려 둔다.
