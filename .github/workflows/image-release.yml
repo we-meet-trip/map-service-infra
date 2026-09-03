@@ -24,8 +24,8 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "네 레포에서 받아올 지점. 가지·태그·커밋 모두 된다"
-        default: verify/integration
+        description: "다섯 레포에서 받아올 지점. 가지·태그·커밋 모두 된다"
+        default: develop
       tag:
         description: "이미지 판 이름. 비우면 날짜와 실행 회차로 만든다"
         default: ""
