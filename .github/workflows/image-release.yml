@@ -60,14 +60,14 @@ jobs:
       #
       # 받은 자리에서 커밋을 확정해 뒤로 넘긴다. 가지 이름은 실행 도중에도
       # 움직일 수 있어, 이름만으로는 무엇을 만들었는지 나중에 되짚을 수 없다.
-      - name: 네 레포를 형제로 받기
+      - name: 다섯 레포를 형제로 받기
         id: src
         env:
           REF: ${{ inputs.ref }}
         run: |
           set -euo pipefail
           mkdir -p src
-          for repo in infra user agent hub; do
+          for repo in infra user agent hub yolo; do
             dir="src/map-service-$repo"
             git init -q "$dir"
             git -C "$dir" remote add origin \
@@ -75,7 +75,7 @@ jobs:
             git -C "$dir" fetch -q --depth 1 origin "$REF"
             git -C "$dir" checkout -q FETCH_HEAD
           done
-          for svc in infra user agent hub; do
+          for svc in infra user agent hub yolo; do
             sha="$(git -C "src/map-service-$svc" rev-parse HEAD)"
             echo "$svc=$sha" >> "$GITHUB_OUTPUT"
             echo "$svc $sha"
@@ -126,11 +126,11 @@ jobs:
       # BFF 는 이미지를 만들 때 검사를 건너뛴다. 만드는 시간을 줄이려고
       # 그렇게 두었는데, 그러면 아무 데서도 안 도는 상태가 된다. 그 자리를
       # 여기가 메운다.
-      - name: 세 서비스 검사
+      - name: 네 서비스 검사
         run: |
           set -euo pipefail
           (cd src/map-service-user && ./gradlew --no-daemon clean test)
-          for svc in agent hub; do
+          for svc in agent hub yolo; do
             (cd "src/map-service-$svc" \
               && pip install -q -r requirements.txt -r requirements-dev.txt \
               && python -m pytest -q)
@@ -165,6 +165,7 @@ jobs:
           USER_SHA: ${{ steps.src.outputs.user }}
           AGENT_SHA: ${{ steps.src.outputs.agent }}
           HUB_SHA: ${{ steps.src.outputs.hub }}
+          YOLO_SHA: ${{ steps.src.outputs.yolo }}
         run: |
           set -euo pipefail
           add() {
@@ -175,6 +176,7 @@ jobs:
           add user  "$USER_SHA"
           add agent "$AGENT_SHA"
           add hub   "$HUB_SHA"
+          add yolo  "$YOLO_SHA"
 
       # 무엇이 한 벌인지 실행 화면에 남긴다. 서버 환경파일에 옮겨 적을 때 보고
       # 베낄 자리가 있어야 한다.
@@ -184,6 +186,7 @@ jobs:
           USER_SHA: ${{ steps.src.outputs.user }}
           AGENT_SHA: ${{ steps.src.outputs.agent }}
           HUB_SHA: ${{ steps.src.outputs.hub }}
+          YOLO_SHA: ${{ steps.src.outputs.yolo }}
           INFRA_SHA: ${{ steps.src.outputs.infra }}
         run: |
           {
@@ -194,6 +197,7 @@ jobs:
             echo "| user | \`$USER_SHA\` |"
             echo "| agent | \`$AGENT_SHA\` |"
             echo "| hub | \`$HUB_SHA\` |"
+            echo "| yolo | \`$YOLO_SHA\` |"
             echo "| infra | \`$INFRA_SHA\` |"
             echo
             echo "서버 환경파일에 넣을 두 줄:"

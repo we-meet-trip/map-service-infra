@@ -18,6 +18,9 @@
 #   IMAGE_REGISTRY=ghcr.io/<계정> ./scripts/images-push.sh
 #   IMAGE_REGISTRY=... IMAGE_TAG=2026-09-01 ./scripts/images-push.sh
 #   IMAGE_REGISTRY=... SERVICES="user hub" ./scripts/images-push.sh
+#
+# 네 서비스를 모두 만든다. 카메라 인식이 배포 구성에 들어가면서 그 이미지도
+# 서버가 받아 쓸 것이 되었다.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -25,7 +28,7 @@ cd "$(dirname "$0")/.."
 : "${IMAGE_REGISTRY:?받아갈 곳을 IMAGE_REGISTRY 로 정한다 (예: ghcr.io/이름)}"
 IMAGE_TAG=${IMAGE_TAG:-latest}
 PLATFORM=${IMAGE_PLATFORM:-linux/amd64}
-SERVICES=${SERVICES:-user agent hub}
+SERVICES=${SERVICES:-user agent hub yolo}
 
 declare -A CONTEXT=(
   [user]=../map-service-user

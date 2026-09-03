@@ -26,6 +26,7 @@ LABEL=운영
 MICRO=0
 PULL=0
 ROUTING=0
+VISION=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -37,6 +38,9 @@ for arg in "$@"; do
     # 경로 엔진을 함께 올린다. 켜지 않으면 hub 가 주소를 못 찾아 구간마다
     # 실패 왕복을 반복하고, 화면에는 도로를 따르지 않는 직선이 그려진다.
     --routing) PROFILES+=(--profile routing); ROUTING=1 ;;
+    # 카메라 인식을 함께 올린다. 켜지 않으면 앱의 카메라 화면이 연결에
+    # 실패하는데, 화면에는 그냥 오류 한 줄로만 보인다.
+    --vision) PROFILES+=(--profile vision); VISION=1 ;;
     *) echo "모르는 인자: $arg" >&2; exit 2 ;;
   esac
 done

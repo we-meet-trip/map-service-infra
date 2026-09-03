@@ -94,13 +94,21 @@ compare "받아 쓰기" \
   "$(render "$PROD_ENV" docker-compose.registry.yml)" \
   "$(render "$TEST_ENV" docker-compose.test.yml docker-compose.registry.yml docker-compose.micro.yml)"
 
-# 받아 쓰는 조합에 카메라 갈래를 켜면 만들 자리도 받을 이름도 없어 멈춰야 한다.
-# 여기가 통과하면 작은 서버가 조용히 빌드로 넘어가는 길이 다시 열린 것이다.
-if docker compose --env-file "$PROD_ENV" \
-     -f docker-compose.yml -f docker-compose.registry.yml \
-     --profile vision config -q >/dev/null 2>&1; then
-  echo "받아 쓰기에서 카메라 갈래가 그대로 뜬다" >&2
+# 받아 쓰는 조합에 카메라 갈래를 켜면 받을 이름이 있어야 한다. 이름이 없으면
+# 만드는 자리로 되돌아가, 작은 서버가 모델까지 든 이미지를 그 자리에서 짓는다.
+vision_render=$(docker compose --env-file "$PROD_ENV" \
+  -f docker-compose.yml -f docker-compose.registry.yml \
+  --profile vision config --format json 2>/dev/null) || {
+  echo "받아 쓰기에서 카메라 갈래가 그려지지 않는다" >&2
   exit 1
-fi
+}
+printf '%s' "$vision_render" | python3 -c "
+import json,sys
+y=json.load(sys.stdin)['services']['yolo']
+if y.get('build'):
+    print('카메라 갈래가 아직 만드는 자리를 들고 있다', file=sys.stderr); sys.exit(1)
+if 'map-service-yolo:' not in (y.get('image') or ''):
+    print('카메라 갈래에 받아올 이름이 없다', file=sys.stderr); sys.exit(1)
+" || exit 1
 
 echo "겹침 0건"
