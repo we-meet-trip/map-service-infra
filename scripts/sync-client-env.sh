@@ -62,15 +62,14 @@ fi
 # 지도 식별자는 이 검사에서 뺀다. 순서가 정해져 있어(infra 가 먼저, 예비가
 # 뒤) 덮어써도 이전 값이 사라지지 않고 예비 자리로 남기 때문이다.
 if [ -f "$DST" ] && [ "${FORCE:-0}" != "1" ]; then
+  # 지금 대조하는 것은 한 개다. 늘어나면 그때 목록으로 바꾼다.
   changed=""
-  for pair in "KAKAO_REST_API_KEY:$kakao_rest_key"; do
-    name="${pair%%:*}"
-    next="${pair#*:}"
-    prev="$(grep -E "^$name=" "$DST" | head -1 | cut -d= -f2- | tr -d '\r')"
-    # 아직 없던 키를 채우는 것은 덮어쓰기가 아니다.
-    [ -n "$prev" ] || continue
-    [ "$prev" = "$next" ] || changed="$changed $name"
-  done
+  name=KAKAO_REST_API_KEY
+  prev="$(grep -E "^$name=" "$DST" | head -1 | cut -d= -f2- | tr -d '\r')"
+  # 아직 없던 키를 채우는 것은 덮어쓰기가 아니다.
+  if [ -n "$prev" ] && [ "$prev" != "$kakao_rest_key" ]; then
+    changed=" $name"
+  fi
   if [ -n "$changed" ]; then
     echo "✗ 두 파일의 값이 다르다:$changed"
     echo "  infra 값으로 덮으면 지금 동작하는 값이 바뀐다. 어느 쪽이 맞는지"
