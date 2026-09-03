@@ -17,6 +17,7 @@
 import argparse
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import urllib.error
@@ -100,6 +101,9 @@ async def main():
     ap.add_argument("--base", default="http://127.0.0.1:8090")
     ap.add_argument("--redis", default="map-service-redis")
     ap.add_argument("--redis-db", default="4")
+    # 저장소에 비밀번호가 걸린 스택이면 환경변수나 이 인자로 준다.
+    ap.add_argument("--redis-password",
+                    default=os.environ.get("REDIS_PASSWORD", ""))
     # 예비값을 두지 않는다. 코드에 남은 비밀번호는 저장소에 남고,
     # 시험 계정이 켜진 스택이 고정 주소로 열리면 그것만으로 들어올 수 있다.
     ap.add_argument("--password", required=True)
@@ -125,7 +129,10 @@ async def main():
                          "stay_minutes": 60}],
              "visit_order": [1], "legs": []}
     seeded = subprocess.run(
-        ["docker", "exec", args.redis, "redis-cli", "-n", args.redis_db,
+        ["docker", "exec",
+         *(["-e", f"REDISCLI_AUTH={args.redis_password}"]
+           if args.redis_password else []),
+         args.redis, "redis-cli", "-n", args.redis_db,
          "SET", f"recommend:result:{job_id}", json.dumps(draft, ensure_ascii=False),
          "EX", "3600"], capture_output=True, text=True)
     if seeded.returncode != 0:

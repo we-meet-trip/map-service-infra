@@ -140,10 +140,20 @@ def main() -> int:
     auth_on = env_value(env_file, "AUTH_ENFORCED").lower() == "true"
     wire_on = bool(env_value(env_file, "LOCATION_WIRE_KEY"))
     store_on = env_value(env_file, "LOCATION_ENC_ENABLED").lower() == "true"
+    redis_pw = env_value(env_file, "REDIS_PASSWORD")
+    # 체크포인트 봉하기 판정: 켜짐(기본값 포함) + 열쇠가 있어야 한다.
+    ckpt_seal_on = (env_value(env_file, "CHECKPOINT_ENABLED").lower() != "false"
+                    and bool(env_value(env_file, "CHECKPOINT_ENC_KEYS")))
 
     def psql(sql: str) -> str:
         return sh("docker", "exec", "-e", f"PGPASSWORD={db_pw}", pg,
                   "psql", "-U", db_user, "-d", db, "-tAc", sql)
+
+    def rcli(*cmd: str) -> str:
+        # 비밀번호는 명령행이 아니라 환경변수로 넘긴다. 명령행에 실으면
+        # 컨테이너 프로세스 목록에 값이 그대로 보인다.
+        auth = ("-e", f"REDISCLI_AUTH={redis_pw}") if redis_pw else ()
+        return sh("docker", "exec", *auth, redis, "redis-cli", *cmd)
 
     print(f"환경={args.env}  관문={base}  저장소={db}")
 
@@ -206,6 +216,15 @@ def main() -> int:
     status, _ = http("GET", f"{base}/api/v1/schedules", token)
     check("토큰이 있으면 열린다", status == 200, f"status={status}")
 
+    # 저장소 인증. 스트림에 아무나 쓸 수 있으면 봉투 재주입의 입구가 된다.
+    naked = sh("docker", "exec", redis, "redis-cli", "ping")
+    if redis_pw:
+        check("저장소가 비밀번호 없이는 답하지 않는다", "NOAUTH" in naked,
+              (naked or "응답 없음")[:40])
+        check("비밀번호가 있으면 답한다", "PONG" in rcli("ping"))
+    else:
+        check("저장소 인증이 꺼져 있다", "PONG" in naked, "운영에서는 켠다")
+
     # ── 저장 ────────────────────────────────────────────────────────────
     section("저장")
     job = str(uuid.uuid4())
@@ -214,9 +233,9 @@ def main() -> int:
              "stay_minutes": 60}
     draft = {"job_id": job, "status": "done", "places": [place],
              "visit_order": [1], "legs": []}
-    sh("docker", "exec", redis, "redis-cli", "-n", "4",
-       "SET", f"recommend:result:{job}", json.dumps(draft, ensure_ascii=False),
-       "EX", "3600")
+    rcli("-n", "4",
+         "SET", f"recommend:result:{job}", json.dumps(draft, ensure_ascii=False),
+         "EX", "3600")
 
     status, saved = http("POST", f"{base}/api/v1/schedules", token, {
         "job_id": job, "title": "검증 일정", "date_start": "2026-09-20",
@@ -239,6 +258,17 @@ def main() -> int:
         got = [(s.get("latitude"), s.get("longitude")) for s in stops]
         check("저장한 좌표를 그대로 되읽는다",
               (35.1532, 129.1187) in got, f"stops={len(stops)}")
+
+    # agent 가 대화 상태를 남기는 자리. 일정 본문을 봉해도 여기가 평문이면
+    # 같은 저장소 안에 같은 좌표가 그대로 남는다.
+    if ckpt_seal_on:
+        plain = psql("select count(*) from langgraph.checkpoint_blobs "
+                     "where position('lat'::bytea in blob) > 0")
+        total = psql("select count(*) from langgraph.checkpoint_blobs")
+        check("체크포인트에 평문 좌표가 없다",
+              plain.strip() == "0", f"평문 {plain or '조회실패'} / 전체 {total}행")
+    else:
+        check("체크포인트 봉하기가 꺼져 있다", True, "운영에서는 켠다")
 
     # ── 통신 ────────────────────────────────────────────────────────────
     section("통신")
@@ -270,13 +300,12 @@ def main() -> int:
         check("agent 가 만든 봉투에 좌표가 없다",
               bool(token2) and "35.1532" not in token2 and "광안리" not in token2)
         if token2:
-            sh("docker", "exec", redis, "redis-cli", "-n", "2",
-               "XADD", "agent:jobs:done", "*", "job_id", job2,
-               "status", "done", "payload", token2)
+            rcli("-n", "2",
+                 "XADD", "agent:jobs:done", "*", "job_id", job2,
+                 "status", "done", "payload", token2)
             import time as _t
             _t.sleep(4)
-            saved_draft = sh("docker", "exec", redis, "redis-cli", "-n", "4",
-                             "GET", f"recommend:result:{job2}")
+            saved_draft = rcli("-n", "4", "GET", f"recommend:result:{job2}")
             check("BFF 가 그 봉투를 열어 저장한다", bool(saved_draft))
             if store_on:
                 check("저장된 초안에도 평문 좌표가 없다",
@@ -310,6 +339,20 @@ def main() -> int:
     proxy_log = logs(proxy, "out")
     check("관문 기록에 좌표 질의가 없다",
           not re.search(r"lat=\d|lng=\d", proxy_log))
+
+    # 카메라 서비스는 좌표가 가장 정확한 자리라 기록도 함께 본다.
+    # 카카오 질의는 좌표를 x/y 로 실어 그 꼴도 같이 찾는다.
+    yolo_cid = f"{prefix}-yolo-1" if is_test else "map-service-yolo"
+    yolo_up = sh("docker", "ps", "--filter", f"name={yolo_cid}",
+                 "--format", "{{.Names}}")
+    if yolo_up:
+        yolo_log = logs(yolo_cid)
+        check("카메라 기록에 좌표가 없다",
+              bool(yolo_log) and not re.search(
+                  r"(?:lat|lng|[?&][xy])=-?\d", yolo_log),
+              "로그를 읽지 못했다" if not yolo_log else "")
+    else:
+        check("카메라가 빠진 구성이다", True, "vision 미기동")
 
     user_log = logs(user)
     # 방금 실제로 보낸 좌표를 찾는다. 다른 좌표를 찾으면 이 검사는 아무것도

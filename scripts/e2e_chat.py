@@ -14,6 +14,7 @@ STOMP 라이브러리를 쓰지 않고 프레임을 직접 만든다. 라이브�
 import argparse
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import urllib.error
@@ -112,6 +113,9 @@ async def main():
     ap.add_argument("--redis", default="map-service-redis",
                     help="초안을 심을 redis 컨테이너 이름")
     ap.add_argument("--redis-db", default="4")
+    # 저장소에 비밀번호가 걸린 스택이면 환경변수나 이 인자로 준다.
+    ap.add_argument("--redis-password",
+                    default=os.environ.get("REDIS_PASSWORD", ""))
     args = ap.parse_args()
     base = args.base.rstrip("/")
     ws_url = base.replace("https://", "wss://").replace("http://", "ws://") + "/ws/chat"
@@ -132,7 +136,10 @@ async def main():
     # 같은 자리에 직접 심는다. BFF 가 읽을 때 봉투가 아니면 그대로 쓰므로,
     # 평문으로 심어도 저장 단계에서 감싸진다.
     seeded = subprocess.run(
-        ["docker", "exec", args.redis, "redis-cli", "-n", args.redis_db,
+        ["docker", "exec",
+         *(["-e", f"REDISCLI_AUTH={args.redis_password}"]
+           if args.redis_password else []),
+         args.redis, "redis-cli", "-n", args.redis_db,
          "SET", f"recommend:result:{job_id}", json.dumps(draft, ensure_ascii=False),
          "EX", "3600"],
         capture_output=True, text=True)
