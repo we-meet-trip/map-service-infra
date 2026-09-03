@@ -48,6 +48,20 @@ env:
 jobs:
   release:
     runs-on: ubuntu-latest
+
+    # BFF 는 부팅까지 하는 시험이 몇 개 있고, 그 부팅은 저장소를 구독하면서
+    # 끝난다. 없으면 그 자리에서 죽는다. 각 레포의 검사 자리에는 이미 띄워
+    # 두었는데 여기에는 없어서, 검사가 처음 도는 순간 반드시 멈춘다.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     # 셋을 차례로 만드느라 길다. 여기를 넘기면 어딘가 멈춘 것이다.
     timeout-minutes: 60
     steps:
