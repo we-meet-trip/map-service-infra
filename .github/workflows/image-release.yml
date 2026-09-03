@@ -144,10 +144,15 @@ jobs:
         run: |
           set -euo pipefail
           (cd src/map-service-user && ./gradlew --no-daemon clean test)
+          # 셋을 한 환경에 몰아 넣으면, 판이 어긋나는 순간 뒤에 깐 쪽이 앞의
+          # 것을 조용히 갈아 끼운다. 그러면 앞 서비스의 시험은 자기 이미지에
+          # 들어갈 것과 다른 판으로 도는데, 통과하므로 드러나지 않는다.
           for svc in agent hub yolo; do
             (cd "src/map-service-$svc" \
-              && pip install -q -r requirements.txt -r requirements-dev.txt \
-              && python -m pytest -q)
+              && python -m venv .venv \
+              && ./.venv/bin/pip install -q --upgrade pip \
+              && ./.venv/bin/pip install -q -r requirements.txt -r requirements-dev.txt \
+              && ./.venv/bin/python -m pytest -q)
           done
 
       # 기본 도구는 만든 것을 곧바로 올리지 못한다. 올릴 수 있는 도구를 따로
