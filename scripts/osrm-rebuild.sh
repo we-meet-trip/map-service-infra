@@ -55,6 +55,21 @@ echo "[1/3] Downloading PBF into volume '$OSRM_VOLUME' from $PBF_URL"
 docker run --rm --user 0:0 -v "$OSRM_VOLUME:/data" curlimages/curl:latest \
   -L --fail -o /data/korea.osm.pbf "$PBF_URL"
 
+# 받은 것이 온전한지 본다. 272MB 를 받는 동안 끊기면 앞부분만 남는데, 손질
+# 과정은 그것도 그대로 삼켜 이상한 그래프를 만들어 낸다. 그 결과는 오류가
+# 아니라 "조금 이상한 경로" 로만 드러나서 아무도 신고하지 않는다.
+#
+# 이 확인이 막는 것은 받다 끊긴 것과 중간에서 깨진 것이다. 발급처 자체가
+# 바뀐 경우는 못 막는다 — 확인값도 같은 곳에서 받기 때문이다.
+echo "      받은 것이 온전한지 확인"
+docker run --rm --user 0:0 -v "$OSRM_VOLUME:/data" curlimages/curl:latest \
+  -L --fail -o /data/korea.osm.pbf.md5 "${PBF_URL}.md5"
+docker run --rm -v "$OSRM_VOLUME:/data" alpine sh -c '
+  cd /data &&
+  awk "{print \$1\"  korea.osm.pbf\"}" korea.osm.pbf.md5 > korea.check.md5 &&
+  md5sum -c korea.check.md5 &&
+  rm -f korea.check.md5'
+
 # 2~3단계: 두 프로파일(foot, bicycle) 각각에 대해 동일한 전처리를 반복.
 # 컨테이너 내부의 /opt/foot.lua / /opt/bicycle.lua 가 비용 함수.
 for profile in foot bicycle; do

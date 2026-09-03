@@ -34,7 +34,7 @@ echo "== [1/3] postgres 준비 대기 =="
 # 전에 뜨면 재시도로 회복되긴 하지만, 여기서 기다리면 로그가 깨끗하다.
 pg_ok=0
 for i in $(seq 1 30); do
-  if "${SERVICE_COMPOSE[@]}" exec -T postgres pg_isready -U map -d map >/dev/null 2>&1; then pg_ok=1; break; fi
+  if "${SERVICE_COMPOSE[@]}" exec -T postgres pg_isready -h 127.0.0.1 -U map -d map >/dev/null 2>&1; then pg_ok=1; break; fi
   sleep 2
 done
 if [ "$pg_ok" != 1 ]; then

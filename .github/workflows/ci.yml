@@ -1,0 +1,80 @@
+# 이 저장소에는 돌려 볼 테스트가 없다. 대신 여기서 깨지면 스택 전체가 뜨지
+# 않거나, 시험이 운영을 건드리는 종류의 사고가 난다. 그래서 검사 대상이
+# "문법이 맞는가" 와 "운영과 시험이 정말 갈라져 있는가" 둘이다.
+#
+# 두 번째가 특히 중요하다. 원본 compose 가 볼륨 이름과 컨테이너 이름을 값으로
+# 못박아 두어, 파생 파일에서 프로젝트명만 바꾸면 갈라지지 않는다. 볼륨이
+# 겹치면 시험 스택이 운영 데이터베이스를 물고 올라오고, 그 상태의
+# 마이그레이션은 되돌릴 수 없다. 사람 눈으로 다섯 축을 매번 대조하는 것은
+# 기대할 수 없어 기계가 본다.
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shell syntax
+        run: |
+          for f in scripts/*.sh; do
+            bash -n "$f" || exit 1
+          done
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          # 스타일 지적으로 막지는 않는다. 실행을 깨뜨릴 수준만 본다.
+          shellcheck -S error scripts/*.sh
+
+      # 실제 키가 없는 환경이므로 본보기 파일에서 만들어 쓴다. compose 는
+      # 값의 내용이 아니라 채워졌는지만 보므로 이것으로 충분하다.
+      - name: prepare env
+        run: |
+          cp .env.example .env
+          ./scripts/make-test-env.sh --force
+
+      - name: compose syntax
+        run: |
+          docker compose --env-file ./.env -f docker-compose.yml config -q
+          docker compose --env-file ./.env -f docker-compose.admin.yml config -q
+          # 실제로 배포하는 조합까지 본다. 이 둘을 안 보면, 그 덧칠이 요구하는
+          # 값이 환경파일에 없다는 사실이 서버에서 처음 드러난다 — 실제로 그렇게
+          # 됐다. 값은 검사용으로 세운다. 여기서 보려는 것은 값의 내용이 아니라
+          # 요구하는 자리가 다 채워지는지다.
+          IMAGE_REGISTRY=검사용 IMAGE_TAG=검사용 \
+            docker compose --env-file ./.env \
+              -f docker-compose.yml -f docker-compose.registry.yml \
+              --profile full --profile routing config -q
+          EDGE_DOMAIN=example.invalid EDGE_EMAIL=ci@example.invalid \
+          DUCKDNS_SUBDOMAIN=ci DUCKDNS_TOKEN=ci \
+            docker compose --env-file ./.env \
+              -f docker-compose.yml -f docker-compose.edge.yml \
+              --profile full --profile edge --profile dns config -q
+
+      - name: stack isolation
+        run: ./scripts/compose-isolation-check.sh
+
+      # 본보기 파일에 실제 값이 들어가는 사고를 막는다. 이 저장소가 발급처
+      # 키를 한곳에 모으는 자리라, 여기서 새면 전부가 샌다.
+      #
+      # 이 파일의 관행은 "비워 두거나 replace- 로 시작하는 안내문" 이다.
+      # 그 둘 중 어느 것도 아닌 값이 있으면 실수로 넣은 것으로 본다.
+      - name: example must stay placeholder
+        run: |
+          bad=$(grep -nE '^[A-Z_]*(KEY|SECRET|TOKEN|PASSWORD)=.+' .env.example \
+                | grep -vE '=replace-' || true)
+          if [ -n "$bad" ]; then
+            echo "자리표시자가 아닌 값이 .env.example 에 있다:"
+            echo "$bad" | cut -d= -f1
+            exit 1
+          fi

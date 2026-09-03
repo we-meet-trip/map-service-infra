@@ -36,6 +36,20 @@ name: map-service
 
 # x-app-env — 애플리케이션 컨테이너 공통 환경설정.
 # user / agent / hub / yolo 모두 동일 .env 파일을 공유한다.
+# 로그가 무한히 쌓이지 않게 한다.
+#
+# 기본값은 크기 제한이 없다. 상태 확인만으로도 서비스마다 하루 수만 줄이
+# 쌓이는데, 그것이 디스크를 채우면 저장소가 먼저 죽는다. 그때 드러나는 모습은
+# "갑자기 아무것도 안 된다" 이고, 원인이 로그라는 것은 한참 뒤에야 보인다.
+#
+# 세 벌까지 남긴다. 되짚기에는 충분하고 서비스마다 30MB 를 넘지 않는다.
+x-logging: &default-logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 x-app-env: &app-env
   env_file: ./.env
 
@@ -45,9 +59,16 @@ services:
   # hub_data 등 스키마를 사전 생성한다.
   # ports: 호스트 5432 (루프백) → 컨테이너 5432
   postgres:
+    <<: *default-logging
     image: postgis/postgis:17-3.5
     container_name: map-service-postgres
     restart: unless-stopped
+    # 유휴 약 220MiB. 공유버퍼와 PostGIS 인덱스가 커질 여지를 두고 1g.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1g
     # postgis/postgis 는 amd64 전용이다(arm64 매니페스트 없음 — 17-3.5 ·
     # 17-3.5-alpine 모두 동일, manifest 실측 2026-07-29). platform 을 명시하지
     # 않으면 arm64 호스트(Apple Silicon)의 이미지 캐시가 없는 새 환경에서
@@ -68,7 +89,10 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      # -h 를 준다. 빼면 초기화 중에 잠깐 뜨는 내부 서버에도 응답이 와서,
+      # 아직 받을 수 없는 상태를 준비됐다고 읽는다. 빈 볼륨 첫 부팅에서만
+      # 열리는 창이라 평소에는 드러나지 않는다.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -77,9 +101,16 @@ services:
   # appendonly 모드로 지속화하여 재기동 시 데이터를 유지한다.
   # ports: 호스트 16379 → 컨테이너 6379 (호스트 측 충돌 회피용 매핑)
   redis:
+    <<: *default-logging
     image: redis:7-alpine
     container_name: map-service-redis
     restart: unless-stopped
+    # 캐시·카운터·스트림만 담고 데이터셋을 담지 않아 유휴 약 10MiB.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
     profiles: ["infra", "full"]
     # REDIS_PASSWORD 가 비어 있으면(현행) 무인증으로 기동한다.
     # 값이 설정되면 --requirepass 로 인증을 켜고 healthcheck 도 -a 로 인증한다.
@@ -104,16 +135,32 @@ services:
   # profiles: ["routing"] — full 에 포함되지 않는다. 데이터 빌드 후에만 기동.
   # ports: 호스트 5000 → 컨테이너 5000 (osrm-routed 기본 포트, 루프백 바인딩)
   osrm-foot:
+    <<: *default-logging
     image: ghcr.io/project-osrm/osrm-backend:v26.5.0-amd64-alpine
     container_name: map-service-osrm-foot
     restart: unless-stopped
+    # --mmap 로 그래프를 파일 매핑해 읽으므로 상주 메모리가 상한보다 훨씬 작다.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
     # osrm-backend 는 amd64 전용(arm64 미제공). arm64 호스트(Apple Silicon)는
     # 아래 platform 으로 amd64 에뮬레이션 실행된다. 프로덕션 amd64 서버는 네이티브.
     platform: linux/amd64
     profiles: ["routing"]
-    command: ["osrm-routed", "--algorithm", "mld", "/data/foot/korea.osrm"]
+    command: ["osrm-routed", "--algorithm", "mld", "--mmap", "1", "/data/foot/korea.osrm"]
     ports:
       - "127.0.0.1:5000:5000"
+    healthcheck:
+      # 뿌리 주소는 그래프를 읽지 않고도 답한다. 좌표를 도로에 붙여 보는 조회로
+      # 물어야 포트만 열린 상태와 길을 낼 수 있는 상태가 갈린다.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5000/nearest/v1/foot/126.9780,37.5665 | grep -q '\"code\":\"Ok\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # 그래프를 여는 동안의 실패는 세지 않는다.
+      start_period: 30s
     volumes:
       - osrm-data:/data:ro
 
@@ -121,14 +168,30 @@ services:
   # foot 과 동일 빌드 절차의 /bicycle/korea.osrm 을 읽는다(같은 named volume 공유).
   # ports: 호스트 5001 → 컨테이너 5000 (foot 과 호스트 포트만 다르다)
   osrm-bicycle:
+    <<: *default-logging
     image: ghcr.io/project-osrm/osrm-backend:v26.5.0-amd64-alpine
     container_name: map-service-osrm-bicycle
     restart: unless-stopped
+    # foot 과 같은 방식으로 읽는다.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
     platform: linux/amd64
     profiles: ["routing"]
-    command: ["osrm-routed", "--algorithm", "mld", "/data/bicycle/korea.osrm"]
+    command: ["osrm-routed", "--algorithm", "mld", "--mmap", "1", "/data/bicycle/korea.osrm"]
     ports:
       - "127.0.0.1:5001:5000"
+    healthcheck:
+      # 뿌리 주소는 그래프를 읽지 않고도 답한다. 좌표를 도로에 붙여 보는 조회로
+      # 물어야 포트만 열린 상태와 길을 낼 수 있는 상태가 갈린다.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5000/nearest/v1/bicycle/126.9780,37.5665 | grep -q '\"code\":\"Ok\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # 그래프를 여는 동안의 실패는 세지 않는다.
+      start_period: 30s
     volumes:
       - osrm-data:/data:ro
 
@@ -140,8 +203,20 @@ services:
     build:
       context: ../map-service-user
     container_name: map-service-user
-    <<: *app-env
+    <<: [*app-env, *default-logging]
     restart: unless-stopped
+    # 유휴 약 670MiB. 상한을 걸면 JVM 이 힙을 상한 기준으로 다시 잡으므로
+    # 아래 JAVA_TOOL_OPTIONS 로 비율을 함께 올린다. 둘 중 하나만 넣으면
+    # 기본 비율 25%가 적용돼 힙이 512m 로 줄고 상한 이전보다 나빠진다.
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 2g
+    environment:
+      # 컨테이너 상한의 70%를 힙으로 쓴다. 나머지 30%는 스레드 스택·메타스페이스·
+      # 네이티브 버퍼 몫이다. 지정하지 않으면 기본 25%가 적용된다.
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=70"
     profiles: ["backend", "full"]
     depends_on:
       postgres:
@@ -165,8 +240,20 @@ services:
     build:
       context: ../map-service-agent
     container_name: map-service-agent
-    <<: *app-env
+    <<: [*app-env, *default-logging]
     restart: unless-stopped
+    # 종료 신호를 받고 정리할 시간을 넉넉히 준다. 이 서비스는 진행 중인
+    # 생성 작업을 기다렸다가 못 끝낸 것에 실패를 알리고 나가도록 되어
+    # 있는데, 기본값 10초는 그 절차를 중간에 끊는다. 끊기면 기다리던
+    # 쪽은 아무 통지도 못 받고 시간 초과까지 그대로 매달린다.
+    # 할 일이 없으면 곧바로 나가므로 평소 배포가 느려지지는 않는다.
+    stop_grace_period: 320s
+    # 유휴 약 100MiB. 모델 호출은 원격이라 프로세스 안에 모델이 없다.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 512m
     profiles: ["backend", "full"]
     depends_on:
       postgres:
@@ -176,10 +263,12 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)\" || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3).status==200 else 1)\" || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
+      # 저장소에 처음 붙는 동안의 실패는 세지 않는다.
+      start_period: 20s
 
   # hub — 외부 데이터 게이트웨이 애플리케이션.
   # postgres / redis 가 살아있어야 기동된다.
@@ -189,8 +278,14 @@ services:
     build:
       context: ../map-service-hub
     container_name: map-service-hub
-    <<: *app-env
+    <<: [*app-env, *default-logging]
     restart: unless-stopped
+    # 유휴 약 115MiB. 외부 응답을 메모리에 오래 들고 있지 않는다.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 512m
     profiles: ["backend", "full"]
     depends_on:
       postgres:
@@ -200,10 +295,12 @@ services:
     ports:
       - "127.0.0.1:8001:8000"
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)\" || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3).status==200 else 1)\" || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
+      # 저장소에 처음 붙는 동안의 실패는 세지 않는다.
+      start_period: 20s
 
   # yolo — 카메라 실시간 인식 서비스 (YOLO 추론 + Gemini Vision 식별).
   # 클라이언트가 WebSocket(/ws/vision)으로 프레임을 보내면 객체를 찾아
@@ -229,13 +326,19 @@ services:
     build:
       context: ../map-service-yolo
     container_name: map-service-yolo
-    <<: *app-env
+    <<: [*app-env, *default-logging]
     environment:
       GEMINI_API_KEY: ${VISION_GEMINI_API_KEY:-${GEMINI_API_KEY:-}}
       GEMINI_TIMEOUT_SECONDS: ${VISION_GEMINI_TIMEOUT_SECONDS:-25.0}
       JOB_TIMEOUT_SECONDS: ${VISION_JOB_TIMEOUT_SECONDS:-45.0}
       WS_MAX_JOBS_PER_CONNECTION: ${VISION_WS_MAX_JOBS:-60}
     restart: unless-stopped
+    # torch 와 가중치를 프로세스 안에 올린다. 다른 서비스보다 한 자리 크다.
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 3g
     profiles: ["vision"]
     ports:
       - "127.0.0.1:8004:8000"
@@ -263,9 +366,16 @@ services:
   # ports: 호스트 8090 → 컨테이너 80. 루프백에만 붙인다 — 바깥 노출은 이
   # 포트를 터널이 집어 가는 방식이고, 열린 포트를 그대로 두지 않는다.
   proxy:
+    <<: *default-logging
     image: nginx:alpine
     container_name: map-service-proxy
     restart: unless-stopped
+    # 유휴 약 10MiB. 레이트리밋 존 세 개가 각각 10m 를 차지한다.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128m
     profiles: ["backend", "full"]
     depends_on:
       - user
