@@ -107,6 +107,13 @@ services:
       - ./.env.test
     ports: !override
       - "127.0.0.1:8204:8000"
+    # 2코어 시험 서버에 맞춘 상한. 밑판의 값을 그대로 두면 코어 수를 넘어
+    # 컨테이너 생성 자체가 거절된다. 상한은 예약이 아니라 겹쳐도 된다.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 2g
 
   proxy:
     container_name: !reset null
