@@ -1,0 +1,69 @@
+# 시험 스택 곁에 세우는 관리자 스택 오버레이.
+#
+#   docker compose --env-file ./.env.test \
+#     -f docker-compose.admin.yml -f docker-compose.admin.test.yml up -d
+#
+# 왜 필요한가. 관리자 스택은 서비스 스택이 만든 네트워크에 얹히는데, 그 이름이
+# 운영은 map-net 이고 시험은 map-test-net 이다. 덧칠 없이 시험 스택 곁에
+# 세우면 없는 네트워크를 찾아 그 자리에서 멈춘다.
+#
+# 겹치면 안 되는 축은 서비스 쪽 시험 덧칠과 같은 다섯이다.
+#   1) 프로젝트명   map-admin        → map-admin-test
+#   2) 볼륨 이름    map_*            → map-test_*
+#   3) 네트워크     map-net          → map-test-net
+#   4) 컨테이너명   map-admin-*      → 자동 생성
+#   5) 호스트 포트  각 포트          → 각 포트 + 200
+#
+# 2번을 빠뜨리면 시험 콘솔이 운영 지표 위에 쓴다. 지표는 지워도 티가 나지
+# 않아서, 어긋난 줄 모른 채 한참을 본다.
+#
+# 지표 수집 대상은 서비스 이름으로 찾는다(postgres·redis·hub·user…). 시험
+# 스택도 고정 컨테이너 이름만 풀었을 뿐 서비스 이름은 그대로라, 수집 설정을
+# 따로 두지 않아도 시험 쪽을 본다.
+
+name: map-admin-test
+
+services:
+  admin:
+    container_name: !reset null
+    env_file: !override
+      - ./.env.test
+    ports: !override
+      - "127.0.0.1:8202:8000"
+
+  admin-web:
+    container_name: !reset null
+    ports: !override
+      - "127.0.0.1:8203:80"
+
+  prometheus:
+    container_name: !reset null
+    ports: !override
+      - "127.0.0.1:9290:9090"
+
+  grafana:
+    container_name: !reset null
+    # 운영 쪽은 환경파일 값을 쓰지만 여기서는 고정한다. 두 스택이 같은
+    # 환경파일 키를 보면 한쪽을 띄운 채 다른 쪽을 띄울 때 포트가 겹친다.
+    ports: !override
+      - "127.0.0.1:13200:3000"
+
+  postgres-exporter:
+    container_name: !reset null
+
+  redis-exporter:
+    container_name: !reset null
+
+  node-exporter:
+    container_name: !reset null
+
+volumes:
+  prometheus-data:
+    name: map-test_prometheus-data
+  grafana-data:
+    name: map-test_grafana-data
+
+networks:
+  default:
+    name: map-test-net
+    external: true

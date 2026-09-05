@@ -24,7 +24,15 @@
 # 컨테이너 이름은 map-admin-<역할> 로 고정한다. 운영 콘솔 API 는 서비스명이
 # admin 이라 그대로 붙이면 map-admin-admin 이 되므로 map-admin-api 로 둔다.
 #
-# 포트는 전부 127.0.0.1 루프백 바인딩이다.
+# 포트는 전부 127.0.0.1 루프백 바인딩이다. 바깥에서 보려면 접속 통로를 따로
+# 뚫는다 — 앞단은 이 스택의 어떤 포트도 내보내지 않는다.
+#
+# 자원 상한은 일곱을 합쳐 1408m 이다. 서비스 스택과 한 기계를 나눠 쓸 때
+# 콘솔이 사용자 트래픽 쪽 자리를 잠식하지 않게 하려는 것이다. 상한은 예약이
+# 아니라서 평소에는 훨씬 적게 쓴다.
+#
+# 받아 쓰기: docker-compose.admin.registry.yml 을 함께 얹으면 만들지 않고
+# 받아 온다. 시험 스택 곁에 세울 때는 docker-compose.admin.test.yml 을 얹는다.
 
 name: map-admin
 
@@ -32,6 +40,19 @@ name: map-admin
 # 서비스 스택과 동일한 .env 파일을 읽는다(설정 단일 출처).
 x-app-env: &app-env
   env_file: ./.env
+
+# x-logging — 로그가 무한히 쌓이지 않게 한다.
+#
+# 서비스 스택에는 같은 장치가 있는데 이 파일에는 없었다. 앵커는 파일을 넘지
+# 못하므로 여기에 한 벌을 더 둔다. 이 스택은 늘 켜 둔 채로 두는 것이라,
+# 상한이 없으면 지표 수집기들이 디스크를 조용히 채우다 "갑자기 아무것도
+# 안 된다" 로만 드러난다.
+x-logging: &default-logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
 
 services:
   # admin — 운영 콘솔 JSON API 서버 (cut 2).
@@ -41,11 +62,19 @@ services:
   # 인증은 admin_accounts(bcrypt)+세션쿠키(단일 공유 Basic 폐지).
   # ports: 호스트 8002 → 컨테이너 8000 (loopback).
   admin:
+    <<: [*default-logging, *app-env]
     build:
       context: ../map-service-admin
     container_name: map-admin-api
-    <<: *app-env
     restart: unless-stopped
+    # hub 와 같은 얼개의 파이썬 서버인데 일정 실행기가 없어 더 가볍다.
+    # 서비스 스택과 한 기계를 나눠 쓰므로, 콘솔이 사용자 트래픽 쪽 자리를
+    # 잠식하지 않게 상한을 둔다.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
     ports:
       - "127.0.0.1:8002:8000"
     healthcheck:
@@ -63,12 +92,19 @@ services:
   # ports: 호스트 8003 → 컨테이너 80 (loopback). node/nginx alpine 은 멀티아치
   # 이미지라 amd64·arm64 호스트 어디서든 빌드된다.
   admin-web:
+    <<: *default-logging
     build:
       context: ../map-service-admin/web
     container_name: map-admin-web
     restart: unless-stopped
     depends_on:
       - admin
+    # 만들어 둔 파일을 그대로 내보내기만 한다. 계산이 없어 아주 작다.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64m
     ports:
       - "127.0.0.1:8003:80"
 
@@ -79,10 +115,19 @@ services:
 
   # prometheus — 메트릭 수집/저장. 보존기간/크기를 단일 호스트에 맞게 제한한다.
   prometheus:
+    <<: *default-logging
     image: prom/prometheus:v2.54.1
     container_name: map-admin-prometheus
     restart: unless-stopped
     profiles: ["monitoring"]
+    # 아홉 자리를 30초마다 훑고 열흘치를 들고 있다. 최근 구간은 메모리에
+    # 두었다가 주기적으로 내려쓰는 구조라, 상한이 없으면 표본이 늘어나는
+    # 만큼 조용히 커진다.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512m
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
@@ -98,12 +143,18 @@ services:
   # grafana — 대시보드. 데이터소스/대시보드는 코드로 프로비저닝된다.
   # 임베드 허용 + anonymous Viewer(loopback 전제) — admin 콘솔 iframe 용.
   grafana:
+    <<: *default-logging
     image: grafana/grafana-oss:11.2.0
     container_name: map-admin-grafana
     restart: unless-stopped
     profiles: ["monitoring"]
     depends_on:
       - prometheus
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 384m
     environment:
       GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-admin}
@@ -129,19 +180,31 @@ services:
   # 옛 컬럼을 계속 조회해 해당 수집기가 30초마다 영구 실패한다. 지표가 통째로
   # 비는 데다 대상 DB 로그에도 오류가 계속 쌓인다.
   postgres-exporter:
+    <<: *default-logging
     image: prometheuscommunity/postgres-exporter:v0.17.1
     container_name: map-admin-postgres-exporter
     restart: unless-stopped
     profiles: ["monitoring"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64m
     environment:
       DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
 
   # redis-exporter — Redis 메트릭(메모리/클라이언트/키스페이스).
   redis-exporter:
+    <<: *default-logging
     image: oliver006/redis_exporter:v1.62.0
     container_name: map-admin-redis-exporter
     restart: unless-stopped
     profiles: ["monitoring"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64m
     environment:
       REDIS_ADDR: "redis://redis:6379"
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
@@ -153,10 +216,16 @@ services:
   # 생성만 된 채 멈춘다). 전파 옵션은 중첩 마운트까지 들여다보기 위한 것이라,
   # 없어도 CPU·메모리·디스크 지표 수집에는 지장이 없다.
   node-exporter:
+    <<: *default-logging
     image: prom/node-exporter:v1.8.2
     container_name: map-admin-node-exporter
     restart: unless-stopped
     profiles: ["monitoring"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64m
     command:
       - "--path.rootfs=/host"
     pid: host

@@ -10,6 +10,12 @@
 # 쪽인데 그 조합을 한 번도 안 보면, 정작 서버에 올라가는 구성이 검사 밖에
 # 남는다.
 #
+# 콘솔 스택도 같은 그물로 본다. 콘솔은 저장소를 직접 들여다보므로, 시험 쪽이
+# 운영 볼륨이나 운영 저장소를 물면 지표와 감사 기록이 조용히 뒤섞인다.
+#
+# 서비스와 콘솔 사이도 본다. 다만 그 둘은 네트워크를 **일부러** 공유하므로
+# 그 축만 빼고 본다 — 콘솔이 서비스의 이름으로 저장소와 상류를 찾는다.
+#
 # 도커 데몬은 필요 없다. 렌더링만 한다.
 set -euo pipefail
 
@@ -41,9 +47,18 @@ render() {  # $1=환경파일  $2..=덧칠 파일들
   docker compose --env-file "$env" "${files[@]}" "${RENDER_PROFILES[@]}" config --format json
 }
 
-compare() {  # $1=이름  $2=운영 json  $3=시험 json
+# 콘솔은 밑판이 다르다. 서비스 쪽 렌더러에 그 파일을 끼울 수 없어 따로 둔다.
+render_admin() {  # $1=환경파일  $2..=덧칠 파일들
+  local env=$1; shift
+  local files=(-f docker-compose.admin.yml)
+  local f
+  for f in "$@"; do files+=(-f "$f"); done
+  docker compose --env-file "$env" "${files[@]}" --profile monitoring config --format json
+}
+
+compare() {  # $1=이름  $2=왼쪽 json  $3=오른쪽 json  $4=건너뛸 축(쉼표, 선택)
   echo "### $1"
-  LABEL="$1" PROD_JSON="$2" TEST_JSON="$3" python3 - <<'AXES'
+  LABEL="$1" PROD_JSON="$2" TEST_JSON="$3" SKIP_AXES="${4:-}" python3 - <<'AXES'
 import json, os, sys
 
 def axes(doc):
@@ -69,18 +84,22 @@ def axes(doc):
 
 prod = axes(json.loads(os.environ["PROD_JSON"]))
 test = axes(json.loads(os.environ["TEST_JSON"]))
+skip = {s for s in os.environ.get("SKIP_AXES", "").split(",") if s}
 
 bad = 0
 for axis in prod:
+    if axis in skip:
+        print(f"  건너뜀 [{axis}] 여기서는 공유가 설계다")
+        continue
     dup = sorted(prod[axis] & test[axis])
     if dup:
         bad += len(dup)
         print(f"  겹침 [{axis}] {', '.join(dup)}")
     else:
-        print(f"  통과 [{axis}] 운영 {len(prod[axis])}개 · 시험 {len(test[axis])}개")
+        print(f"  통과 [{axis}] 왼쪽 {len(prod[axis])}개 · 오른쪽 {len(test[axis])}개")
 
 if bad:
-    print(f"겹침 {bad}건 — 시험 스택이 운영을 침범한다", file=sys.stderr)
+    print(f"겹침 {bad}건 — 갈라져 있어야 할 둘이 같은 자리를 쓴다", file=sys.stderr)
     sys.exit(1)
 AXES
 }
@@ -110,5 +129,23 @@ if y.get('build'):
 if 'map-service-yolo:' not in (y.get('image') or ''):
     print('카메라 갈래에 받아올 이름이 없다', file=sys.stderr); sys.exit(1)
 " || exit 1
+
+# 콘솔도 같은 다섯 축으로 본다. 시험 콘솔이 운영 지표 위에 쓰면 지워도 티가
+# 나지 않아, 어긋난 줄 모른 채 한참을 본다.
+compare "콘솔" \
+  "$(render_admin "$PROD_ENV" docker-compose.admin.registry.yml)" \
+  "$(render_admin "$TEST_ENV" docker-compose.admin.test.yml docker-compose.admin.registry.yml)"
+
+# 서비스와 콘솔이 한 기계에 함께 선다. 네트워크는 일부러 공유하지만 나머지
+# 넷은 갈라져 있어야 한다 — 특히 포트가 겹치면 나중에 올리는 쪽이 뜨지 못한다.
+compare "서비스↔콘솔(운영)" \
+  "$(render "$PROD_ENV" docker-compose.registry.yml)" \
+  "$(render_admin "$PROD_ENV" docker-compose.admin.registry.yml)" \
+  "네트워크"
+
+compare "서비스↔콘솔(시험)" \
+  "$(render "$TEST_ENV" docker-compose.test.yml docker-compose.registry.yml)" \
+  "$(render_admin "$TEST_ENV" docker-compose.admin.test.yml docker-compose.admin.registry.yml)" \
+  "네트워크"
 
 echo "겹침 0건"

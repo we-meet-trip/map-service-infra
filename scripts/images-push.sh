@@ -19,8 +19,12 @@
 #   IMAGE_REGISTRY=... IMAGE_TAG=2026-09-01 ./scripts/images-push.sh
 #   IMAGE_REGISTRY=... SERVICES="user hub" ./scripts/images-push.sh
 #
-# 네 서비스를 모두 만든다. 카메라 인식이 배포 구성에 들어가면서 그 이미지도
-# 서버가 받아 쓸 것이 되었다.
+# 여섯 서비스를 모두 만든다. 카메라 인식이 배포 구성에 들어가면서 그 이미지도
+# 서버가 받아 쓸 것이 되었고, 운영 콘솔 둘도 같은 이유로 들어왔다.
+#
+# 콘솔은 앞뒤 두 이미지로 나뉜다. 뒤(admin)는 파이썬 API 이고 앞(admin-web)은
+# 화면을 만들어 nginx 에 얹은 것이라, 만드는 자리가 서로 다르다. 한 이미지로
+# 합칠 수 없어 둘로 둔다.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -28,13 +32,21 @@ cd "$(dirname "$0")/.."
 : "${IMAGE_REGISTRY:?받아갈 곳을 IMAGE_REGISTRY 로 정한다 (예: ghcr.io/이름)}"
 IMAGE_TAG=${IMAGE_TAG:-latest}
 PLATFORM=${IMAGE_PLATFORM:-linux/amd64}
-SERVICES=${SERVICES:-user agent hub yolo}
+SERVICES=${SERVICES:-user agent hub yolo admin admin-web}
 
 declare -A CONTEXT=(
   [user]=../map-service-user
   [agent]=../map-service-agent
   [hub]=../map-service-hub
   [yolo]=../map-service-yolo
+  [admin]=../map-service-admin
+  [admin-web]=../map-service-admin/web
+)
+
+# 커밋을 읽을 자리. 화면 쪽은 만드는 자리가 레포 안쪽 폴더라 그 자리에서
+# 커밋을 물으면 레포 뿌리의 값이 나오는데, 그 값이 맞다 — 같은 레포다.
+declare -A REV_DIR=(
+  [admin-web]=../map-service-admin
 )
 
 # 만드는 자리를 미리 확인한다. 없는 채로 시작하면 앞의 것들만 올라가고
@@ -60,8 +72,9 @@ for svc in $SERVICES; do
   # 만든 자리가 저장소가 아니면(압축 해제본 등) 되짚을 값이 없다는 사실만
   # 남기고 계속 간다 — 그것 때문에 만들기 자체가 멈추면 안 된다.
   # 손으로 부를 때 작업 트리가 더러우면 이 값과 실제로 만든 내용이 다르다.
-  rev=$(git -C "${CONTEXT[$svc]}" rev-parse HEAD 2>/dev/null || echo unknown)
-  src=$(git -C "${CONTEXT[$svc]}" remote get-url origin 2>/dev/null || echo unknown)
+  rev_dir=${REV_DIR[$svc]:-${CONTEXT[$svc]}}
+  rev=$(git -C "$rev_dir" rev-parse HEAD 2>/dev/null || echo unknown)
+  src=$(git -C "$rev_dir" remote get-url origin 2>/dev/null || echo unknown)
   docker buildx build --platform "$PLATFORM" -t "$ref" \
     --label "org.opencontainers.image.revision=$rev" \
     --label "org.opencontainers.image.version=$IMAGE_TAG" \

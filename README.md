@@ -27,15 +27,19 @@ MAP 서비스의 인프라 오케스트레이션 레포. 다른 6 레포(admin �
 - `scripts/map-up-admin.sh` — 관리자 스택 기동(DB 준비 확인 후)
 - `scripts/map-serve{,-down}.sh` — 실기기용 외부 노출(터널 개통 + 앱이 읽는 주소 게시)
 - `proxy/default.conf` — 외부 노출 시 앞에 서는 관문(nginx) 설정
-- `scripts/cloud-up.sh` — 클라우드 서버에서 순서대로 띄운다(받기 → 저장소 → 백업 → 표 손질 → 앱).
+- `docker-compose.admin.registry.yml` — 관리자 스택을 만들지 않고 받아 쓴다
+- `docker-compose.admin.test.yml` — 관리자 스택을 시험 스택 곁에 세운다(포트·볼륨·네트워크 분리)
+- `scripts/cloud-up.sh` — 클라우드 서버에서 순서대로 띄운다(받기 → 저장소 → 백업 → 표 손질 → 앱 → 콘솔).
   `--test` 시험 스택 · `--micro` 1GB 급 서버 · `--registry` 만들지 않고 받아 쓰기 ·
-  `--edge` 바깥 노출 · `--routing` 경로 엔진
-- `scripts/images-push.sh` — 세 이미지를 만들어 받아갈 곳에 올린다. 평소에는 사람이
+  `--edge` 바깥 노출 · `--routing` 경로 엔진 · `--vision` 카메라 인식 ·
+  `--admin` 운영 콘솔 · `--monitoring` 콘솔 + 지표
+- `scripts/images-push.sh` — 여섯 이미지를 만들어 받아갈 곳에 올린다. 평소에는 사람이
   직접 부르지 않고 레포의 배포 실행이 부른다
 - `scripts/make-test-env.sh` — 본보기에서만 파생해 시험용 환경파일을 만든다.
   실제 발급처 키가 시험으로 넘어갈 길을 구조적으로 막는다
 - `scripts/compose-isolation-check.sh` — 운영과 시험이 정말 갈라져 있는지 본다.
-  만들어 쓰는 조합과 받아 쓰는 조합을 둘 다 렌더링한다
+  만들어 쓰는 조합과 받아 쓰는 조합, 콘솔 스택, 그리고 서비스와 콘솔 사이까지
+  다섯 조합을 렌더링한다(서비스↔콘솔은 네트워크를 일부러 공유하므로 그 축만 뺀다)
 - `scripts/sync-client-env.sh` — 앱이 읽는 환경파일을 손으로 적지 않고 만든다
 - `scripts/e2e_full.py` · `scripts/e2e_chat.py` · `scripts/e2e_chat_multidevice.py` —
   띄운 스택을 실제로 두드려 보는 검증. 사람이 손으로 돌린다
@@ -49,6 +53,8 @@ map-service-infra/
 ├── .env.example                  환경변수 템플릿
 ├── docker-compose.yml            서비스 스택 (9 services + 5 profiles)
 ├── docker-compose.admin.yml      관리자 스택 (7 services)
+├── docker-compose.admin.registry.yml  관리자 스택 받아 쓰기
+├── docker-compose.admin.test.yml      관리자 스택 시험 덧칠
 ├── db/
 │   └── init/
 │       ├── 00-create-schemas.sql 첫 부팅 시 자동 실행 (schema 4개 + PostGIS + search_path)

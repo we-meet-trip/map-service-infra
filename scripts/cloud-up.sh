@@ -15,6 +15,8 @@
 #   ./scripts/cloud-up.sh --edge             바깥 노출까지 함께
 #   ./scripts/cloud-up.sh --test --micro     메모리 1GB 서버
 #   ./scripts/cloud-up.sh --registry         이미지를 만들지 않고 받아 쓴다
+#   ./scripts/cloud-up.sh --admin            운영 콘솔까지 함께
+#   ./scripts/cloud-up.sh --monitoring       콘솔 + 지표 수집까지 함께
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -27,14 +29,27 @@ MICRO=0
 PULL=0
 ROUTING=0
 VISION=0
+ADMIN=0
+MONITORING=0
+# 관리자 스택은 프로젝트가 따로다. 서비스 스택이 만든 네트워크에 얹히므로
+# 파일도 순서도 따로 세어야 한다.
+ADMIN_FILES=(-f docker-compose.admin.yml)
+ADMIN_PROFILES=()
 
 for arg in "$@"; do
   case "$arg" in
-    --test) ENV_FILE=./.env.test; FILES+=(-f docker-compose.test.yml); LABEL=시험 ;;
+    --test) ENV_FILE=./.env.test; FILES+=(-f docker-compose.test.yml)
+            ADMIN_FILES+=(-f docker-compose.admin.test.yml); LABEL=시험 ;;
     # 덧칠 순서가 중요하다. 나중에 붙은 것이 이긴다.
     --micro) FILES+=(-f docker-compose.micro.yml); MICRO=1 ;;
-    --registry) FILES+=(-f docker-compose.registry.yml); PULL=1 ;;
+    --registry) FILES+=(-f docker-compose.registry.yml)
+                ADMIN_FILES+=(-f docker-compose.admin.registry.yml); PULL=1 ;;
     --edge) FILES+=(-f docker-compose.edge.yml); PROFILES+=(--profile edge --profile dns) ;;
+    # 운영 콘솔을 함께 올린다. 서비스 스택이 만든 네트워크에 얹히므로 반드시
+    # 서비스가 먼저 서고 난 뒤에 세운다 — 아래에서 마지막 단계로 돌린다.
+    --admin) ADMIN=1 ;;
+    # 지표 수집까지. 콘솔의 모니터링 화면은 여기서 뜨는 것을 창으로 불러온다.
+    --monitoring) ADMIN=1; MONITORING=1 ;;
     # 경로 엔진을 함께 올린다. 켜지 않으면 hub 가 주소를 못 찾아 구간마다
     # 실패 왕복을 반복하고, 화면에는 도로를 따르지 않는 직선이 그려진다.
     --routing) PROFILES+=(--profile routing); ROUTING=1 ;;
@@ -45,6 +60,8 @@ for arg in "$@"; do
   esac
 done
 
+[ "$MONITORING" = 1 ] && ADMIN_PROFILES=(--profile monitoring)
+
 # 작은 서버 덧칠은 1GB 급을 겨냥한다. 카메라 인식은 모델을 들고 있어 그 위에
 # 더 얹을 자리가 없다 — 재 보니 나머지 여섯만으로 부하 중 838 MiB 였고 거기에
 # 279 MiB 가 더 붙는다. 뜨기는 하다가 무엇이 먼저 죽을지 모르는 상태가 된다.
@@ -54,9 +71,18 @@ if [ "$MICRO" = 1 ] && [ "$VISION" = 1 ]; then
   exit 2
 fi
 
+# 같은 이유로 콘솔도 막는다. 일곱을 합쳐 상한이 1.4GB 라, 1GB 급을 겨냥한
+# 덧칠 위에 얹으면 무엇이 먼저 죽을지 모르는 상태가 된다.
+if [ "$MICRO" = 1 ] && [ "$ADMIN" = 1 ]; then
+  echo "작은 서버 덧칠과 운영 콘솔은 함께 쓸 수 없다." >&2
+  echo "  콘솔을 빼거나, 메모리가 더 큰 서버를 쓴다." >&2
+  exit 2
+fi
+
 [ -f "$ENV_FILE" ] || { echo "환경파일이 없다: $ENV_FILE" >&2; exit 1; }
 
 dc() { docker compose --env-file "$ENV_FILE" "${FILES[@]}" "$@"; }
+dca() { docker compose --env-file "$ENV_FILE" "${ADMIN_FILES[@]}" "$@"; }
 
 # 값이 비면 그 서비스가 부팅하다 멈추는 것들만 미리 본다. 여기서 걸러 내지
 # 않으면 컨테이너가 뜨다 죽기를 반복하는 모습으로만 드러난다.
@@ -66,6 +92,27 @@ for key in POSTGRES_PASSWORD HUB_DATABASE_URL GEMINI_API_KEY; do
     exit 1
   fi
 done
+
+if [ "$ADMIN" = 1 ]; then
+  # 콘솔이 부팅하다 멈추는 값들. 저장소 접속과 첫 계정이 없으면 뜨더라도
+  # 아무도 들어갈 수 없다.
+  for key in ADMIN_DATABASE_URL MAP_ADMIN_PASSWORD ADMIN_BOOTSTRAP_USER ADMIN_BOOTSTRAP_PASSWORD; do
+    if ! grep -qE "^${key}=.+" "$ENV_FILE"; then
+      echo "$ENV_FILE 에 $key 값이 없다 — 콘솔이 뜨지 못한다" >&2
+      exit 1
+    fi
+  done
+  # 이 둘은 목록을 담는 자리라 빈 값이 곧 형식 오류다. 키를 아예 두지 않으면
+  # 기본값으로 도는데, 이름만 적고 값을 비우면 그 자리에서 뜨지 못한다.
+  # 그 모습은 다른 기동 실패와 구분되지 않아 여기서 먼저 걸러 낸다.
+  for key in MONITORING_PANELS ADMIN_CORS_ORIGINS; do
+    if grep -qE "^${key}=[[:space:]]*$" "$ENV_FILE"; then
+      echo "$ENV_FILE 의 $key 가 이름만 있고 값이 비었다." >&2
+      echo "  쓰지 않을 것이면 그 줄을 통째로 주석 처리한다. 빈 값은 형식 오류다." >&2
+      exit 1
+    fi
+  done
+fi
 
 # 경로 데이터는 이미지 안이 아니라 따로 만들어 둔 저장 자리에 있다. 없으면
 # 엔진이 뜨자마자 죽는데, 그 모습은 다른 기동 실패와 구분되지 않는다.
@@ -104,6 +151,14 @@ if [ "$PULL" = 1 ]; then
     echo "  1) 이 계정으로 받을 수 있는가 — docker login ghcr.io (패키지가 비공개면 필요하다)" >&2
     echo "  2) 판 이름이 실제로 올라간 이름인가 — $ENV_FILE 의 IMAGE_TAG" >&2
     echo "  3) sudo 로 돌리고 있다면 로그인한 계정과 같은 계정인가" >&2
+    exit 1
+  fi
+  # 콘솔 이미지도 같은 자리에서 받는다. 뒤늦게 기동 단계에서 받으면 그때
+  # 없다는 것을 알게 되는데, 그 시점에는 서비스가 이미 서 있어 되돌릴 것이
+  # 늘어난다.
+  if [ "$ADMIN" = 1 ] && ! dca "${ADMIN_PROFILES[@]}" pull; then
+    echo "콘솔 이미지를 받지 못했다. 위의 셋에 하나를 더 본다." >&2
+    echo "  4) 콘솔 이름 둘이 공개인가 — 처음 만들어진 이름은 비공개로 생긴다" >&2
     exit 1
   fi
 fi
@@ -199,8 +254,29 @@ fi
     "$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 } >> ./.deploy-history
 
+# 서비스 스택은 여기서 끝났다. 콘솔은 그 위에 얹는 별개의 스택이라, 배포
+# 기록을 남긴 뒤에 세운다 — 콘솔이 서지 못해도 서비스 배포 자체는 성립한
+# 것이고, 그 사실이 기록에 남아야 되돌릴 자리를 찾을 수 있다.
+#
+# 콘솔에 필요한 저장소 역할과 스키마 소유권은 위의 초기화 재적용 단계에서
+# 이미 맞춰졌다. 콘솔 자신의 표는 컨테이너가 뜨면서 스스로 손질한다.
+if [ "$ADMIN" = 1 ]; then
+  echo
+  echo "[$LABEL] 콘솔 기동"
+  if ! dca "${ADMIN_PROFILES[@]}" up -d --wait --wait-timeout 180; then
+    echo "콘솔이 정해진 시간 안에 정상이 되지 않았다." >&2
+    echo "서비스 스택은 이미 서 있다 — 콘솔만 다시 보면 된다:" >&2
+    echo "  docker compose --env-file $ENV_FILE ${ADMIN_FILES[*]} logs admin" >&2
+    dca ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}' >&2
+    exit 1
+  fi
+fi
+
 echo
 dc ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}\t{{.Image}}'
+if [ "$ADMIN" = 1 ]; then
+  dca ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}\t{{.Image}}'
+fi
 
 if [ "$MICRO" = 1 ]; then
   echo

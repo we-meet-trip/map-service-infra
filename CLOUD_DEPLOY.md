@@ -224,7 +224,23 @@ DUCKDNS_TOKEN=<위와 같은 값>
 ./scripts/cloud-up.sh --test --registry              # 시험
 ./scripts/cloud-up.sh --registry --edge              # 바깥 노출까지 함께
 ./scripts/cloud-up.sh --registry --routing --edge    # 경로 엔진까지 함께
+./scripts/cloud-up.sh --registry --edge --vision --routing            # 운영 전체
+./scripts/cloud-up.sh --registry --edge --vision --routing --monitoring  # 콘솔·지표까지
 ```
+
+**갈래를 빼면 그 기능만 조용히 빠진다.** 기동은 성공하고 로그에도 남지
+않으므로, 무엇을 켜고 있는지는 명령줄에서만 알 수 있다.
+
+| 깃발 | 없으면 |
+|---|---|
+| `--vision` | 카메라 화면만 연결에 실패한다 |
+| `--routing` | 도로를 따르지 않는 지그재그가 그려진다 |
+| `--admin` | 운영 콘솔이 없다 |
+| `--monitoring` | 콘솔은 뜨지만 지표 화면이 빈다 |
+
+콘솔은 서비스 스택이 만든 네트워크에 얹히므로 **반드시 서비스가 선 뒤에**
+세운다. 스크립트가 그 순서를 지켜 마지막 단계로 돌린다. 내릴 때는 반대로
+콘솔을 먼저 내린다.
 
 **`--micro` 는 1GB 급 서버에서만 붙인다.** 그보다 큰 서버에 붙이면 얻는 것 없이
 BFF 가 상한에 붙어 돈다 — 재 보니 정점이 상한과 같고 천장에 서른 번 닿았다.
