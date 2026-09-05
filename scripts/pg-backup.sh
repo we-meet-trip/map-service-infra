@@ -72,6 +72,8 @@ OUT="${BACKUP_DIR}/map-${POSTGRES_DB}-${STAMP}.sql.gz"
 PART="${OUT}.part"
 
 mkdir -p "$BACKUP_DIR"
+# 백업에는 사용자 자료가 그대로 들어 있다. 쌓아 두는 자리를 주인만 열게 한다.
+chmod 700 "$BACKUP_DIR" 2>/dev/null || true
 trap 'rm -f "$PART"' EXIT
 
 dc() { docker compose --env-file "$ENV_FILE" "${FILES[@]}" "$@"; }
