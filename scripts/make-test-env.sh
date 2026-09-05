@@ -61,8 +61,27 @@ for k in KAKAO_REST_API_KEY KAKAO_OAUTH_CLIENT_ID \
   set_kv "$k" ""
 done
 
-# (2) 시험 전용 자격증명. 운영과 겹치지 않게 한눈에 보이는 값으로 둔다.
-TEST_PW=test-local-only
+# (2) 시험 전용 자격증명. 그때그때 만든다.
+#
+#     한눈에 보이는 고정 문자열을 쓰던 자리다. 시험 스택이 이 기계 안에만
+#     있을 때는 그것으로 충분했지만, 지금은 같은 파일이 바깥에 열린 시험
+#     서버에도 쓰인다. 이 값 하나가 저장소·관리자 콘솔·시험 계정을 함께
+#     여는데 스크립트는 공개된 곳에 있으므로, 고정해 두면 읽을 수 있는
+#     사람이 곧 들어올 수 있는 사람이 된다. 바로 위 저장소 비밀번호를
+#     난수로 두는 것과 같은 이유다.
+#
+#     이미 만들어 둔 값은 그대로 가져온다. 저장소는 처음 초기화될 때의
+#     비밀번호를 볼륨에 새겨 두기 때문에, 여기서 새 값으로 바꾸면 이미 있는
+#     볼륨에 붙지 못한다 — 그 실패는 기동 중에야 드러난다.
+TEST_PW=$(prev POSTGRES_PASSWORD)
+if [ -z "$TEST_PW" ]; then
+  if command -v openssl >/dev/null 2>&1; then
+    TEST_PW=$(openssl rand -hex 24)
+  else
+    echo "openssl 이 없어 시험 자격증명을 만들지 못했다." >&2
+    exit 1
+  fi
+fi
 set_kv POSTGRES_DB   map_test
 set_kv POSTGRES_USER map
 set_kv POSTGRES_PASSWORD "$TEST_PW"

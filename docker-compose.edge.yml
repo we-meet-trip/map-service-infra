@@ -17,8 +17,20 @@
 # 한 사람이 상한을 채우면 나머지 전원이 함께 막힌다. 그래서 아래에서
 # 그 헤더를 앞단이 직접 채운다.
 
+# 로그 상한. 밑판 파일의 앵커는 파일을 넘어오지 않으므로 여기에 다시 적는다.
+# 두 컨테이너 다 늘 켜 두는 것이고, 앞단은 바깥의 모든 요청을 한 줄씩,
+# 주소 갱신은 5분마다 적는다. 상한이 없으면 디스크가 조용히 차오르다가
+# "갑자기 아무것도 안 된다" 로만 드러난다.
+x-edge-logging: &edge-logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
   edge:
+    <<: *edge-logging
     image: caddy:2-alpine
     container_name: !reset null
     restart: unless-stopped
@@ -52,6 +64,7 @@ services:
   # 발급처는 실패를 200 응답에 "KO" 라는 본문으로 알린다. 응답 코드만 보면
   # 성공으로 읽히므로 본문을 확인한다.
   dns:
+    <<: *edge-logging
     image: curlimages/curl:8.11.1
     container_name: !reset null
     restart: unless-stopped

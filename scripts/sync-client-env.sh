@@ -39,9 +39,6 @@ read_env() {
 # 남기 쉽다. 어느 쪽이 맞는지는 열어 봐야 알 수 있으므로 둘 다 준다.
 naver_map_id="$(read_env NAVER_MAP_CLIENT_ID)"
 naver_map_id_fallback="$(read_env NAVER_MAP_CLIENT_ID_FALLBACK)"
-# 주소 검색. 앱이 발급처를 직접 부르므로 여기 값이 앱 꾸러미에 실린다.
-kakao_rest_key="$(read_env KAKAO_REST_API_KEY)"
-
 # 인식 서버 주소: 환경변수 > 기존 파일 > 빈 값. 비어 있으면 앱이 서버 주소에서
 # 스스로 만들어 쓰므로 비워 두어도 동작한다.
 vision_host="${VISION_SERVER_HOST:-}"
@@ -50,34 +47,11 @@ if [ -z "$vision_host" ] && [ -f "$DST" ]; then
 fi
 
 [ -n "$naver_map_id" ] || echo "  ! NAVER_MAP_CLIENT_ID 가 비어 있다 — 지도 타일이 인증에 실패한다"
-[ -n "$kakao_rest_key" ] || echo "  ! KAKAO_REST_API_KEY 가 비어 있다 — 주소 검색이 동작하지 않는다"
 
-# 이미 있는 파일과 값이 달라지는 키가 있으면 멈춘다.
-#
-# 두 파일에 같은 이름의 키가 서로 다른 값으로 들어 있는 경우가 실제로 있었다.
-# 그때 말없이 덮으면 동작하던 값이 검증되지 않은 값으로 바뀌는데, 화면을 열어
-# 보기 전까지 티가 나지 않아 한참 뒤에야 발견된다. 어느 쪽이 맞는지는 사람이
-# 정해야 하므로 여기서는 알리고 멈춘다.
-#
-# 지도 식별자는 이 검사에서 뺀다. 순서가 정해져 있어(infra 가 먼저, 예비가
-# 뒤) 덮어써도 이전 값이 사라지지 않고 예비 자리로 남기 때문이다.
-if [ -f "$DST" ] && [ "${FORCE:-0}" != "1" ]; then
-  # 지금 대조하는 것은 한 개다. 늘어나면 그때 목록으로 바꾼다.
-  changed=""
-  name=KAKAO_REST_API_KEY
-  prev="$(grep -E "^$name=" "$DST" | head -1 | cut -d= -f2- | tr -d '\r')"
-  # 아직 없던 키를 채우는 것은 덮어쓰기가 아니다.
-  if [ -n "$prev" ] && [ "$prev" != "$kakao_rest_key" ]; then
-    changed=" $name"
-  fi
-  if [ -n "$changed" ]; then
-    echo "✗ 두 파일의 값이 다르다:$changed"
-    echo "  infra 값으로 덮으면 지금 동작하는 값이 바뀐다. 어느 쪽이 맞는지"
-    echo "  확인한 뒤 map-service-infra/.env 를 맞추고 다시 실행한다."
-    echo "  확인을 마쳤고 그래도 덮으려면 FORCE=1 을 붙여 실행한다."
-    exit 1
-  fi
-fi
+# 값이 달라지면 멈추는 검사가 여기 있었다. 대조하던 것이 카카오 키 하나뿐이라,
+# 주소 검색이 서버를 거치게 되면서 대조할 대상이 남지 않았다. 지도 식별자는
+# 순서가 정해져 있어(infra 가 먼저, 예비가 뒤) 덮어써도 이전 값이 예비 자리로
+# 남으므로 원래 이 검사의 대상이 아니었다. 감출 수 없는 값만 남은 셈이다.
 
 # 덮어쓰기 전에 한 벌 남긴다. 손으로 적어 둔 값이 있으면 여기서 되찾는다.
 if [ -f "$DST" ]; then
@@ -94,8 +68,6 @@ cat > "$DST" <<EOF || fail "$DST 쓰기 실패"
 # NAVER_MAP_CLIENT_ID_FALLBACK : 위 값으로 인증이 막혔을 때 한 번 더 써 보는 값.
 NAVER_MAP_CLIENT_ID=$naver_map_id
 NAVER_MAP_CLIENT_ID_FALLBACK=$naver_map_id_fallback
-# KAKAO_REST_API_KEY : 주소 검색. 앱이 발급처를 직접 부르는 마지막 키다.
-KAKAO_REST_API_KEY=$kakao_rest_key
 # VISION_SERVER_HOST : 카메라 인식 서버 주소(호스트:포트). 비워 두면 앱이 서버
 #   주소에서 만들어 쓰고 관문을 거친다.
 VISION_SERVER_HOST=$vision_host

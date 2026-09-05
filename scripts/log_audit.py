@@ -54,6 +54,8 @@ BOOT_END = {
     "agent": "Application startup complete.",
     "user": "Started ServiceUserApplication in",
     "proxy": "start worker process",
+    "osrm-foot": "running and waiting for requests",
+    "osrm-bicycle": "running and waiting for requests",
 }
 
 # 부팅 구간에 반드시 있어야 하는 줄. 없으면 그 일을 안 한 것이다.
@@ -65,7 +67,23 @@ MUST_HAVE = {
     "agent": ["Application startup complete."],
     "user": ["Started ServiceUserApplication in", "HikariPool-1 - Start completed."],
     "proxy": ["start worker process"],
+    # 뿌리 주소는 그래프를 안 읽고도 답하므로 "떴다" 만으로는 부족하다.
+    # 길을 낼 준비가 끝났다는 줄까지 있어야 그래프를 실제로 연 것이다.
+    "osrm-foot": ["Listening on:", "running and waiting for requests"],
+    "osrm-bicycle": ["Listening on:", "running and waiting for requests"],
 }
+
+# 경로 엔진 두 대가 공유하는 규칙. 프로파일 이름만 다르고 형식은 같다.
+OSRM_FOLD = [
+    # 조회 기록. 4xx 는 좌표가 길에 붙지 않은 경우라 정상 범위이고,
+    # 5xx 는 아래 숫자·치명 검사가 따로 센다.
+    (r"\d+(\.\d+)?ms .* (2\d\d|3\d\d|40[0-4]) /(nearest|route|table|match)/",
+     "any", "경로 조회 기록"),
+    (r"starting up engines|Threads:|IP (address|port):|Keepalive timeout"
+     r"|Maximum header size|HTTP/1\.1 server using|Listening on:"
+     r"|running and waiting for requests",
+     "boot", "기동 안내"),
+]
 
 # 접어 둘 줄. (정규식, 어느 구간, 왜 접는가) 세 칸을 모두 채운다.
 # 문구만으로 등록하지 않는다 — 같은 문구가 다른 구간에서 나오면 뜻이 달라진다.
@@ -199,6 +217,10 @@ FOLD = {
          "any", "기동·종료 안내"),
         (r"start worker process|worker process \d+ exited", "boot", "일꾼 관리"),
     ],
+    # 경로 엔진 둘은 같은 형식으로 적는다. 여기에 규칙이 없으면 상태 확인이
+    # 15초마다 남기는 줄이 통째로 미분류로 쌓여, 정작 봐야 할 줄이 묻힌다.
+    "osrm-foot": OSRM_FOLD,
+    "osrm-bicycle": OSRM_FOLD,
 }
 
 # 보이면 곧바로 실패로 세는 줄. 문구만으로 판정할 수 있는 것만 넣는다.
