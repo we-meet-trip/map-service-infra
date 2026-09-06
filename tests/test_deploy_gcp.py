@@ -1,4 +1,5 @@
 import base64
+import copy
 import contextlib
 import hashlib
 import importlib.util
@@ -6,6 +7,8 @@ import io
 import json
 import os
 from pathlib import Path
+import re
+import stat
 import sys
 import tempfile
 import time
@@ -164,6 +167,165 @@ class ArtifactTests(BundleFixture, unittest.TestCase):
         self.assertFalse((self.root / "verified/transport.json").exists())
 
 
+class InfrastructureTests(BundleFixture, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.repo = self.root / "repo"
+        (self.repo / "scripts").mkdir(parents=True)
+        (self.repo / "scripts/cloud-up.sh").write_text(deploy.INFRA_BUNDLE_MARKER + "\n")
+        self.directory = self.root / "infrastructure"
+        self.present = {service for services in deploy.INFRASTRUCTURE.values() for service in services}
+        self.calls = []
+        self.configs = {}
+        self.metadata = {}
+        self.ids = {}
+        fixture = fixtures.fixture()
+        for project, infrastructure in deploy.INFRASTRUCTURE.items():
+            admin = project == "map-admin-test"
+            apps = deploy.release.SERVICES[4:] if admin else deploy.release.SERVICES[:4]
+            services = {service: {"image": fixture["services"][service]["image"] + "@" + fixture["services"][service]["digest"],
+                                  "environment": {"AUTH_ENFORCED": "true"}} for service in apps}
+            for service, repository in infrastructure.items():
+                digest = hashlib.sha256(service.encode()).hexdigest()
+                self.ids[service] = digest[:12]
+                self.metadata[service] = {"image_id": "sha256:" + digest, "os": "linux", "architecture": "amd64",
+                                          "repo_digests": ["docker.io/" + repository + "@sha256:" + "d" * 64]}
+                services[service] = {"image": repository + ":floating", "profiles": ["monitoring" if admin else "full"]}
+            self.configs[project] = {"name": project, "services": services, "volumes": {}, "networks": {"default": {"name": "map-test-net"}}}
+        # Disabled routing must neither be pulled nor injected into the override.
+        self.configs["map-test"]["services"]["osrm-foot"] = {"image": "unused:tag", "profiles": ["routing"]}
+
+    def docker(self, args, **kwargs):
+        self.calls.append(args)
+        if args[:2] == ["docker", "ps"]:
+            service = next(value.split("=", 2)[-1] for value in args if value.startswith("label=com.docker.compose.service="))
+            return self.ids[service] if service in self.present else ""
+        if args[:2] == ["docker", "inspect"]:
+            service = next(service for service, container in self.ids.items() if container == args[-1])
+            return self.metadata[service]["image_id"]
+        if args[:3] == ["docker", "image", "inspect"]:
+            service = next(service for project, services in deploy.INFRASTRUCTURE.items() for service, repository in services.items()
+                           if args[-1] in (self.metadata[service]["image_id"], repository + ":floating"))
+            return json.dumps(self.metadata[service])
+        if args[:2] == ["docker", "pull"]:
+            return ""
+        if args[:2] == ["docker", "compose"]:
+            admin = any(value.endswith("docker-compose.admin.yml") for value in args)
+            project = "map-admin-test" if admin else "map-test"
+            config = copy.deepcopy(self.configs[project])
+            filename = "compose.admin-infrastructure.yml" if admin else "compose.infrastructure.yml"
+            override = self.directory / filename
+            if str(override) in args:
+                for service, image in re.findall(r"^  ([a-z-]+):\n    build: !reset null\n    image: (sha256:[a-f0-9]{64})\n    platform: linux/amd64\n    pull_policy: never$", override.read_text(), re.MULTILINE):
+                    config["services"][service].update(image=image, build=None, platform="linux/amd64", pull_policy="never")
+            return json.dumps(config)
+        self.fail("unexpected command")
+
+    def prepare(self):
+        with patch.object(deploy, "REPO", self.repo), patch.object(deploy, "command", side_effect=self.docker):
+            captured = deploy.capture_infrastructure({})
+            evidence = deploy.prepare_infrastructure(self.directory, self.source, self.root / "candidate.env", captured, {})
+            deploy.preflight(self.source, self.root / "candidate.env", {}, infrastructure=self.directory)
+        return evidence
+
+    def test_all_existing_infrastructure_is_preserved_without_any_pull(self):
+        evidence = self.prepare()
+        self.assertFalse(any(args[:2] == ["docker", "pull"] for args in self.calls))
+        self.assertEqual(sum(len(services) for services in evidence["projects"].values()), 10)
+        for project, services in evidence["projects"].items():
+            for service, item in services.items():
+                self.assertEqual(item["image_id"], self.metadata[service]["image_id"])
+                self.assertEqual(item["mode"], "preserved")
+        for filename in ("compose.infrastructure.yml", "compose.admin-infrastructure.yml"):
+            text = (self.directory / filename).read_text()
+            for app in deploy.release.SERVICES:
+                self.assertNotIn(f"  {app}:\n", text)
+            self.assertNotIn("osrm", text)
+            self.assertNotIn("cadvisor", text)
+        self.assertEqual(json.loads((self.directory / "images.json").read_text()), evidence)
+        inspections = [args for args in self.calls if args[:2] == ["docker", "ps"]]
+        self.assertTrue(all("-a" in args for args in inspections))
+
+    def test_first_monitoring_install_pulls_only_new_services_and_records_registry_evidence(self):
+        self.present = set(deploy.INFRASTRUCTURE["map-test"])
+        evidence = self.prepare()
+        pulls = [args for args in self.calls if args[:2] == ["docker", "pull"]]
+        self.assertEqual({args[-1] for args in pulls}, {repo + ":floating" for repo in deploy.INFRASTRUCTURE["map-admin-test"].values()})
+        self.assertTrue(all(args[2:4] == ["--platform", "linux/amd64"] for args in pulls))
+        for item in evidence["projects"]["map-admin-test"].values():
+            self.assertEqual(item["mode"], "new")
+            self.assertEqual(len(item["repo_digests"]), 1)
+        self.assertEqual(evidence["projects"]["map-test"]["postgres"]["mode"], "preserved")
+
+    def test_missing_database_blocks_before_any_pull(self):
+        self.present.remove("redis")
+        with self.assertRaisesRegex(deploy.DeployError, "PostgreSQL and Redis"):
+            self.prepare()
+        self.assertFalse(any(args[:2] == ["docker", "pull"] for args in self.calls))
+
+    def test_multiple_existing_containers_are_rejected(self):
+        self.ids["postgres"] += "\n" + "a" * 12
+        with self.assertRaisesRegex(deploy.DeployError, "multiple infrastructure"):
+            self.prepare()
+
+    def test_existing_wrong_architecture_is_rejected(self):
+        self.metadata["redis"]["architecture"] = "arm64"
+        with self.assertRaisesRegex(deploy.DeployError, "linux/amd64"):
+            self.prepare()
+        self.assertFalse(any(args[:2] == ["docker", "pull"] for args in self.calls))
+
+    def test_new_image_requires_digest_from_expected_repository(self):
+        self.present.remove("grafana")
+        self.metadata["grafana"]["repo_digests"] = ["attacker/grafana@sha256:" + "d" * 64]
+        with self.assertRaisesRegex(deploy.DeployError, "registry digest evidence"):
+            self.prepare()
+
+    def test_new_image_wrong_architecture_is_rejected_after_pull(self):
+        self.present.remove("grafana")
+        self.metadata["grafana"]["architecture"] = "arm64"
+        with self.assertRaisesRegex(deploy.DeployError, "linux/amd64"):
+            self.prepare()
+
+    def test_app_release_cannot_remove_existing_infrastructure(self):
+        del self.configs["map-test"]["services"]["proxy"]
+        with self.assertRaisesRegex(deploy.DeployError, "cannot be removed"):
+            self.prepare()
+
+    def test_new_or_renamed_infrastructure_repository_is_rejected(self):
+        self.configs["map-admin-test"]["services"]["grafana"]["image"] = "attacker/grafana:latest"
+        with self.assertRaisesRegex(deploy.DeployError, "unapproved infrastructure image"):
+            self.prepare()
+        self.assertFalse(any(args[:2] == ["docker", "pull"] for args in self.calls))
+
+    def test_old_cloud_up_cannot_silently_ignore_infrastructure_pins(self):
+        (self.repo / "scripts/cloud-up.sh").write_text("echo old\n")
+        with self.assertRaisesRegex(deploy.DeployError, "immutable infrastructure support"):
+            self.prepare()
+        self.assertFalse(any(args[:2] == ["docker", "pull"] for args in self.calls))
+
+    def test_infrastructure_override_follows_app_release_override(self):
+        for admin in (False, True):
+            args = deploy.compose_command(admin=admin, bundle=self.source, infrastructure=self.directory)
+            files = [args[index + 1] for index, value in enumerate(args) if value == "-f"]
+            self.assertEqual(Path(files[-1]).parent, self.directory)
+            self.assertEqual(Path(files[-2]).parent, self.source)
+
+    def test_running_image_identity_is_verified_without_tag_lookup(self):
+        evidence = self.prepare()
+        with patch.object(deploy, "command", side_effect=self.docker):
+            deploy.verify_infrastructure_images(evidence, {})
+            self.metadata["postgres"]["image_id"] = "sha256:" + "f" * 64
+            with self.assertRaisesRegex(deploy.DeployError, "changed unexpectedly"):
+                deploy.verify_infrastructure_images(evidence, {})
+
+    def test_same_image_does_not_allow_database_container_recreation(self):
+        evidence = self.prepare()
+        self.ids["redis"] = "f" * 12
+        with patch.object(deploy, "command", side_effect=self.docker):
+            with self.assertRaisesRegex(deploy.DeployError, "stateful container was recreated"):
+                deploy.verify_infrastructure_images(evidence, {})
+
+
 class ReceiverTests(BundleFixture, unittest.TestCase):
     def scenario(self, failure=""):
         repo = self.root / "repo"
@@ -183,6 +345,8 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
             return ""
         def fake_command(args, **_kwargs):
             self.calls.append(tuple(args))
+            if "scripts/cloud-up.sh" in args:
+                self.deployment_env = _kwargs["env"]
             if args[:2] == ["docker", "ps"]:
                 return "a" * 12 if "label=com.docker.compose.service=user" in args else ""
             if args[:2] == ["docker", "inspect"]:
@@ -195,8 +359,19 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
         def fake_smoke():
             if failure == "smoke":
                 raise deploy.DeployError("synthetic-private")
-        def fake_preflight(*args):
+        def fake_preflight(*args, **kwargs):
             if failure == "preflight":
+                raise deploy.DeployError("synthetic-private")
+        def fake_capture(*args):
+            self.calls.append(("capture_infrastructure",))
+            return {}
+        def fake_prepare(directory, *args):
+            self.calls.append(("prepare_infrastructure",))
+            directory.mkdir()
+            (directory / "images.json").write_text("{}")
+            return {}
+        def fake_verify(*args):
+            if failure == "infrastructure":
                 raise deploy.DeployError("synthetic-private")
         output = io.StringIO()
         old_umask = os.umask(0o077)
@@ -205,6 +380,9 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
                  patch.object(deploy, "verify_instance"), patch.object(deploy, "backup_environment", return_value={}), \
                  patch.object(deploy, "git", side_effect=fake_git), patch.object(deploy, "command", side_effect=fake_command), \
                  patch.object(deploy, "preflight", side_effect=fake_preflight), patch.object(deploy, "smoke", side_effect=fake_smoke), \
+                 patch.object(deploy, "capture_infrastructure", side_effect=fake_capture), \
+                 patch.object(deploy, "prepare_infrastructure", side_effect=fake_prepare), \
+                 patch.object(deploy, "verify_infrastructure_images", side_effect=fake_verify), \
                  contextlib.redirect_stdout(output):
                 if failure:
                     with self.assertRaises(deploy.DeployError):
@@ -227,6 +405,16 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
         start = next(i for i, c in enumerate(self.calls) if "scripts/cloud-up.sh" in c)
         self.assertLess(backup, start)
         self.assertNotIn("rollback_started", output)
+        captured = self.calls.index(("capture_infrastructure",))
+        checkout = next(i for i, c in enumerate(self.calls) if c[:2] == ("git", "checkout"))
+        prepared = self.calls.index(("prepare_infrastructure",))
+        self.assertLess(captured, checkout)
+        self.assertLess(prepared, backup)
+        infrastructure = Path(self.deployment_env["INFRA_IMAGE_BUNDLE"])
+        self.assertTrue((infrastructure / "images.json").is_file())
+        current = json.loads((self.root / "state/current.json").read_text())
+        self.assertEqual(current["infrastructure"], str(infrastructure))
+        self.assertNotEqual(self.deployment_env["RELEASE_BUNDLE"], str(infrastructure))
 
     def test_preflight_failure_restores_source_without_starting_apps(self):
         output = self.scenario("preflight")
@@ -256,6 +444,33 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
         output = self.scenario("smoke")
         self.assertEqual(output.count('"rollback_started"'), 1)
         self.assertNotIn("deploy_complete", output)
+
+    def test_infrastructure_identity_failure_cannot_report_success(self):
+        output = self.scenario("infrastructure")
+        self.assertEqual(output.count('"rollback_started"'), 1)
+        self.assertNotIn("deploy_complete", output)
+
+    def test_only_git_checkout_relaxes_child_umask(self):
+        with patch.object(deploy, "command") as run:
+            deploy.git("checkout", "--detach", "a" * 40)
+            self.assertEqual(run.call_args.kwargs["umask"], 0o022)
+            deploy.git("fetch", "--no-tags", "origin", "a" * 40)
+            self.assertEqual(run.call_args.kwargs["umask"], -1)
+            deploy.git("diff", "--quiet", "--")
+            self.assertEqual(run.call_args.kwargs["umask"], -1)
+
+    def test_public_checkout_permissions_do_not_relax_private_parent_files(self):
+        public = self.root / "tracked.yml"
+        private = self.root / "private.env"
+        old_umask = os.umask(0o077)
+        try:
+            deploy.command([sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('public')", str(public)],
+                           cwd=self.root, umask=0o022)
+            private.write_text("synthetic-private")
+        finally:
+            os.umask(old_umask)
+        self.assertEqual(stat.S_IMODE(public.stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE(private.stat().st_mode), 0o600)
 
     def test_changed_admin_migration_head_is_rejected_before_deployment(self):
         calls = []

@@ -29,6 +29,7 @@ MICRO=0
 PULL=0
 ROUTING=0
 VISION=0
+EDGE=0
 ADMIN=0
 MONITORING=0
 # 관리자 스택은 프로젝트가 따로다. 서비스 스택이 만든 네트워크에 얹히므로
@@ -44,7 +45,7 @@ for arg in "$@"; do
     --micro) FILES+=(-f docker-compose.micro.yml); MICRO=1 ;;
     --registry) FILES+=(-f docker-compose.registry.yml)
                 ADMIN_FILES+=(-f docker-compose.admin.registry.yml); PULL=1 ;;
-    --edge) FILES+=(-f docker-compose.edge.yml); PROFILES+=(--profile edge --profile dns) ;;
+    --edge) FILES+=(-f docker-compose.edge.yml); PROFILES+=(--profile edge --profile dns); EDGE=1 ;;
     # 운영 콘솔을 함께 올린다. 서비스 스택이 만든 네트워크에 얹히므로 반드시
     # 서비스가 먼저 서고 난 뒤에 세운다 — 아래에서 마지막 단계로 돌린다.
     --admin) ADMIN=1 ;;
@@ -71,6 +72,18 @@ if [ -n "${RELEASE_BUNDLE:-}" ]; then
   done
   FILES+=(-f "$RELEASE_BUNDLE/compose.images.yml")
   ADMIN_FILES+=(-f "$RELEASE_BUNDLE/compose.admin-images.yml")
+fi
+
+# Automated application releases preserve the receiver's exact infrastructure
+# images. New infrastructure is resolved and pulled before this script runs.
+# MAP_INFRA_IMAGE_BUNDLE_VERSION=1
+if [ -n "${INFRA_IMAGE_BUNDLE:-}" ]; then
+  [ -n "${RELEASE_BUNDLE:-}" ] || { echo 'infrastructure pins require a release bundle' >&2; exit 2; }
+  for pin in compose.infrastructure.yml compose.admin-infrastructure.yml; do
+    [ -f "$INFRA_IMAGE_BUNDLE/$pin" ] || { echo 'infrastructure image pin missing' >&2; exit 2; }
+  done
+  FILES+=(-f "$INFRA_IMAGE_BUNDLE/compose.infrastructure.yml")
+  ADMIN_FILES+=(-f "$INFRA_IMAGE_BUNDLE/compose.admin-infrastructure.yml")
 fi
 
 # 작은 서버 덧칠은 1GB 급을 겨냥한다. 카메라 인식은 모델을 들고 있어 그 위에
@@ -154,10 +167,18 @@ fi
 
 if [ "$PULL" = 1 ]; then
   echo "[$LABEL] 0/4 이미지 받기"
+  pull_services=()
+  admin_pull_services=()
+  if [ -n "${INFRA_IMAGE_BUNDLE:-}" ]; then
+    pull_services=(user agent hub)
+    [ "$VISION" = 0 ] || pull_services+=(yolo)
+    admin_pull_services=(admin admin-web)
+  fi
   # 받는 곳은 네 가지 사정을 모두 같은 글자(denied)로 답한다 — 로그인을 안
   # 했을 때, 토큰이 만료됐을 때, 판 이름을 잘못 적었을 때, 이름이 바뀌었을 때.
   # 그 넷을 구분해 주지 않으므로 여기서 무엇을 봐야 하는지 대신 적어 준다.
-  if ! dc "${PROFILES[@]}" pull; then
+  # Bash 3.2 treats an empty array as unset under nounset (macOS manual startup).
+  if ! dc "${PROFILES[@]}" pull ${pull_services[@]+"${pull_services[@]}"}; then
     echo "이미지를 받지 못했다. 아래를 차례로 본다." >&2
     echo "  1) 이 계정으로 받을 수 있는가 — docker login ghcr.io (패키지가 비공개면 필요하다)" >&2
     echo "  2) 판 이름이 실제로 올라간 이름인가 — $ENV_FILE 의 IMAGE_TAG" >&2
@@ -167,7 +188,7 @@ if [ "$PULL" = 1 ]; then
   # 콘솔 이미지도 같은 자리에서 받는다. 뒤늦게 기동 단계에서 받으면 그때
   # 없다는 것을 알게 되는데, 그 시점에는 서비스가 이미 서 있어 되돌릴 것이
   # 늘어난다.
-  if [ "$ADMIN" = 1 ] && ! dca "${ADMIN_PROFILES[@]}" pull; then
+  if [ "$ADMIN" = 1 ] && ! dca "${ADMIN_PROFILES[@]}" pull ${admin_pull_services[@]+"${admin_pull_services[@]}"}; then
     echo "콘솔 이미지를 받지 못했다. 위의 셋에 하나를 더 본다." >&2
     echo "  4) 콘솔 이름 둘이 공개인가 — 처음 만들어진 이름은 비공개로 생긴다" >&2
     exit 1
@@ -175,7 +196,11 @@ if [ "$PULL" = 1 ]; then
 fi
 
 echo "[$LABEL] 1/4 저장소 기동"
-dc --profile infra up -d
+if [ -n "${INFRA_IMAGE_BUNDLE:-}" ]; then
+  dc --profile infra up -d --no-recreate postgres redis
+else
+  dc --profile infra up -d
+fi
 
 echo "[$LABEL] 2/4 저장소가 실제로 받을 준비가 될 때까지 기다린다"
 db_user=$(grep -E '^POSTGRES_USER=' "$ENV_FILE" | cut -d= -f2-)
@@ -239,7 +264,19 @@ echo "[$LABEL] 4/4 애플리케이션 기동"
 # 상태가 정상이 될 때까지 기다린다. 기다리지 않으면 표 손질에 실패해 뜨다
 # 죽기를 반복하는 상태에서도 이 스크립트가 성공으로 끝나고, 바로 아래 목록은
 # 아직 기동 중이라 그 실패와 구분되지 않는다.
-if ! dc "${PROFILES[@]}" up -d --wait --wait-timeout 180; then
+application_up() {
+  if [ -n "${INFRA_IMAGE_BUNDLE:-}" ]; then
+    # PostgreSQL/Redis were checked above. Updating applications must not recreate
+    # their containers merely because the image spelling changed from tag to ID.
+    local services=(user agent hub proxy)
+    [ "$VISION" = 0 ] || services+=(yolo)
+    [ "$EDGE" = 0 ] || services+=(edge dns)
+    dc "${PROFILES[@]}" up -d --no-deps --wait --wait-timeout 180 "${services[@]}"
+  else
+    dc "${PROFILES[@]}" up -d --wait --wait-timeout 180
+  fi
+}
+if ! application_up; then
   echo "정해진 시간 안에 정상이 되지 않았다. 어느 서비스인지 아래에서 보고" >&2
   echo "그 서비스의 기록을 본다: dc logs <서비스>" >&2
   dc ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}' >&2
