@@ -18,6 +18,8 @@ on:
     workflows: [ci]
     branches: [develop]
     types: [completed]
+  repository_dispatch:
+    types: [release-develop]
 
 concurrency:
   group: image-release
@@ -35,6 +37,7 @@ jobs:
     if: >-
       github.repository == 'we-meet-trip/map-service-infra' &&
       (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'repository_dispatch' && github.event.action == 'release-develop') ||
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push' &&
@@ -72,12 +75,23 @@ jobs:
           echo "ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+      - name: verify source CI dispatch
+        if: github.event_name == 'repository_dispatch'
+        id: dispatch
+        run: |
+          set -euo pipefail
+          python3 release-tools/scripts/release_manifest.py verify-dispatch \
+            --event-file "$GITHUB_EVENT_PATH" \
+            --output "$RUNNER_TEMP/map-source-ci.json" --github-output "$GITHUB_OUTPUT"
+
       - name: checkout source snapshots
         id: src
         env:
           SOURCE_REF: ${{ steps.inputs.outputs.ref }}
           CI_INFRA_SHA: ${{ github.event.workflow_run.head_sha }}
           RELEASE_EVENT: ${{ github.event_name }}
+          DISPATCH_REPOSITORY: ${{ steps.dispatch.outputs.repository }}
+          DISPATCH_SHA: ${{ steps.dispatch.outputs.sha }}
         run: |
           set -euo pipefail
           mkdir -p src
@@ -88,6 +102,10 @@ jobs:
             ref="$SOURCE_REF"
             if [ "$service" = infra ] && [ "$RELEASE_EVENT" = workflow_run ]; then
               ref="$CI_INFRA_SHA"
+            fi
+            if [ "$RELEASE_EVENT" = repository_dispatch ] && \
+               [ "we-meet-trip/map-service-$service" = "$DISPATCH_REPOSITORY" ]; then
+              ref="$DISPATCH_SHA"
             fi
             git -C "$dir" fetch -q --depth 1 origin "$ref"
             git -C "$dir" checkout -q --detach FETCH_HEAD
@@ -164,11 +182,15 @@ jobs:
           INFRA_SHA: ${{ steps.src.outputs.infra }}
         run: |
           set -euo pipefail
+          dispatch=()
+          if [ "$RELEASE_EVENT" = repository_dispatch ]; then
+            dispatch=(--dispatch-evidence "$RUNNER_TEMP/map-source-ci.json")
+          fi
           python release-tools/scripts/release_manifest.py create \
             --source-root src --output release-bundle --tag "$IMAGE_TAG" \
             --source-ref "$SOURCE_REF" --run-id "$GITHUB_RUN_ID" \
             --workflow-repository "$GITHUB_REPOSITORY" --workflow-sha "$WORKFLOW_SHA" \
-            --event-name "$RELEASE_EVENT"
+            --event-name "$RELEASE_EVENT" "${dispatch[@]}"
           python release-tools/scripts/release_manifest.py verify \
             --bundle release-bundle --expected-run-id "$GITHUB_RUN_ID" \
             --expected-infra-sha "$INFRA_SHA" --expected-workflow-sha "$WORKFLOW_SHA"

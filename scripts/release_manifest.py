@@ -16,6 +16,8 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
+import urllib.request
 
 REPOSITORY = "we-meet-trip/map-service-infra"
 REGISTRY = "ghcr.io/we-meet-trip"
@@ -24,6 +26,86 @@ SERVICES = ("user", "agent", "hub", "yolo", "admin", "admin-web")
 FILES = ("release.json", "compose.images.yml", "compose.admin-images.yml")
 SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+DISPATCH_REPOSITORIES = frozenset(f"we-meet-trip/map-service-{name}" for name in SERVICES[:4])
+SOURCE_CI_PATH = ".github/workflows/ci.yml"
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def public_github_json(path, timeout=10):
+    # The four source repositories are public. No cross-repository PAT or cloud
+    # credential is required or forwarded for these read-only checks.
+    request = urllib.request.Request("https://api.github.com" + path, headers={
+        "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "map-release-verifier",
+    })
+    with urllib.request.build_opener(NoRedirect()).open(request, timeout=timeout) as response:
+        content = response.read(1024 * 1024 + 1)
+    require(len(content) <= 1024 * 1024, "GitHub response too large")
+    return json.loads(content, object_pairs_hook=unique_object)
+
+
+def validate_dispatch(payload):
+    exact_keys(payload, ("repository", "sha", "run_id"), "dispatch")
+    require(isinstance(payload["repository"], str) and payload["repository"] in DISPATCH_REPOSITORIES, "unexpected dispatch repository")
+    require(isinstance(payload["sha"], str) and SHA.fullmatch(payload["sha"]), "invalid dispatch SHA")
+    require(isinstance(payload["run_id"], str) and re.fullmatch(r"[1-9][0-9]{0,19}", payload["run_id"]), "invalid source run ID")
+    return payload
+
+
+def verify_dispatch(payload, *, wait_seconds=0):
+    """Verify successful develop CI and reject a superseded source commit.
+
+    The sending job belongs to that same run, so initial receipt may poll up to
+    120 seconds for completion. Build/deploy verification never waits or retries
+    a failed run. Every checkout still uses fixed repository URLs.
+    """
+    validate_dispatch(payload)
+    require(0 <= wait_seconds <= 120, "invalid dispatch wait budget")
+    prefix = f"/repos/{payload['repository']}"
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        require(not wait_seconds or remaining > 0, "source CI completion deadline exceeded")
+        timeout = min(10, max(0.1, remaining)) if wait_seconds else 10
+        run = public_github_json(f"{prefix}/actions/runs/{payload['run_id']}", timeout=timeout)
+        require(str(run.get("id")) == payload["run_id"]
+                and run.get("path") == SOURCE_CI_PATH and run.get("event") == "push"
+                and run.get("head_branch") == "develop" and run.get("head_sha") == payload["sha"]
+                and run.get("head_repository", {}).get("full_name") == payload["repository"]
+                and run.get("repository", {}).get("full_name") == payload["repository"], "source CI identity mismatch")
+        if run.get("status") == "completed":
+            require(run.get("conclusion") == "success", "source CI did not succeed")
+            break
+        require(run.get("status") in ("queued", "in_progress", "waiting", "pending", "requested"), "unexpected source CI state")
+        remaining = deadline - time.monotonic()
+        require(remaining > 0, "source CI completion deadline exceeded")
+        time.sleep(min(10, remaining))
+    # Reject stale requests instead of silently building a different commit.
+    if wait_seconds:
+        require(deadline > time.monotonic(), "dispatch verification deadline exceeded")
+    branch = public_github_json(f"{prefix}/git/ref/heads/develop",
+                               timeout=min(10, max(0.1, deadline - time.monotonic())) if wait_seconds else 10)
+    require(branch.get("ref") == "refs/heads/develop"
+            and branch.get("object", {}).get("sha") == payload["sha"], "source develop advanced; require a new CI release")
+    return payload
+
+
+def verify_dispatch_event(args):
+    require(args.event_file.stat().st_size <= 1024 * 1024, "dispatch event too large")
+    event = json.loads(args.event_file.read_text(), object_pairs_hook=unique_object)
+    require(event.get("action") == "release-develop"
+            and event.get("repository", {}).get("full_name") == REPOSITORY, "unexpected dispatch event")
+    payload = verify_dispatch(event.get("client_payload"), wait_seconds=120)
+    require(not args.output.exists(), "dispatch evidence output already exists")
+    args.output.write_text(json.dumps(payload, sort_keys=True) + "\n")
+    if args.github_output:
+        with args.github_output.open("a") as stream:
+            for key in ("repository", "sha", "run_id"):
+                stream.write(f"{key}={payload[key]}\n")
 
 
 def require(condition, message):
@@ -64,11 +146,14 @@ def validate(data):
         raise ValueError("invalid creation time") from None
     require(created.utcoffset() is not None and created.utcoffset().total_seconds() == 0, "creation time must use UTC")
     provenance = data["provenance"]
-    exact_keys(provenance, ("workflow_path", "workflow_sha", "event_name"), "provenance")
+    require(isinstance(provenance, dict), "invalid provenance")
+    dispatched = provenance.get("event_name") == "repository_dispatch"
+    exact_keys(provenance, ("workflow_path", "workflow_sha", "event_name", "dispatch") if dispatched
+               else ("workflow_path", "workflow_sha", "event_name"), "provenance")
     require(provenance["workflow_path"] == WORKFLOW_PATH, "unexpected workflow path")
     require(isinstance(provenance["workflow_sha"], str) and SHA.fullmatch(provenance["workflow_sha"]), "invalid workflow SHA")
-    require(provenance["event_name"] in ("workflow_dispatch", "workflow_run"), "unexpected release event")
-    if provenance["event_name"] == "workflow_run":
+    require(provenance["event_name"] in ("workflow_dispatch", "workflow_run", "repository_dispatch"), "unexpected release event")
+    if provenance["event_name"] in ("workflow_run", "repository_dispatch"):
         require(data["source_ref"] == "develop", "automatic releases require develop")
     exact_keys(data["services"], SERVICES, "services")
     for service in SERVICES:
@@ -80,6 +165,10 @@ def validate(data):
         require(entry["image"] == f"{REGISTRY}/map-service-{service}", "unexpected image registry/repository")
         require(isinstance(entry["digest"], str) and DIGEST.fullmatch(entry["digest"]), "invalid image digest")
     require(data["services"]["admin"]["source_sha"] == data["services"]["admin-web"]["source_sha"], "admin images must share source SHA")
+    if dispatched:
+        evidence = validate_dispatch(provenance["dispatch"])
+        source = next(entry for entry in data["services"].values() if entry["source_repo"] == evidence["repository"])
+        require(source["source_sha"] == evidence["sha"], "dispatch source image SHA mismatch")
     return data
 
 
@@ -142,6 +231,13 @@ def create(args):
         "provenance": {"workflow_path": WORKFLOW_PATH, "workflow_sha": args.workflow_sha,
                        "event_name": args.event_name}, "services": {},
     }
+    evidence_path = getattr(args, "dispatch_evidence", None)
+    if args.event_name == "repository_dispatch":
+        require(evidence_path is not None and evidence_path.stat().st_size <= 4096, "dispatch evidence is required")
+        evidence = json.loads(evidence_path.read_text(), object_pairs_hook=unique_object)
+        data["provenance"]["dispatch"] = verify_dispatch(evidence)
+    else:
+        require(evidence_path is None, "unexpected dispatch evidence")
     for service in SERVICES:
         repo_service = "admin" if service == "admin-web" else service
         image = f"{REGISTRY}/map-service-{service}"
@@ -206,6 +302,10 @@ def main(argv=None):
     inputs = commands.add_parser("validate-inputs")
     inputs.add_argument("--ref", required=True)
     inputs.add_argument("--tag", required=True)
+    dispatch = commands.add_parser("verify-dispatch")
+    dispatch.add_argument("--event-file", type=Path, required=True)
+    dispatch.add_argument("--output", type=Path, required=True)
+    dispatch.add_argument("--github-output", type=Path)
     make = commands.add_parser("create")
     make.add_argument("--source-root", type=Path, required=True)
     make.add_argument("--output", type=Path, required=True)
@@ -215,6 +315,7 @@ def main(argv=None):
     make.add_argument("--workflow-repository", required=True)
     make.add_argument("--workflow-sha", required=True)
     make.add_argument("--event-name", required=True)
+    make.add_argument("--dispatch-evidence", type=Path)
     check = commands.add_parser("verify")
     check.add_argument("--bundle", type=Path, required=True)
     check.add_argument("--expected-run-id")
@@ -226,6 +327,8 @@ def main(argv=None):
         if args.command == "validate-inputs":
             validate_ref(args.ref)
             validate_tag(args.tag)
+        elif args.command == "verify-dispatch":
+            verify_dispatch_event(args)
         elif args.command == "create":
             create(args)
         else:

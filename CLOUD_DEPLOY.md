@@ -64,9 +64,29 @@ SHA를 순서대로 캡처하므로 여러 저장소의 병합이 원자적으�
 통합할 변경을 먼저 모두 병합·검사한 다음 릴리스의 소스 SHA 목록을 확인한다.
 
 현재 자동 트리거는 **infra develop push → infra ci 성공 → image-release →
-deploy-gcp-test**다. 다른 서비스 CI에서 infra로 보내는 repository_dispatch는
-구현하지 않았다. 다른 저장소 push만으로 자동배포된다고 안내하지 않는다.
-기존 첫 계획의 모든 서비스 dispatch 요구와 현재 구현의 차이는 최종 인수에서 확인한다.
+deploy-gcp-test**다. user/agent/hub/yolo의 develop CI가 보내는 선택적
+`repository_dispatch: release-develop` 경로도 구현했다. 네 저장소의
+`RELEASE_DISPATCH_TOKEN`이 없으면 송신 단계만 건너뛰며, 일반 CI는 계속 동작한다.
+현재 토큰은 등록하지 않았으므로 이 경로의 자동 실행은 아직 활성화하지 않았다.
+
+사용자가 한 번 준비할 fine-grained PAT은 대상 저장소를 **map-service-infra만**
+선택하고 **Contents: write** 권한을 부여한다. repository dispatch 생성에 필요한
+권한은 Actions: write가 아니다([GitHub REST 공식 문서](https://docs.github.com/en/rest/repos/repos#create-a-repository-dispatch-event)).
+이 값을 네 송신 저장소의 `RELEASE_DISPATCH_TOKEN` secret으로 등록한다. 수령자는
+공개 원본 저장소의 CI를 읽기 전용 API로 확인하므로 추가 PAT를 사용하지 않는다.
+토큰 발급·등록·권한 변경은 이 구현에 포함하지 않았다.
+
+수령 payload는 `repository`, `sha`, `run_id` 문자열 세 개만 허용한다. 고정된
+네 저장소의 `.github/workflows/ci.yml` 실행이 `push/develop`, 동일 저장소·SHA이며
+최종 성공인지 검사한다. 송신 job이 같은 CI에 속하므로 최대 120초 동안 완료를
+기다린다. 성공 SHA가 현재 develop과 다르면 중단하며, payload의 임의 ref나 URL로
+checkout하지 않는다. 검증한 원본 서비스만 정확한 SHA로 고정하고 나머지 저장소는
+develop 스냅샷을 사용한다. manifest의 provenance에는 원본 CI 근거를 담고 해당
+서비스 이미지의 SHA와 일치시킨다. 이미지 묶음 생성 및 deploy 준비 단계에서도
+CI 성공·현재 develop을 재검증하므로 빌드 중 새 커밋으로 넘어갔으면 새 CI가 필요하다.
+검증된 dispatch 릴리스는 자동 배포 대상에 포함된다. API 실패·제한·완료 기한 초과는
+검증을 건너뛰지 않고 릴리스를 실패시킨다.
+
 수동 image-release는 자동 배포하지 않으며, 성공 run ID를 `deploy-gcp-test`에
 명시하는 별도 수동 실행 경로가 있다. 자동 체인은 workflow가 기본 브랜치에 존재하고
 관련 CI와 환경 정책이 준비된 상태에서 실제 한 번 끝까지 관찰해야 완료다.

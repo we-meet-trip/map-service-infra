@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -29,6 +30,120 @@ def fixture():
             "image": f"{release.REGISTRY}/map-service-{service}", "digest": "sha256:" + "d" * 64,
         }
     return data
+
+
+def dispatch_fixture():
+    data = fixture()
+    data["source_ref"] = "develop"
+    data["provenance"].update(event_name="repository_dispatch", dispatch={
+        "repository": "we-meet-trip/map-service-user", "sha": "c" * 40, "run_id": "987"})
+    return data
+
+
+def source_ci(payload):
+    return {"id": int(payload["run_id"]), "path": release.SOURCE_CI_PATH,
+            "event": "push", "head_branch": "develop", "head_sha": payload["sha"],
+            "head_repository": {"full_name": payload["repository"]},
+            "repository": {"full_name": payload["repository"]},
+            "status": "completed", "conclusion": "success"}
+
+
+class DispatchTests(unittest.TestCase):
+    def setUp(self):
+        self.payload = dispatch_fixture()["provenance"]["dispatch"]
+        self.branch = {"ref": "refs/heads/develop", "object": {"sha": self.payload["sha"]}}
+
+    def test_four_allowed_repositories_require_successful_exact_ci(self):
+        for repository in release.DISPATCH_REPOSITORIES:
+            payload = {**self.payload, "repository": repository}
+            with self.subTest(repository=repository), patch.object(release, "public_github_json",
+                    side_effect=[source_ci(payload), self.branch]) as api:
+                self.assertEqual(release.verify_dispatch(payload), payload)
+                self.assertEqual(api.call_args_list[0].args[0], f"/repos/{repository}/actions/runs/987")
+
+    def test_unsafe_payload_is_rejected_before_any_api_call(self):
+        changes = ({"repository": "attacker/fork"}, {"repository": "we-meet-trip/map-service-admin"},
+                   {"repository": []}, {"sha": "develop"}, {"sha": "c" * 40 + "\n"},
+                   {"run_id": "1/../../x"}, {"run_id": 987}, {"ref": "arbitrary"})
+        with patch.object(release, "public_github_json") as api:
+            for change in changes:
+                with self.subTest(change=change), self.assertRaises(ValueError):
+                    release.verify_dispatch({**self.payload, **change})
+            api.assert_not_called()
+
+    def test_pending_sender_can_finish_within_120_seconds(self):
+        run = source_ci(self.payload)
+        pending = {**run, "status": "in_progress", "conclusion": None}
+        clock = [0.0]
+        with patch.object(release.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(release.time, "sleep", side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)) as sleep, \
+             patch.object(release, "public_github_json", side_effect=[pending, pending, run, self.branch]):
+            release.verify_dispatch(self.payload, wait_seconds=120)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(clock[0], 20)
+
+    def test_pending_sender_has_finite_deadline_and_never_builds_unfinished_ci(self):
+        pending = {**source_ci(self.payload), "status": "in_progress", "conclusion": None}
+        clock = [0.0]
+        with patch.object(release.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(release.time, "sleep", side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)), \
+             patch.object(release, "public_github_json", return_value=pending) as api:
+            with self.assertRaisesRegex(ValueError, "deadline"):
+                release.verify_dispatch(self.payload, wait_seconds=120)
+        self.assertEqual(clock[0], 120)
+        self.assertEqual(api.call_count, 12)
+        with patch.object(release, "public_github_json", return_value=pending), patch.object(release.time, "sleep") as sleep:
+            with self.assertRaisesRegex(ValueError, "deadline"):
+                release.verify_dispatch(self.payload)
+            sleep.assert_not_called()
+
+    def test_wrong_ci_identity_and_failure_are_rejected_without_polling(self):
+        changes = ({"id": 999}, {"path": "other.yml"}, {"event": "pull_request"},
+                   {"head_branch": "feature"}, {"head_sha": "f" * 40},
+                   {"head_repository": {"full_name": "attacker/fork"}},
+                   {"repository": {"full_name": "attacker/fork"}},
+                   {"conclusion": "failure"}, {"conclusion": "cancelled"})
+        for change in changes:
+            with self.subTest(change=change), patch.object(release, "public_github_json",
+                    return_value={**source_ci(self.payload), **change}), patch.object(release.time, "sleep") as sleep:
+                with self.assertRaises(ValueError):
+                    release.verify_dispatch(self.payload, wait_seconds=120)
+                sleep.assert_not_called()
+
+    def test_superseded_develop_commit_is_rejected(self):
+        branch = {"ref": "refs/heads/develop", "object": {"sha": "f" * 40}}
+        with patch.object(release, "public_github_json", side_effect=[source_ci(self.payload), branch]):
+            with self.assertRaisesRegex(ValueError, "advanced"):
+                release.verify_dispatch(self.payload)
+
+    def test_dispatch_provenance_requires_matching_develop_image(self):
+        release.validate(dispatch_fixture())
+        for mutate in (lambda d: d.update(source_ref="feature"),
+                       lambda d: d["provenance"].pop("dispatch"),
+                       lambda d: d["services"]["user"].update(source_sha="f" * 40)):
+            data = dispatch_fixture()
+            mutate(data)
+            with self.assertRaises(ValueError):
+                release.validate(data)
+
+    def test_event_validation_outputs_only_verified_evidence(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            event = {"action": "release-develop", "repository": {"full_name": release.REPOSITORY},
+                     "client_payload": self.payload}
+            (root / "event").write_text(json.dumps(event))
+            args = SimpleNamespace(event_file=root / "event", output=root / "evidence", github_output=root / "outputs")
+            with patch.object(release, "verify_dispatch", return_value=self.payload) as verify:
+                release.verify_dispatch_event(args)
+                verify.assert_called_once_with(self.payload, wait_seconds=120)
+            self.assertEqual(json.loads(args.output.read_text()), self.payload)
+            self.assertEqual(len(args.github_output.read_text().splitlines()), 3)
+            event["action"] = "unrelated"
+            args.event_file.write_text(json.dumps(event))
+            with patch.object(release, "verify_dispatch") as verify:
+                with self.assertRaises(ValueError):
+                    release.verify_dispatch_event(args)
+                verify.assert_not_called()
 
 
 class ManifestTests(unittest.TestCase):

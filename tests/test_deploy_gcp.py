@@ -131,6 +131,38 @@ class ArtifactTests(BundleFixture, unittest.TestCase):
         metadata["event"] = "workflow_run"
         self.prepare(getter, automatic=True)
 
+    def test_verified_repository_dispatch_can_automatically_deploy(self):
+        data = fixtures.dispatch_fixture()
+        metadata, _, getter = self.github(data)
+        metadata["event"] = "repository_dispatch"
+        evidence = data["provenance"]["dispatch"]
+        branch = {"ref": "refs/heads/develop", "object": {"sha": evidence["sha"]}}
+        with patch.object(deploy.release, "public_github_json", side_effect=[fixtures.source_ci(evidence), branch]) as api:
+            output = self.prepare(getter, automatic=True)
+        self.assertEqual(api.call_count, 2)
+        self.assertTrue((output / "transport.json").is_file())
+
+    def test_dispatch_artifact_hash_does_not_bypass_source_ci_verification(self):
+        data = fixtures.dispatch_fixture()
+        metadata, _, getter = self.github(data)
+        metadata["event"] = "repository_dispatch"
+        failed = {**fixtures.source_ci(data["provenance"]["dispatch"]), "conclusion": "failure"}
+        with patch.object(deploy.release, "public_github_json", return_value=failed):
+            with self.assertRaisesRegex(ValueError, "did not succeed"):
+                self.prepare(getter, automatic=True)
+        self.assertFalse((self.root / "verified/transport.json").exists())
+
+    def test_superseded_dispatch_artifact_is_rejected_even_for_manual_deploy(self):
+        data = fixtures.dispatch_fixture()
+        metadata, _, getter = self.github(data)
+        metadata["event"] = "repository_dispatch"
+        evidence = data["provenance"]["dispatch"]
+        branch = {"ref": "refs/heads/develop", "object": {"sha": "f" * 40}}
+        with patch.object(deploy.release, "public_github_json", side_effect=[fixtures.source_ci(evidence), branch]):
+            with self.assertRaisesRegex(ValueError, "advanced"):
+                self.prepare(getter)
+        self.assertFalse((self.root / "verified/transport.json").exists())
+
 
 class ReceiverTests(BundleFixture, unittest.TestCase):
     def scenario(self, failure=""):

@@ -141,7 +141,7 @@ def prepare(args):
     require(run.get("path") == release.WORKFLOW_PATH
             and run.get("head_repository", {}).get("full_name") == release.REPOSITORY,
             "unexpected release workflow/source repository")
-    require(run.get("event") in ("workflow_dispatch", "workflow_run"), "unexpected release event")
+    require(run.get("event") in ("workflow_dispatch", "workflow_run", "repository_dispatch"), "unexpected release event")
     workflow_sha = run.get("head_sha", "")
     require(bool(release.SHA.fullmatch(workflow_sha)), "invalid workflow SHA")
     listing = github_get(f"{prefix}/runs/{args.run_id}/artifacts?per_page=100", token)
@@ -164,8 +164,12 @@ def prepare(args):
     data = release.verify_bundle(args.output, expected_run_id=args.run_id,
                                  expected_workflow_sha=workflow_sha)
     require(data["provenance"]["event_name"] == run["event"], "release event provenance mismatch")
+    if run["event"] == "repository_dispatch":
+        # A self-consistent artifact alone must not turn an arbitrary dispatch into
+        # automatic deployment. Recheck the source CI and reject superseded HEADs.
+        release.verify_dispatch(data["provenance"]["dispatch"])
     if args.automatic:
-        require(data["source_ref"] == "develop" and run["event"] == "workflow_run", "automatic deployment requires develop CI release")
+        require(data["source_ref"] == "develop" and run["event"] in ("workflow_run", "repository_dispatch"), "automatic deployment requires develop CI release")
     payload = {"schema_version": 1, "expected_run_id": args.run_id,
                "files": {name: base64.b64encode((args.output / name).read_bytes()).decode()
                          for name in ARTIFACT_FILES}}
