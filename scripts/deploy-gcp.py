@@ -221,7 +221,9 @@ def backup_environment():
     metadata = BACKUP_ENV.stat()
     require(metadata.st_uid == 0 and not metadata.st_mode & 0o077, "backup configuration must be root-only")
     allowed = {"BACKUP_DIR", "BACKUP_REMOTE", "BACKUP_S3_ENDPOINT", "BACKUP_REQUIRE_REMOTE", "RETAIN_DAYS", "BACKUP_GCP_CREDENTIALS_FILE"}
-    env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root",
+    # Ubuntu GCP images install the Cloud SDK under the root-managed snap path.
+    # Keep a fixed allowlist instead of inheriting an interactive deployment PATH.
+    env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin", "HOME": "/root",
            "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"}
     for line in BACKUP_ENV.read_text().splitlines():
         if not line.strip() or line.lstrip().startswith("#"):
