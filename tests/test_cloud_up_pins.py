@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class InfrastructurePinStartupTests(unittest.TestCase):
-    def run_startup(self, pinned=True, missing_pin=False):
+    def run_startup(self, pinned=True, missing_pin=False, detached=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "scripts").mkdir()
@@ -40,8 +40,9 @@ class InfrastructurePinStartupTests(unittest.TestCase):
             env.update(PATH=str(binary) + os.pathsep + os.environ["PATH"], CALL_LOG=str(log))
             if pinned:
                 env.update(RELEASE_BUNDLE=str(pins), INFRA_IMAGE_BUNDLE=str(pins))
+            role_args = ['--target-exporters'] if detached else ['--admin', '--monitoring']
             result = subprocess.run(["bash", "scripts/cloud-up.sh", "--test", "--registry",
-                                     "--vision", "--edge", "--admin", "--monitoring"],
+                                     "--vision", "--edge", *role_args],
                                     cwd=root, env=env, capture_output=True, text=True)
             calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
             return result, calls
@@ -68,6 +69,15 @@ class InfrastructurePinStartupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn('install-caddy-artifact.py', result.stderr)
         self.assertEqual(calls, [])
+
+    def test_application_role_never_pulls_or_merges_retired_admin_images(self):
+        result, calls = self.run_startup(detached=True)
+        self.assertEqual(result.returncode, 77)
+        pulls = [call for call in calls if 'pull' in call]
+        self.assertEqual([call[call.index('pull') + 1:] for call in pulls],
+                         [['user', 'agent', 'hub', 'yolo']])
+        self.assertFalse(any('admin' in call or 'admin-web' in call for call in calls))
+        self.assertFalse(any(any('compose.admin-images' in item for item in call) for call in calls))
 
 
 if __name__ == "__main__":

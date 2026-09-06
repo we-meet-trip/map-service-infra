@@ -32,6 +32,7 @@ VISION=0
 EDGE=0
 ADMIN=0
 MONITORING=0
+TARGET_ONLY=0
 # 관리자 스택은 프로젝트가 따로다. 서비스 스택이 만든 네트워크에 얹히므로
 # 파일도 순서도 따로 세어야 한다.
 ADMIN_FILES=(-f docker-compose.admin.yml)
@@ -51,6 +52,7 @@ for arg in "$@"; do
     --admin) ADMIN=1 ;;
     # 지표 수집까지. 콘솔의 모니터링 화면은 여기서 뜨는 것을 창으로 불러온다.
     --monitoring) ADMIN=1; MONITORING=1 ;;
+    --target-exporters) TARGET_ONLY=1; MONITORING=1 ;;
     # 경로 엔진을 함께 올린다. 켜지 않으면 hub 가 주소를 못 찾아 구간마다
     # 실패 왕복을 반복하고, 화면에는 도로를 따르지 않는 직선이 그려진다.
     --routing) PROFILES+=(--profile routing); ROUTING=1 ;;
@@ -60,6 +62,19 @@ for arg in "$@"; do
     *) echo "모르는 인자: $arg" >&2; exit 2 ;;
   esac
 done
+
+# MAP_ADMIN_DETACHED_VERSION=1
+if [ "$TARGET_ONLY" = 1 ]; then
+  [ "$ADMIN" = 0 ] && [ "$ENV_FILE" = ./.env.test ] && [ -n "${INFRA_IMAGE_BUNDLE:-}" ] || {
+    echo 'target exporters require a pinned test release without --admin/--monitoring' >&2; exit 2;
+  }
+  ADMIN_FILES=(-f docker-compose.target-exporters.yml)
+fi
+# A root-owned host handoff policy survives checkout/rollback. Manual entrypoints
+# must not recreate a former administrator after that handoff either.
+if [ "$ADMIN" = 1 ] && [ -e /var/lib/map-deploy/topology.json ]; then
+  echo 'host topology policy exists; co-host administrator startup is blocked' >&2; exit 2
+fi
 
 # Fresh hosts must import the reviewed Caddy artifact before exposing public TLS.
 # Receiver deployments supply independently verified existing infrastructure pins.
@@ -81,7 +96,7 @@ if [ -n "${RELEASE_BUNDLE:-}" ]; then
     [ -f "$RELEASE_BUNDLE/$pin" ] || { echo 'release image pin missing' >&2; exit 2; }
   done
   FILES+=(-f "$RELEASE_BUNDLE/compose.images.yml")
-  ADMIN_FILES+=(-f "$RELEASE_BUNDLE/compose.admin-images.yml")
+  [ "$TARGET_ONLY" = 1 ] || ADMIN_FILES+=(-f "$RELEASE_BUNDLE/compose.admin-images.yml")
 fi
 
 # Automated application releases preserve the receiver's exact infrastructure
@@ -253,9 +268,11 @@ fi
 echo "[$LABEL] 저장소 초기화 다시 적용"
 dc exec -T postgres psql -v ON_ERROR_STOP=1 -U "$db_user" -d "$db_name" \
   -f /docker-entrypoint-initdb.d/00-create-schemas.sql
-dc exec -T \
-  -e MAP_ADMIN_PASSWORD="$(grep -E '^MAP_ADMIN_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)" \
-  postgres bash /docker-entrypoint-initdb.d/10-admin.sh
+if [ "$TARGET_ONLY" = 0 ]; then
+  dc exec -T \
+    -e MAP_ADMIN_PASSWORD="$(grep -E '^MAP_ADMIN_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)" \
+    postgres bash /docker-entrypoint-initdb.d/10-admin.sh
+fi
 
 echo "[$LABEL] 3/4 hub 표 만들기"
 # shellcheck source=scripts/lib/migrations.sh
@@ -308,7 +325,7 @@ fi
 #
 # 콘솔에 필요한 저장소 역할과 스키마 소유권은 위의 초기화 재적용 단계에서
 # 이미 맞춰졌다. 콘솔 자신의 표는 컨테이너가 뜨면서 스스로 손질한다.
-if [ "$ADMIN" = 1 ]; then
+if [ "$ADMIN" = 1 ] || [ "$TARGET_ONLY" = 1 ]; then
   echo
   echo "[$LABEL] 콘솔 기동"
   if ! dca "${ADMIN_PROFILES[@]}" up -d --wait --wait-timeout 180; then
@@ -322,7 +339,7 @@ fi
 
 echo
 dc ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}\t{{.Image}}'
-if [ "$ADMIN" = 1 ]; then
+if [ "$ADMIN" = 1 ] || [ "$TARGET_ONLY" = 1 ]; then
   dca ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}\t{{.Image}}'
 fi
 

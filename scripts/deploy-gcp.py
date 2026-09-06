@@ -51,6 +51,9 @@ PROCESS_TERM_GRACE_SECONDS = 5
 ARTIFACT_FILES = (*release.FILES, "SHA256SUMS")
 APP_SERVICES = ("user", "agent", "hub", "yolo", "proxy", "edge", "dns")
 ADMIN_SERVICES = ("admin", "admin-web", "prometheus", "grafana", "postgres-exporter", "redis-exporter", "node-exporter", "cadvisor")
+TARGET_EXPORTERS = ("postgres-exporter", "redis-exporter", "node-exporter")
+ADMIN_DETACHED = False
+DETACHED_MARKER = "# MAP_ADMIN_DETACHED_VERSION=1"
 INFRASTRUCTURE = {
     "map-test": {"postgres": "postgis/postgis", "redis": "redis", "proxy": "nginx",
                  "edge": "caddy", "dns": "curlimages/curl"},
@@ -72,6 +75,58 @@ def require(condition, message):
 
 def status(phase):
     print(json.dumps({"phase": phase}), flush=True)
+
+
+@contextmanager
+def topology_scope():
+    """Root-owned host policy outlives every app checkout and application rollback."""
+    global ADMIN_DETACHED
+    previous = ADMIN_DETACHED
+    path = STATE / "topology.json"
+    try:
+        ADMIN_DETACHED = False
+        if path.exists() or path.is_symlink():
+            info = path.lstat()
+            require(path.is_file() and not path.is_symlink() and info.st_uid == 0
+                    and info.st_mode & 0o022 == 0, "unsafe topology policy")
+            data = json.loads(path.read_text())
+            require(data.get("schema_version") == 1 and data.get("instance_id") == INSTANCE_ID
+                    and data.get("mode") == "application", "invalid topology policy")
+            evidence = data.get("verified_admin_handoff_sha256", "")
+            require(bool(re.fullmatch("[a-f0-9]{64}", evidence)), "verified independent admin handoff required")
+            # Kept separately from Git; reverting a release cannot resurrect retired control services.
+            handoff = STATE / "admin-handoff.json"
+            require(handoff.is_file() and not handoff.is_symlink()
+                    and hashlib.sha256(handoff.read_bytes()).hexdigest() == evidence,
+                    "admin handoff evidence mismatch")
+            verified = json.loads(handoff.read_text())
+            require(verified.get("status") == "PASS" and verified.get("application_instance_id") == INSTANCE_ID
+                    and verified.get("central_instance_id") not in (None, "", INSTANCE_ID),
+                    "independent administrator identity not verified")
+            required_checks = {"control_auth", "target_read", "target_isolation", "browser_charts",
+                               "audit_restore", "serving_survives_admin_failure"}
+            require(all(verified.get("checks", {}).get(check) == "PASS" for check in required_checks),
+                    "independent administrator acceptance incomplete")
+            ADMIN_DETACHED = True
+        yield
+    finally:
+        ADMIN_DETACHED = previous
+
+
+def admin_services():
+    return TARGET_EXPORTERS if ADMIN_DETACHED else ADMIN_SERVICES
+
+
+def verify_detached_services(env):
+    if not ADMIN_DETACHED:
+        return
+    require(DETACHED_MARKER in (REPO / "scripts/cloud-up.sh").read_text().splitlines()
+            and (REPO / "docker-compose.target-exporters.yml").is_file(),
+            "current release cannot safely roll back detached administrator topology")
+    for service in ("admin", "admin-web", "prometheus", "grafana", "cadvisor"):
+        running = command(["docker", "ps", "-q", "--filter", "label=com.docker.compose.project=map-admin-test",
+                           "--filter", f"label=com.docker.compose.service={service}"], env=env)
+        require(not running, "retired control service is still running on application host")
 
 
 def command(args, *, env=None, timeout=300, cwd=REPO, umask=-1):
@@ -271,11 +326,15 @@ def replace_environment(path, content, metadata):
 def compose_command(*, admin=False, bundle=None, env_file=None, infrastructure=None):
     files = (["docker-compose.admin.yml", "docker-compose.admin.test.yml", "docker-compose.admin.registry.yml"]
              if admin else ["docker-compose.yml", "docker-compose.test.yml", "docker-compose.registry.yml", "docker-compose.edge.yml"])
+    if admin and ADMIN_DETACHED:
+        files = ["docker-compose.target-exporters.yml"]
     args = ["docker", "compose", "--env-file", str(env_file or REPO / ".env.test")]
     for filename in files:
         args.extend(("-f", str(REPO / filename)))
-    if bundle:
+    if bundle and not (admin and ADMIN_DETACHED):
         args.extend(("-f", str(bundle / ("compose.admin-images.yml" if admin else "compose.images.yml"))))
+    if bundle and admin and ADMIN_DETACHED and (bundle / "compose.target-images.yml").is_file():
+        args.extend(("-f", str(bundle / "compose.target-images.yml")))
     if infrastructure:
         args.extend(("-f", str(infrastructure / ("compose.admin-infrastructure.yml" if admin else "compose.infrastructure.yml"))))
     for profile in (("monitoring",) if admin else ("full", "vision", "edge", "dns")):
@@ -290,7 +349,9 @@ def preflight(bundle, env_file, env, infrastructure=None):
         require(config.get("name") == ("map-admin-test" if admin else "map-test"), "wrong Compose project")
         require(all(str(value.get("name", "")).startswith("map-test_") for value in config.get("volumes", {}).values()), "non-test volume")
         require(config.get("networks", {}).get("default", {}).get("name") == "map-test-net", "non-test network")
-        expected = release.SERVICES[4:] if admin else release.SERVICES[:4]
+        expected = (() if ADMIN_DETACHED else release.SERVICES[4:]) if admin else release.SERVICES[:4]
+        if admin and ADMIN_DETACHED:
+            require(set(config["services"]) == set(TARGET_EXPORTERS), "control service cannot return to application host")
         for service in expected:
             require(service in config["services"], "missing application service")
             image = config["services"][service].get("image", "")
@@ -322,6 +383,8 @@ def capture_infrastructure(env):
     for project, services in INFRASTRUCTURE.items():
         captured[project] = {}
         for service in services:
+            if ADMIN_DETACHED and project == "map-admin-test" and service not in TARGET_EXPORTERS:
+                continue
             ids = command(["docker", "ps", "-a", "--filter", f"label=com.docker.compose.project={project}",
                            "--filter", f"label=com.docker.compose.service={service}", "--format", "{{.ID}}"], env=env).splitlines()
             require(len(ids) <= 1, "multiple infrastructure containers for a service")
@@ -419,7 +482,7 @@ def verify_infrastructure_images(evidence, env):
 
 def snapshot_images(directory, env):
     active = {}
-    for admin, candidates in ((False, APP_SERVICES), (True, ADMIN_SERVICES)):
+    for admin, candidates in ((False, APP_SERVICES), (True, admin_services())):
         # Query by labels so capturing an older deployment does not need new compose syntax.
         project = "map-admin-test" if admin else "map-test"
         pins = ["services:"]
@@ -435,7 +498,7 @@ def snapshot_images(directory, env):
             # A local immutable image ID preserves legacy/local builds as well as registry pulls.
             pins.extend((f"  {service}:", "    build: !reset null", f"    image: {image}", "    pull_policy: never"))
             active[project].append(service)
-        filename = "compose.admin-images.yml" if admin else "compose.images.yml"
+        filename = ("compose.target-images.yml" if ADMIN_DETACHED else "compose.admin-images.yml") if admin else "compose.images.yml"
         (directory / filename).write_text("\n".join(pins) + "\n" if len(pins) > 1 else "services: {}\n")
     require("user" in active["map-test"], "existing BFF is required for safe automated rollback")
     return active
@@ -481,16 +544,19 @@ def smoke():
         body = http_status(base + "/healthz/app", 200)
         require(json.loads(body).get("status") == "UP", "BFF readiness failed")
         http_status(base + "/api/v1/users/me", 401)
-    for port, path in ((8200, "/health/ready"), (8201, "/health/ready"), (8204, "/health"),
-                       (8202, "/health/ready"), (8203, "/")):
+    endpoints = [(8200, "/health/ready"), (8201, "/health/ready"), (8204, "/health")]
+    if not ADMIN_DETACHED:
+        endpoints.extend(((8202, "/health/ready"), (8203, "/")))
+    for port, path in endpoints:
         http_status(f"http://127.0.0.1:{port}{path}", 200)
-    http_status("http://127.0.0.1:8202/api/v1/auth/me", 401)
+    if not ADMIN_DETACHED:
+        http_status("http://127.0.0.1:8202/api/v1/auth/me", 401)
 
 
 def rollback(old_sha, original_env, env_metadata, previous, active, current_bundle, env):
     status("rollback_started")
     # Stop only newly introduced services. Never down/rm/prune or touch DB volumes.
-    for admin, candidates in ((False, APP_SERVICES), (True, ADMIN_SERVICES)):
+    for admin, candidates in ((False, APP_SERVICES), (True, admin_services())):
         project = "map-admin-test" if admin else "map-test"
         new = set(candidates) - set(active[project])
         for service in sorted(new):
@@ -503,6 +569,8 @@ def rollback(old_sha, original_env, env_metadata, previous, active, current_bund
     replace_environment(REPO / ".env.test", original_env, env_metadata)
     for admin in (False, True):
         services = active["map-admin-test" if admin else "map-test"]
+        if admin and ADMIN_DETACHED:
+            require(set(services) <= set(TARGET_EXPORTERS), "rollback cannot restore retired control services")
         if services:
             command(compose_command(admin=admin, bundle=previous) + ["up", "-d", "--force-recreate", "--no-deps", "--no-build",
                     "--pull", "never", "--wait", "--wait-timeout", "180", *services], env=env, timeout=300)
@@ -524,11 +592,12 @@ def receive(raw):
     os.umask(0o077)
     verify_instance()
     require(REPO.is_dir() and not REPO.is_symlink(), "fixed deployment repository unavailable")
-    with deployment_lock():
+    with deployment_lock(), topology_scope():
         with tempfile.TemporaryDirectory(prefix="incoming-", dir=STATE) as incoming:
             bundle = Path(incoming)
             data = unpack_payload(raw, bundle)
             env = backup_environment()
+            verify_detached_services(env)
             git("diff", "--quiet", "--")
             git("diff", "--cached", "--quiet", "--")
             old_sha = git("rev-parse", "HEAD")
@@ -559,6 +628,9 @@ def receive(raw):
                 git("checkout", "--detach", data["infra_sha"])
                 require(git("rev-parse", "HEAD") == data["infra_sha"], "infra checkout mismatch")
                 status("preflight")
+                if ADMIN_DETACHED:
+                    require(DETACHED_MARKER in (REPO / "scripts/cloud-up.sh").read_text().splitlines(),
+                            "release lacks detached administrator support")
                 preflight(new_bundle, candidate_env, env)
                 infrastructure = history / "infrastructure"
                 evidence = prepare_infrastructure(infrastructure, new_bundle, candidate_env, captured_infrastructure, env)
@@ -570,7 +642,8 @@ def receive(raw):
                 replace_environment(env_path, candidate_env.read_bytes(), env_metadata)
                 started = True
                 status("deploy_started")
-                command(["bash", "scripts/cloud-up.sh", "--test", "--registry", "--vision", "--edge", "--admin", "--monitoring"],
+                role_args = ["--target-exporters"] if ADMIN_DETACHED else ["--admin", "--monitoring"]
+                command(["bash", "scripts/cloud-up.sh", "--test", "--registry", "--vision", "--edge", *role_args],
                         env={**env, "RELEASE_BUNDLE": str(new_bundle), "INFRA_IMAGE_BUNDLE": str(infrastructure)}, timeout=2400)
                 verify_infrastructure_images(evidence, env)
                 status("smoke")
