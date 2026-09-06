@@ -1,0 +1,69 @@
+# Independent serving-side routing stack. The verified whole-country SquashFS
+# artifact must already be mounted read-only by the host mount unit. The app
+# receiver must never create/remove this mount or its serving data.
+name: map-routing-${MAP_ENVIRONMENT:?set test or prod}
+
+x-osrm: &osrm
+  image: ghcr.io/project-osrm/osrm-backend@sha256:aa6a1de3a71dafffd0ba39340542524f66e6841fc19bf7874a0e6a7967837f56
+  platform: linux/amd64
+  restart: unless-stopped
+  user: "65534:65534"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  # v26.5.0 request_handler.cpp logs full coordinate URLs in its access log
+  # and WARNING exception handlers. Hub emits safe error codes/health metrics.
+  environment:
+    DISABLE_ACCESS_LOGGING: "1"
+  cpus: "0.5"
+  mem_limit: 512m
+  memswap_limit: 512m
+  pids_limit: 64
+  logging:
+    driver: json-file
+    options:
+      max-size: "5m"
+      max-file: "2"
+  volumes:
+    - type: bind
+      source: ${OSRM_MOUNT_ROOT:?set verified read-only mount}
+      target: /data
+      read_only: true
+      bind:
+        create_host_path: false
+
+services:
+  osrm-foot:
+    <<: *osrm
+    command: [osrm-routed, --verbosity, ERROR, --algorithm, mld, --mmap, "1", --threads, "1", /data/foot/korea.osrm]
+    ports:
+      - "127.0.0.1:${OSRM_FOOT_PORT:?set private loopback port}:5000"
+    networks:
+      serving:
+        aliases: [osrm-foot]
+    healthcheck:
+      test: [CMD-SHELL, "wget -qO- 'http://127.0.0.1:5000/nearest/v1/foot/126.9780,37.5665' | grep -q '\"code\":\"Ok\"'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  osrm-bicycle:
+    <<: *osrm
+    command: [osrm-routed, --verbosity, ERROR, --algorithm, mld, --mmap, "1", --threads, "1", /data/bicycle/korea.osrm]
+    ports:
+      - "127.0.0.1:${OSRM_BICYCLE_PORT:?set private loopback port}:5000"
+    networks:
+      serving:
+        aliases: [osrm-bicycle]
+    healthcheck:
+      test: [CMD-SHELL, "wget -qO- 'http://127.0.0.1:5000/nearest/v1/bicycle/126.9780,37.5665' | grep -q '\"code\":\"Ok\"'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+networks:
+  serving:
+    external: true
+    name: ${OSRM_NETWORK:?set the same environment serving network}

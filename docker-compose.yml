@@ -151,7 +151,9 @@ services:
     # 아래 platform 으로 amd64 에뮬레이션 실행된다. 프로덕션 amd64 서버는 네이티브.
     platform: linux/amd64
     profiles: ["routing"]
-    command: ["osrm-routed", "--algorithm", "mld", "--mmap", "1", "/data/foot/korea.osrm"]
+    environment:
+      DISABLE_ACCESS_LOGGING: "1"
+    command: ["osrm-routed", "--algorithm", "mld", "--mmap", "1", "--verbosity", "ERROR", "/data/foot/korea.osrm"]
     ports:
       - "127.0.0.1:5000:5000"
     healthcheck:
@@ -182,7 +184,9 @@ services:
     # foot 과 같은 방식으로 읽는다.
     platform: linux/amd64
     profiles: ["routing"]
-    command: ["osrm-routed", "--algorithm", "mld", "--mmap", "1", "/data/bicycle/korea.osrm"]
+    environment:
+      DISABLE_ACCESS_LOGGING: "1"
+    command: ["osrm-routed", "--algorithm", "mld", "--mmap", "1", "--verbosity", "ERROR", "/data/bicycle/korea.osrm"]
     ports:
       - "127.0.0.1:5001:5000"
     healthcheck:
@@ -499,7 +503,9 @@ services:
       ODSAY_REQUEST_TIMEOUT_SEC:
       ODSAY_TOTAL_BUDGET_SEC:
       OSRM_BICYCLE_BASE_URL:
+      OSRM_DATA_VERSION:
       OSRM_FOOT_BASE_URL:
+      OSRM_GRAPH_FINGERPRINT:
       OSRM_TIMEOUT_SEC:
       PLACES_STUB_MODE:
       PM_CACHE_TTL_SEC:

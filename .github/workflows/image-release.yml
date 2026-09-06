@@ -195,6 +195,34 @@ jobs:
             --bundle release-bundle --expected-run-id "$GITHUB_RUN_ID" \
             --expected-infra-sha "$INFRA_SHA" --expected-workflow-sha "$WORKFLOW_SHA"
 
+      # Scan the immutable registry references from the already verified bundle.
+      # This scanner belongs to workflow_sha, not a source-ref-provided script.
+      - name: scan six exact registry images
+        id: registry_audit
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ github.token }}
+        run: |
+          python3 release-tools/scripts/scan_release_images.py scan \
+            --bundle release-bundle --output release-image-audit \
+            --cache "$RUNNER_TEMP/map-release-trivy" --github-summary "$GITHUB_STEP_SUMMARY"
+
+      - name: retain exact image security evidence
+        if: ${{ always() && steps.registry_audit.outcome != 'skipped' && steps.registry_audit.outcome != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-image-security-audit
+          path: release-image-audit/
+          if-no-files-found: error
+          retention-days: 90
+
+      # Publish no deployable bundle after an incomplete scan or CRITICAL finding.
+      # HIGH remains FINDINGS_REQUIRE_REVIEW; GCP testing is not NCP acceptance.
+      - name: enforce critical vulnerability gate
+        run: |
+          python3 release-tools/scripts/scan_release_images.py enforce \
+            --bundle release-bundle --output release-image-audit
+
       - name: upload verified release bundle
         id: artifact
         uses: actions/upload-artifact@v4
