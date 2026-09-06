@@ -63,11 +63,11 @@ class InfrastructurePinStartupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertEqual(calls, [])
 
-    def test_explicit_manual_startup_retains_full_pull(self):
+    def test_fresh_public_edge_requires_verified_artifact_before_any_pull(self):
         result, calls = self.run_startup(pinned=False)
-        self.assertEqual(result.returncode, 77)
-        pulls = [call for call in calls if "pull" in call]
-        self.assertEqual([call[call.index("pull") + 1:] for call in pulls], [[], []])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('install-caddy-artifact.py', result.stderr)
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

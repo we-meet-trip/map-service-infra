@@ -121,3 +121,20 @@ python3 -B scripts/verify-caddy-security.py --self-test
    반영해야 한다. 기본 upstream tag로 재설치하면 이 패치가 사라질 수 있다.
 
 빌드·스캔·격리 부팅·공개 경로 확인이 모두 끝나기 전에는 수정 완료로 판단하지 않는다.
+
+## 검증된 전달 artifact를 사용하는 신규 호스트 설치 (2026-09-07 KST)
+
+`docker/caddy-security/install-artifact-20260906.json`이 검토한 archive와 Trivy 보고서의 신뢰 기준이다. archive SHA256 `c85c7192e92644fccd75d86bdfca599425603a647e77183b29effaddfe697fcc`, 68,931,584 bytes, linux/amd64 config image `sha256:5d27f970d3a1c93e77bd28089bf3294ef40b9f7832648419b8a3c2b43b4bc670`이다. 이 기준 파일은 새 빌드 검토 없이 바꾸지 않는다. 현재 파일은 작업 호스트의 `/tmp/map-caddy-security-image-20260906.tar`와 `/tmp/map-image-audit-20260906/caddy-security-20260906.json`이다. NCP 생성 전 별도 안전한 보관소로 전달하고 원격에서 다시 검증한다.
+
+```sh
+python3 scripts/install-caddy-artifact.py \
+  --archive /secure-transfer/map-caddy-security-image-20260906.tar \
+  --report /secure-transfer/caddy-security-20260906.json \
+  --install-compose /secure-transfer/compose.caddy-installed.yml
+EDGE_IMAGE_OVERRIDE=/secure-transfer/compose.caddy-installed.yml \
+  bash scripts/cloud-up.sh --registry --edge --vision
+```
+
+첫 명령은 checksum 및 OS/아키텍처·플랫폼 image ID·설치된 binary hash를 확인하고, network-none 임시 컨테이너의 공개 설정 검사와 실제 HTTP/TLS 기동을 통과해야 `pull_policy: never` override를 작성한다. 존재하는 override는 덮어쓰지 않는다. 둘째 명령은 override가 검토된 이미지인지 다시 확인한다. artifact 없이 신규 edge를 mutable 태그에서 당기는 자동 receiver 경로는 거절한다. 기존 GCP edge는 이전 컨테이너에서 캡처한 동일 이미지로 보존된다.
+
+2026-09-07 로컬 실행에서 실제 archive import와 HTTP/TLS smoke PASS를 확인했다. 이미 Docker가 설치된 로컬 호스트에서 실행한 증거이며, 빈 NCP VM의 OS/bootstrap/네트워크/공개 인증서 설치 완료를 의미하지 않는다. 설치 스크립트 자체는 기존 컨테이너·볼륨을 변경하지 않는다. serving 전환은 이전 image ID와 Compose/env를 별도로 보관한 후 수행하고 실패 시 그 override로 복귀한다. 이 artifact와 검사 시점 이후 advisory 재검토는 별도 보안 gate다.

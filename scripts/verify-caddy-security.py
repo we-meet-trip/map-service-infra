@@ -106,24 +106,10 @@ def verify_report(report, image_id, platform_image_id=None):
     require(not findings, "HIGH/CRITICAL findings remain; review is required before deployment")
 
 
-def verify(args):
-    original, patched = metadata(args.original_image), metadata(args.image)
-    require(original["id"] != patched["id"], "upstream binary was not replaced")
-    for image in (original["id"], patched["id"]):
-        require(run(isolated(image) + ["version"]).split()[0] == "v2.11.4", "Caddy source version changed")
-    old_modules = module_names(run(isolated(original["id"]) + ["list-modules"]))
-    new_modules = module_names(run(isolated(patched["id"]) + ["list-modules"]))
-    require(old_modules == new_modules, "standard module set changed")
-    buildinfo = run(isolated(patched["id"], "cat") + ["/usr/share/map-caddy-build/buildinfo.txt"])
-    verify_buildinfo(buildinfo)
-    # A copied evidence file alone is insufficient: match the installed binary hash.
-    expected_hash = run(isolated(patched["id"], "cat") + ["/usr/share/map-caddy-build/binary.sha256"]).split()[0]
-    actual_hash = run(isolated(patched["id"], "sha256sum") + ["/usr/bin/caddy"]).split()[0]
-    require(re.fullmatch(r"[a-f0-9]{64}", expected_hash) and expected_hash == actual_hash, "installed binary differs from build evidence")
-    verify_report(json.loads(args.report.read_text()), patched["id"], patched["platform_image_id"])
+def runtime_checks(image_id):
     # Validate the committed public routing configuration with synthetic env values.
     config = (Path(__file__).resolve().parent.parent / "edge/Caddyfile").read_text()
-    invoke = isolated(patched["id"], "sh")
+    invoke = isolated(image_id, "sh")
     invoke[2:2] = ["-i", "-e", "EDGE_DOMAIN=map-security.invalid", "-e", "EDGE_EMAIL=security@example.invalid"]
     run(invoke + ["-c", "cat > /tmp/Caddyfile; caddy validate --config /tmp/Caddyfile --adapter caddyfile"], data=config)
     # Real HTTP and TLS boot on loopback inside a network-none disposable container.
@@ -156,7 +142,25 @@ for attempt in 1 2 3 4 5 6 7 8 9 10; do
 done
 test "$ready" = 1
 '''
-    run(isolated(patched["id"], "sh") + ["-c", boot], timeout=60)
+    run(isolated(image_id, "sh") + ["-c", boot], timeout=60)
+
+
+def verify(args):
+    original, patched = metadata(args.original_image), metadata(args.image)
+    require(original["id"] != patched["id"], "upstream binary was not replaced")
+    for image in (original["id"], patched["id"]):
+        require(run(isolated(image) + ["version"]).split()[0] == "v2.11.4", "Caddy source version changed")
+    old_modules = module_names(run(isolated(original["id"]) + ["list-modules"]))
+    new_modules = module_names(run(isolated(patched["id"]) + ["list-modules"]))
+    require(old_modules == new_modules, "standard module set changed")
+    buildinfo = run(isolated(patched["id"], "cat") + ["/usr/share/map-caddy-build/buildinfo.txt"])
+    verify_buildinfo(buildinfo)
+    # A copied evidence file alone is insufficient: match the installed binary hash.
+    expected_hash = run(isolated(patched["id"], "cat") + ["/usr/share/map-caddy-build/binary.sha256"]).split()[0]
+    actual_hash = run(isolated(patched["id"], "sha256sum") + ["/usr/bin/caddy"]).split()[0]
+    require(re.fullmatch(r"[a-f0-9]{64}", expected_hash) and expected_hash == actual_hash, "installed binary differs from build evidence")
+    verify_report(json.loads(args.report.read_text()), patched["id"], patched["platform_image_id"])
+    runtime_checks(patched["id"])
     print(json.dumps({"status": "verified", "image_id": patched["id"], "platform_image_id": patched["platform_image_id"], "caddy": "v2.11.4", "go": GO_VERSION,
                       "module_count": len(new_modules), "high_critical": 0,
                       "isolated_http": "pass", "isolated_tls": "pass", "public_config": "valid"}))

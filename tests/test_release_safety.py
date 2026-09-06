@@ -142,7 +142,12 @@ class BackupTests(unittest.TestCase):
             calls.append(args)
             return subprocess.CompletedProcess(args, 0, str(manifest.stat().st_size))
 
-        with patch.object(pg, "run", side_effect=runner):
+        import io
+        from types import SimpleNamespace
+        download = SimpleNamespace(stdout=io.BytesIO(manifest.read_bytes()),
+                                   wait=lambda: 0, poll=lambda: 0)
+        with patch.object(pg, "run", side_effect=runner), patch.object(
+                pg.subprocess, "Popen", return_value=download):
             pg.upload([manifest], "s3://map-backup/test", "https://kr.object.ncloudstorage.com")
         self.assertIn("head-object", calls[1])
         with self.assertRaises(pg.BackupError):

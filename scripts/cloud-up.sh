@@ -61,6 +61,16 @@ for arg in "$@"; do
   esac
 done
 
+# Fresh hosts must import the reviewed Caddy artifact before exposing public TLS.
+# Receiver deployments supply independently verified existing infrastructure pins.
+if [ "$EDGE" = 1 ] && [ -z "${INFRA_IMAGE_BUNDLE:-}" ]; then
+  [ -n "${EDGE_IMAGE_OVERRIDE:-}" ] && [ -f "$EDGE_IMAGE_OVERRIDE" ] || {
+    echo 'edge requires EDGE_IMAGE_OVERRIDE from install-caddy-artifact.py' >&2; exit 2;
+  }
+  python3 scripts/install-caddy-artifact.py --verify-compose "$EDGE_IMAGE_OVERRIDE"
+  FILES+=(-f "$EDGE_IMAGE_OVERRIDE")
+fi
+
 [ "$MONITORING" = 1 ] && ADMIN_PROFILES=(--profile monitoring)
 
 # A verified release bundle pins every application to an OCI digest. Keep the

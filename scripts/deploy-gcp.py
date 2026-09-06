@@ -374,6 +374,7 @@ def prepare_infrastructure(directory, bundle, env_file, captured, env):
             if metadata is None:
                 # Only newly installed, stateless/monitoring services may consult a tag.
                 require(service not in ("postgres", "redis"), "database image pull is prohibited")
+                require(service != "edge", "new edge requires reviewed artifact installation before automatic deployment")
                 command(["docker", "pull", "--platform", "linux/amd64", requested], env=env, timeout=600)
                 metadata = image_metadata(requested, env)
                 digests = [value for value in metadata["repo_digests"] if isinstance(value, str)
