@@ -62,6 +62,17 @@ done
 
 [ "$MONITORING" = 1 ] && ADMIN_PROFILES=(--profile monitoring)
 
+# A verified release bundle pins every application to an OCI digest. Keep the
+# service and administrator overrides separate: their Compose projects differ.
+if [ -n "${RELEASE_BUNDLE:-}" ]; then
+  [ "$PULL" = 1 ] || { echo 'RELEASE_BUNDLE requires --registry' >&2; exit 2; }
+  for pin in compose.images.yml compose.admin-images.yml; do
+    [ -f "$RELEASE_BUNDLE/$pin" ] || { echo 'release image pin missing' >&2; exit 2; }
+  done
+  FILES+=(-f "$RELEASE_BUNDLE/compose.images.yml")
+  ADMIN_FILES+=(-f "$RELEASE_BUNDLE/compose.admin-images.yml")
+fi
+
 # 작은 서버 덧칠은 1GB 급을 겨냥한다. 카메라 인식은 모델을 들고 있어 그 위에
 # 더 얹을 자리가 없다 — 재 보니 나머지 여섯만으로 부하 중 838 MiB 였고 거기에
 # 279 MiB 가 더 붙는다. 뜨기는 하다가 무엇이 먼저 죽을지 모르는 상태가 된다.
@@ -96,7 +107,7 @@ done
 if [ "$ADMIN" = 1 ]; then
   # 콘솔이 부팅하다 멈추는 값들. 저장소 접속과 첫 계정이 없으면 뜨더라도
   # 아무도 들어갈 수 없다.
-  for key in ADMIN_DATABASE_URL MAP_ADMIN_PASSWORD ADMIN_BOOTSTRAP_USER ADMIN_BOOTSTRAP_PASSWORD; do
+  for key in ADMIN_DATABASE_URL MAP_ADMIN_PASSWORD; do
     if ! grep -qE "^${key}=.+" "$ENV_FILE"; then
       echo "$ENV_FILE 에 $key 값이 없다 — 콘솔이 뜨지 못한다" >&2
       exit 1
@@ -177,12 +188,16 @@ for _ in $(seq 1 60); do
   fi
   sleep 2
 done
+if ! dc exec -T postgres pg_isready -h 127.0.0.1 -U "$db_user" -d "$db_name" >/dev/null 2>&1; then
+  echo 'database readiness failed; migration is blocked' >&2
+  exit 1
+fi
 
 # 아래 단계는 표를 바꾸고 되돌아가지 않는다. 백업의 옳은 자리는 여기 하나뿐이다 —
 # 지나간 뒤에 뜨면 이미 바뀐 것을 뜬다. 뜨지 못하면 되돌릴 자리가 없다는 뜻이므로
 # 표를 건드리지 않고 멈춘다.
 echo "[$LABEL] 표를 바꾸기 전에 지금 상태를 떠 둔다"
-backup_args=()
+backup_args=(--prod)
 [ "$ENV_FILE" = ./.env.test ] && backup_args=(--test)
 if ! ./scripts/pg-backup.sh "${backup_args[@]}"; then
   echo "백업하지 못했다. 되돌릴 자리가 없으므로 표를 바꾸는 단계로 넘어가지 않는다." >&2
@@ -208,23 +223,9 @@ dc exec -T \
   postgres bash /docker-entrypoint-initdb.d/10-admin.sh
 
 echo "[$LABEL] 3/4 hub 표 만들기"
-# 표를 손질하지 못했는데 넘어가면 안 된다. 이 도구는 리비전을 못 찾아도 0 으로
-# 끝나므로 종료코드만으로는 실패를 알 수 없다 — 실제 판이 코드가 아는 자리로
-# 옮겨졌는지를 뒤에서 다시 확인한다.
-#
-# 되돌리는 배포에서 특히 그렇다. 새 판이 표를 한 단계 올려 두면 옛 이미지의
-# 도구는 그 리비전을 모른다. 그때 "못 찾았다" 한 줄만 남기고 지나가면, 표는
-# 새 판이고 코드는 옛 판인 상태로 뜬다.
-migrate_log=$(dc run --rm --no-deps --entrypoint alembic hub upgrade head 2>&1) || true
-printf '%s\n' "$migrate_log"
-if printf '%s' "$migrate_log" | grep -q "Can't locate revision"; then
-  cur=$(dc exec -T postgres psql -U "$db_user" -d "$db_name" -tAc \
-    "select version_num from hub_data.alembic_version" | tr -d '[:space:]')
-  echo "이 판의 표 손질 도구는 지금 표의 판($cur)을 모른다." >&2
-  echo "  되돌리는 중이라면, 되돌리기 전 판으로 먼저 표를 한 단계 내린 뒤에 옮긴다:" >&2
-  echo "    dc run --rm --no-deps --entrypoint alembic hub downgrade <되돌릴 판>" >&2
-  exit 1
-fi
+# shellcheck source=scripts/lib/migrations.sh
+source ./scripts/lib/migrations.sh
+verify_hub_migration || exit 1
 
 tables=$(dc exec -T postgres psql -U "$db_user" -d "$db_name" -tAc \
   "select count(*) from information_schema.tables where table_schema='hub_data'" | tr -d '[:space:]')

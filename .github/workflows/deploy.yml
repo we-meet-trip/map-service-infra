@@ -1,0 +1,86 @@
+# Receives a verified immutable release bundle. The server's forced command owns
+# backup, fixed-instance checks, health checks and one application-only rollback.
+name: deploy-gcp-test
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "성공한 image-release 실행 ID (수동 branch 릴리스 허용)"
+        type: string
+        required: true
+  workflow_run:
+    workflows: [image-release]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: deploy-gcp-test
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.repository == 'we-meet-trip/map-service-infra' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'workflow_run' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    # Receiver budgets include prebackup (30m), startup (40m), compatibility
+    # checks and an application rollback (up to 10m). Keep SSH alive to report it.
+    timeout-minutes: 120
+    environment: gcp-test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Check workflow identity, run success, GitHub artifact SHA256, file hashes,
+      # source/digest schema and exact Compose contents before cloud authentication.
+      - name: verify release artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
+          DEPLOY_EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          automatic=()
+          if [ "$DEPLOY_EVENT" = workflow_run ]; then automatic=(--automatic); fi
+          python scripts/deploy-gcp.py prepare --run-id "$RELEASE_RUN_ID" \
+            --output "$RUNNER_TEMP/map-release-bundle" "${automatic[@]}"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          project_id: mapcenter-b59ca
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: mapcenter-b59ca
+
+      - name: deploy and smoke through pinned IAP SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key="$RUNNER_TEMP/map-deploy-key"
+          hosts="$RUNNER_TEMP/map-deploy-known-hosts"
+          trap 'rm -f "$key" "$hosts"' EXIT
+          test -n "$DEPLOY_SSH_KEY" && test -n "$DEPLOY_SSH_KNOWN_HOSTS"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$key"
+          printf '%s\n' "$DEPLOY_SSH_KNOWN_HOSTS" > "$hosts"
+          ssh -T -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$hosts" \
+            -o HostKeyAlias=map-test-deploy -o ConnectTimeout=30 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=6 \
+            -o 'ProxyCommand=gcloud compute start-iap-tunnel map-test 22 --listen-on-stdin --project=mapcenter-b59ca --zone=us-central1-a --verbosity=error' \
+            mapdeploy@map-test < "$RUNNER_TEMP/map-release-bundle/transport.json"

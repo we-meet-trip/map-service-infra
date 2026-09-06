@@ -1,0 +1,15 @@
+[Unit]
+Description=MAP GCP test PostgreSQL backup with off-host checksum verification
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/lib/map-deploy/backup-test-service.py
+TimeoutStartSec=600
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
