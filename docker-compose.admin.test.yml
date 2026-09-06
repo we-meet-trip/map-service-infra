@@ -25,9 +25,9 @@ name: map-admin-test
 
 services:
   admin:
+    labels:
+      map.stack: "${MAP_STACK_ENV:?시험 관리자 스택은 --env-file ./.env.test 와 함께 실행한다}"
     container_name: !reset null
-    env_file: !override
-      - ./.env.test
     ports: !override
       - "127.0.0.1:8202:8000"
 

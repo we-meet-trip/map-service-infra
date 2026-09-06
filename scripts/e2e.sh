@@ -134,10 +134,12 @@ sec "9. 이번 작업 산출물이 실제로 쌓이는가"
 q() { docker exec map-service-postgres psql -h 127.0.0.1 -At -U map -d map -c "$1" 2>/dev/null; }
 [ "$(q "SELECT count(*) FROM user_service.recommend_jobs WHERE source IS NOT NULL;")" -gt 0 ] \
   && ok "잡 출처(source)가 기록된다" || no "잡 출처(source)가 기록된다" "0건"
-[ "$(q "SELECT count(*) FROM user_service.recommend_training;")" -gt 0 ] \
-  && ok "학습 신호가 보관된다" || no "학습 신호가 보관된다" "0건"
-[ "$(q "SELECT count(*) FROM user_service.recommend_training WHERE payload ? 'llm_tokens';")" -gt 0 ] \
-  && ok "토큰 사용량이 함께 남는다" || no "토큰 사용량이 함께 남는다" "0건"
+if [ "${TRAINING_CAPTURE_ENABLED:-false}" = true ]; then
+  [ "$(q "SELECT count(*) FROM user_service.recommend_training;")" -gt 0 ] \
+    && ok "학습 신호가 보관된다" || no "학습 신호가 보관된다" "0건"
+else
+  sk "학습 신호 수집" "학습 보류; 생성·Streams 발행 차단은 agent 회귀시험으로 검증"
+fi
 [ "$(q "SELECT count(*) FROM user_service.recommend_edits;")" -gt 0 ] \
   && ok "초안 수정 전후가 남는다" || no "초안 수정 전후가 남는다" "0건"
 [ "$(q "SELECT count(*) FROM user_service.recommend_jobs WHERE source='cache_hit';")" -gt 0 ] \

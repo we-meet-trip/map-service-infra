@@ -1,0 +1,11 @@
+[Unit]
+Description=Back up MAP GCP test data every 30 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00,30:00
+Persistent=true
+RandomizedDelaySec=30
+Unit=map-test-backup.service
+
+[Install]
+WantedBy=timers.target

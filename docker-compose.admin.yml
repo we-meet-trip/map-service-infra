@@ -36,10 +36,53 @@
 
 name: map-admin
 
-# x-app-env — 애플리케이션 컨테이너 공통 환경설정.
-# 서비스 스택과 동일한 .env 파일을 읽는다(설정 단일 출처).
+# Only settings consumed by admin enter the container. In particular, JWT private
+# keys and the database superuser password must not cross this boundary.
 x-app-env: &app-env
-  env_file: ./.env
+  environment:
+    ADMIN_DATABASE_URL: ${ADMIN_DATABASE_URL:?관리자 DB 연결값이 필요하다}
+    ADMIN_ENVIRONMENT: ${ADMIN_ENVIRONMENT:-test}
+    ADMIN_TARGETS: '${ADMIN_TARGETS:-{}}'
+    ADMIN_LOGIN_MAX_ATTEMPTS: ${ADMIN_LOGIN_MAX_ATTEMPTS:-10}
+    ADMIN_LOGIN_WINDOW_SECONDS: ${ADMIN_LOGIN_WINDOW_SECONDS:-300}
+    DB_TIMEOUT_SEC: ${DB_TIMEOUT_SEC:-5.0}
+    ADMIN_BOOTSTRAP_USER: ${ADMIN_BOOTSTRAP_USER:-}
+    ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
+    ADMIN_SESSION_COOKIE_NAME: ${ADMIN_SESSION_COOKIE_NAME:-admin_session}
+    ADMIN_SESSION_TTL_MIN: ${ADMIN_SESSION_TTL_MIN:-720}
+    ADMIN_SESSION_COOKIE_SECURE: ${ADMIN_SESSION_COOKIE_SECURE:-false}
+    ADMIN_CORS_ORIGINS: ${ADMIN_CORS_ORIGINS:-[]}
+    USER_BASE_URL: ${USER_BASE_URL:-http://user:8080}
+    AGENT_BASE_URL: ${AGENT_BASE_URL:-http://agent:8000}
+    HUB_BASE_URL: ${HUB_BASE_URL:-http://hub:8000}
+    HEALTH_TIMEOUT_SEC: ${HEALTH_TIMEOUT_SEC:-3.0}
+    OSRM_FOOT_BASE_URL: ${OSRM_FOOT_BASE_URL:-}
+    OSRM_BICYCLE_BASE_URL: ${OSRM_BICYCLE_BASE_URL:-}
+    ADMIN_REDIS_URL: ${ADMIN_REDIS_URL:-redis://redis:6379}
+    REDIS_DB_STREAMS: ${REDIS_DB_STREAMS:-2}
+    REDIS_DB_RATELIMIT: ${REDIS_DB_RATELIMIT:-3}
+    REDIS_DB_CACHE: ${REDIS_DB_CACHE:-4}
+    STREAM_DONE: ${STREAM_DONE:-agent:jobs:done}
+    STREAM_STATUS: ${STREAM_STATUS:-agent:jobs:status}
+    STREAM_DLQ: ${STREAM_DLQ:-agent:jobs:done:dlq}
+    STREAM_GROUP: ${STREAM_GROUP:-bff-result}
+    REDIS_TIMEOUT_SEC: ${REDIS_TIMEOUT_SEC:-2.0}
+    INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-}
+    INTERNAL_TIMEOUT_SEC: ${INTERNAL_TIMEOUT_SEC:-5.0}
+    GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    GEMINI_MODELS_URL: ${GEMINI_MODELS_URL:-https://generativelanguage.googleapis.com/v1beta/models}
+    GEMINI_TIMEOUT_SEC: ${GEMINI_TIMEOUT_SEC:-5.0}
+    GEMINI_RPD_CAP: ${GEMINI_RPD_CAP:-200}
+    KAKAO_REST_API_KEY: ${KAKAO_REST_API_KEY:-}
+    KMA_SERVICE_KEY: ${KMA_SERVICE_KEY:-}
+    TOUR_API_SERVICE_KEY: ${TOUR_API_SERVICE_KEY:-}
+    NAVER_CLIENT_ID: ${NAVER_CLIENT_ID:-}
+    NAVER_CLIENT_SECRET: ${NAVER_CLIENT_SECRET:-}
+    EXTERNAL_PROBE_TIMEOUT_SEC: ${EXTERNAL_PROBE_TIMEOUT_SEC:-6.0}
+    DB_PAGE_SIZE_DEFAULT: ${DB_PAGE_SIZE_DEFAULT:-50}
+    DB_PAGE_SIZE_MAX: ${DB_PAGE_SIZE_MAX:-500}
+    DB_EXPORT_MAX_ROWS: ${DB_EXPORT_MAX_ROWS:-50000}
+    MONITORING_PANELS: ${MONITORING_PANELS:-[]}
 
 # x-logging — 로그가 무한히 쌓이지 않게 한다.
 #
@@ -78,7 +121,7 @@ services:
     ports:
       - "127.0.0.1:8002:8000"
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)\" || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3).status==200 else 1)\" || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -144,7 +187,7 @@ services:
   # 임베드 허용 + anonymous Viewer(loopback 전제) — admin 콘솔 iframe 용.
   grafana:
     <<: *default-logging
-    image: grafana/grafana-oss:11.2.0
+    image: grafana/grafana:13.2.1
     container_name: map-admin-grafana
     restart: unless-stopped
     profiles: ["monitoring"]
@@ -157,7 +200,7 @@ services:
           memory: 384m
     environment:
       GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:?Grafana 관리자 비밀번호가 필요하다}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_SECURITY_ALLOW_EMBEDDING: "true"
       GF_AUTH_ANONYMOUS_ENABLED: "true"

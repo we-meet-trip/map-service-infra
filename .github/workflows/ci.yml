@@ -1,6 +1,5 @@
-# 이 저장소에는 돌려 볼 테스트가 없다. 대신 여기서 깨지면 스택 전체가 뜨지
-# 않거나, 시험이 운영을 건드리는 종류의 사고가 난다. 그래서 검사 대상이
-# "문법이 맞는가" 와 "운영과 시험이 정말 갈라져 있는가" 둘이다.
+# 배포 manifest·백업·복귀 회귀와 문법·운영/시험 격리를 함께 검사한다.
+# 여기서 깨지면 스택 전체가 뜨지 않거나 시험이 운영 데이터를 건드릴 수 있다.
 #
 # 두 번째가 특히 중요하다. 원본 compose 가 볼륨 이름과 컨테이너 이름을 값으로
 # 못박아 두어, 파생 파일에서 프로젝트명만 바꾸면 갈라지지 않는다. 볼륨이
@@ -29,6 +28,9 @@ jobs:
           for f in scripts/*.sh; do
             bash -n "$f" || exit 1
           done
+
+      - name: deployment safety regressions
+        run: python3 -m unittest discover -s tests -v
 
       - name: shellcheck
         run: |

@@ -1,0 +1,347 @@
+#!/usr/bin/env python3
+"""Create/verify an immutable six-image release bundle using only the stdlib.
+
+Registry access occurs only in ``create`` / ``verify --registry-check``.
+``verify`` checks hashes, schema and exact Compose content without any network.
+GitHub artifact provenance/digest must additionally be checked by the receiver;
+SHA256SUMS establishes file consistency, not publisher authenticity.
+"""
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+import urllib.request
+
+REPOSITORY = "we-meet-trip/map-service-infra"
+REGISTRY = "ghcr.io/we-meet-trip"
+WORKFLOW_PATH = ".github/workflows/image-release.yml"
+SERVICES = ("user", "agent", "hub", "yolo", "admin", "admin-web")
+FILES = ("release.json", "compose.images.yml", "compose.admin-images.yml")
+SHA = re.compile(r"[0-9a-f]{40}")
+DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+DISPATCH_REPOSITORIES = frozenset(f"we-meet-trip/map-service-{name}" for name in SERVICES[:4])
+SOURCE_CI_PATH = ".github/workflows/ci.yml"
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def public_github_json(path, timeout=10):
+    # The four source repositories are public. No cross-repository PAT or cloud
+    # credential is required or forwarded for these read-only checks.
+    request = urllib.request.Request("https://api.github.com" + path, headers={
+        "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "map-release-verifier",
+    })
+    with urllib.request.build_opener(NoRedirect()).open(request, timeout=timeout) as response:
+        content = response.read(1024 * 1024 + 1)
+    require(len(content) <= 1024 * 1024, "GitHub response too large")
+    return json.loads(content, object_pairs_hook=unique_object)
+
+
+def validate_dispatch(payload):
+    exact_keys(payload, ("repository", "sha", "run_id"), "dispatch")
+    require(isinstance(payload["repository"], str) and payload["repository"] in DISPATCH_REPOSITORIES, "unexpected dispatch repository")
+    require(isinstance(payload["sha"], str) and SHA.fullmatch(payload["sha"]), "invalid dispatch SHA")
+    require(isinstance(payload["run_id"], str) and re.fullmatch(r"[1-9][0-9]{0,19}", payload["run_id"]), "invalid source run ID")
+    return payload
+
+
+def verify_dispatch(payload, *, wait_seconds=0):
+    """Verify successful develop CI and reject a superseded source commit.
+
+    The sending job belongs to that same run, so initial receipt may poll up to
+    120 seconds for completion. Build/deploy verification never waits or retries
+    a failed run. Every checkout still uses fixed repository URLs.
+    """
+    validate_dispatch(payload)
+    require(0 <= wait_seconds <= 120, "invalid dispatch wait budget")
+    prefix = f"/repos/{payload['repository']}"
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        require(not wait_seconds or remaining > 0, "source CI completion deadline exceeded")
+        timeout = min(10, max(0.1, remaining)) if wait_seconds else 10
+        run = public_github_json(f"{prefix}/actions/runs/{payload['run_id']}", timeout=timeout)
+        require(str(run.get("id")) == payload["run_id"]
+                and run.get("path") == SOURCE_CI_PATH and run.get("event") == "push"
+                and run.get("head_branch") == "develop" and run.get("head_sha") == payload["sha"]
+                and run.get("head_repository", {}).get("full_name") == payload["repository"]
+                and run.get("repository", {}).get("full_name") == payload["repository"], "source CI identity mismatch")
+        if run.get("status") == "completed":
+            require(run.get("conclusion") == "success", "source CI did not succeed")
+            break
+        require(run.get("status") in ("queued", "in_progress", "waiting", "pending", "requested"), "unexpected source CI state")
+        remaining = deadline - time.monotonic()
+        require(remaining > 0, "source CI completion deadline exceeded")
+        time.sleep(min(10, remaining))
+    # Reject stale requests instead of silently building a different commit.
+    if wait_seconds:
+        require(deadline > time.monotonic(), "dispatch verification deadline exceeded")
+    branch = public_github_json(f"{prefix}/git/ref/heads/develop",
+                               timeout=min(10, max(0.1, deadline - time.monotonic())) if wait_seconds else 10)
+    require(branch.get("ref") == "refs/heads/develop"
+            and branch.get("object", {}).get("sha") == payload["sha"], "source develop advanced; require a new CI release")
+    return payload
+
+
+def verify_dispatch_event(args):
+    require(args.event_file.stat().st_size <= 1024 * 1024, "dispatch event too large")
+    event = json.loads(args.event_file.read_text(), object_pairs_hook=unique_object)
+    require(event.get("action") == "release-develop"
+            and event.get("repository", {}).get("full_name") == REPOSITORY, "unexpected dispatch event")
+    payload = verify_dispatch(event.get("client_payload"), wait_seconds=120)
+    require(not args.output.exists(), "dispatch evidence output already exists")
+    args.output.write_text(json.dumps(payload, sort_keys=True) + "\n")
+    if args.github_output:
+        with args.github_output.open("a") as stream:
+            for key in ("repository", "sha", "run_id"):
+                stream.write(f"{key}={payload[key]}\n")
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def validate_ref(value):
+    require(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}", value), "invalid source ref")
+    require(not any(part in value for part in ("..", "//", "@{")), "invalid source ref")
+    require(all(part and not part.startswith(".") and not part.endswith((".lock", "."))
+                for part in value.split("/")), "invalid source ref")
+    return value
+
+
+def validate_tag(value):
+    require(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", value), "invalid release tag")
+    require(value not in ("latest", "develop", "master"), "release tag must identify one release")
+    return value
+
+
+def exact_keys(value, keys, label):
+    require(isinstance(value, dict) and set(value) == set(keys), f"invalid {label} fields")
+
+
+def validate(data):
+    exact_keys(data, ("schema_version", "release_tag", "created_at", "infra_sha", "source_ref",
+                      "github_run_id", "workflow_repository", "provenance", "services"), "manifest")
+    require(type(data["schema_version"]) is int and data["schema_version"] == 1, "unsupported schema")
+    validate_tag(data["release_tag"])
+    validate_ref(data["source_ref"])
+    require(isinstance(data["infra_sha"], str) and SHA.fullmatch(data["infra_sha"]), "invalid infra SHA")
+    require(isinstance(data["github_run_id"], str) and re.fullmatch(r"[1-9][0-9]{0,19}", data["github_run_id"]), "invalid run ID")
+    require(data["workflow_repository"] == REPOSITORY, "unexpected workflow repository")
+    try:
+        created = datetime.fromisoformat(data["created_at"].replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError):
+        raise ValueError("invalid creation time") from None
+    require(created.utcoffset() is not None and created.utcoffset().total_seconds() == 0, "creation time must use UTC")
+    provenance = data["provenance"]
+    require(isinstance(provenance, dict), "invalid provenance")
+    dispatched = provenance.get("event_name") == "repository_dispatch"
+    exact_keys(provenance, ("workflow_path", "workflow_sha", "event_name", "dispatch") if dispatched
+               else ("workflow_path", "workflow_sha", "event_name"), "provenance")
+    require(provenance["workflow_path"] == WORKFLOW_PATH, "unexpected workflow path")
+    require(isinstance(provenance["workflow_sha"], str) and SHA.fullmatch(provenance["workflow_sha"]), "invalid workflow SHA")
+    require(provenance["event_name"] in ("workflow_dispatch", "workflow_run", "repository_dispatch"), "unexpected release event")
+    if provenance["event_name"] in ("workflow_run", "repository_dispatch"):
+        require(data["source_ref"] == "develop", "automatic releases require develop")
+    exact_keys(data["services"], SERVICES, "services")
+    for service in SERVICES:
+        entry = data["services"][service]
+        exact_keys(entry, ("source_repo", "source_sha", "image", "digest"), service)
+        repo_service = "admin" if service == "admin-web" else service
+        require(entry["source_repo"] == f"we-meet-trip/map-service-{repo_service}", "unexpected source repository")
+        require(isinstance(entry["source_sha"], str) and SHA.fullmatch(entry["source_sha"]), "invalid source SHA")
+        require(entry["image"] == f"{REGISTRY}/map-service-{service}", "unexpected image registry/repository")
+        require(isinstance(entry["digest"], str) and DIGEST.fullmatch(entry["digest"]), "invalid image digest")
+    require(data["services"]["admin"]["source_sha"] == data["services"]["admin-web"]["source_sha"], "admin images must share source SHA")
+    if dispatched:
+        evidence = validate_dispatch(provenance["dispatch"])
+        source = next(entry for entry in data["services"].values() if entry["source_repo"] == evidence["repository"])
+        require(source["source_sha"] == evidence["sha"], "dispatch source image SHA mismatch")
+    return data
+
+
+def compose(data, services):
+    # No parser or arbitrary YAML values: only validated fixed services/digests.
+    validate(data)
+    lines = ["# Generated by release_manifest.py; apply after the registry overlay.", "services:"]
+    for service in services:
+        entry = data["services"][service]
+        lines.extend((f"  {service}:", "    build: !reset null",
+                      f"    image: {entry['image']}@{entry['digest']}"))
+    return "\n".join(lines) + "\n"
+
+
+def run(*args):
+    # Captured stderr can contain registry configuration; never echo it on failure.
+    result = subprocess.run(args, text=True, capture_output=True, timeout=120, check=False)
+    require(result.returncode == 0, f"{args[0]} command failed")
+    return result.stdout.strip()
+
+
+def inspect(reference, field):
+    return json.loads(run("docker", "buildx", "imagetools", "inspect", reference,
+                          "--format", "{{json ." + field + "}}"))
+
+
+def verify_registry_image(entry, tag):
+    # Pin before reading config, so a concurrent tag update cannot change the image.
+    reference = f"{entry['image']}@{entry['digest']}"
+    descriptor = inspect(reference, "Manifest")
+    require(descriptor.get("digest") == entry["digest"], "registry digest mismatch")
+    config = inspect(reference, "Image")
+    if "linux/amd64" in config:
+        config = config["linux/amd64"]
+    require(config.get("os") == "linux" and config.get("architecture") == "amd64", "image must support linux/amd64")
+    labels = config.get("config", {}).get("Labels", {})
+    require(labels.get("org.opencontainers.image.revision") == entry["source_sha"], "OCI revision mismatch")
+    source = labels.get("org.opencontainers.image.source", "")
+    require(source in (f"https://github.com/{entry['source_repo']}", f"https://github.com/{entry['source_repo']}.git"), "OCI source mismatch")
+    require(labels.get("org.opencontainers.image.version") == tag, "OCI release version mismatch")
+
+
+def create(args):
+    validate_ref(args.source_ref)
+    validate_tag(args.tag)
+    sources = {}
+    for service in ("infra", "user", "agent", "hub", "yolo", "admin"):
+        repo = args.source_root / f"map-service-{service}"
+        sha = run("git", "-C", str(repo), "rev-parse", "HEAD")
+        require(SHA.fullmatch(sha), "invalid checked out SHA")
+        # Generated test outputs are ignored; any tracked mutation invalidates provenance.
+        run("git", "-C", str(repo), "diff", "--quiet", "HEAD", "--")
+        require(not run("git", "-C", str(repo), "status", "--porcelain", "--untracked-files=normal"), "source worktree changed during build")
+        sources[service] = sha
+    data = {
+        "schema_version": 1, "release_tag": args.tag,
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "infra_sha": sources["infra"], "source_ref": args.source_ref,
+        "github_run_id": args.run_id, "workflow_repository": args.workflow_repository,
+        "provenance": {"workflow_path": WORKFLOW_PATH, "workflow_sha": args.workflow_sha,
+                       "event_name": args.event_name}, "services": {},
+    }
+    evidence_path = getattr(args, "dispatch_evidence", None)
+    if args.event_name == "repository_dispatch":
+        require(evidence_path is not None and evidence_path.stat().st_size <= 4096, "dispatch evidence is required")
+        evidence = json.loads(evidence_path.read_text(), object_pairs_hook=unique_object)
+        data["provenance"]["dispatch"] = verify_dispatch(evidence)
+    else:
+        require(evidence_path is None, "unexpected dispatch evidence")
+    for service in SERVICES:
+        repo_service = "admin" if service == "admin-web" else service
+        image = f"{REGISTRY}/map-service-{service}"
+        descriptor = inspect(f"{image}:{args.tag}", "Manifest")
+        entry = {"source_repo": f"we-meet-trip/map-service-{repo_service}",
+                 "source_sha": sources[repo_service], "image": image, "digest": descriptor.get("digest")}
+        require(isinstance(entry["digest"], str) and DIGEST.fullmatch(entry["digest"]), "registry returned invalid digest")
+        verify_registry_image(entry, args.tag)
+        data["services"][service] = entry
+    write_bundle(args.output, validate(data))
+
+
+def write_bundle(directory, data):
+    validate(data)
+    directory.mkdir(parents=True, exist_ok=True)
+    contents = {
+        "release.json": json.dumps(data, indent=2, sort_keys=True) + "\n",
+        "compose.images.yml": compose(data, SERVICES[:4]),
+        "compose.admin-images.yml": compose(data, SERVICES[4:]),
+    }
+    for name, content in contents.items():
+        require(not (directory / name).is_symlink(), "bundle cannot contain symlinks")
+        (directory / name).write_text(content, encoding="utf-8")
+    sums = "".join(f"{hashlib.sha256(contents[name].encode()).hexdigest()}  {name}\n" for name in FILES)
+    require(not (directory / "SHA256SUMS").is_symlink(), "bundle cannot contain symlinks")
+    (directory / "SHA256SUMS").write_text(sums, encoding="utf-8")
+
+
+def unique_object(pairs):
+    value = {}
+    for key, item in pairs:
+        require(key not in value, "duplicate JSON key")
+        value[key] = item
+    return value
+
+
+def verify_bundle(directory, *, expected_run_id=None, expected_infra_sha=None,
+                  expected_workflow_sha=None, registry_check=False):
+    contents = {}
+    for name in (*FILES, "SHA256SUMS"):
+        path = directory / name
+        require(path.is_file() and not path.is_symlink() and path.stat().st_size <= 65536, "invalid bundle file")
+        contents[name] = path.read_bytes()
+    expected_sums = "".join(f"{hashlib.sha256(contents[name]).hexdigest()}  {name}\n" for name in FILES).encode()
+    require(contents["SHA256SUMS"] == expected_sums, "bundle checksum mismatch")
+    data = validate(json.loads(contents["release.json"], object_pairs_hook=unique_object))
+    for expected, actual, label in ((expected_run_id, data["github_run_id"], "run ID"),
+                                   (expected_infra_sha, data["infra_sha"], "infra SHA"),
+                                   (expected_workflow_sha, data["provenance"]["workflow_sha"], "workflow SHA")):
+        require(expected is None or expected == actual, f"unexpected {label}")
+    require(contents["compose.images.yml"].decode() == compose(data, SERVICES[:4]), "application Compose mismatch")
+    require(contents["compose.admin-images.yml"].decode() == compose(data, SERVICES[4:]), "admin Compose mismatch")
+    if registry_check:
+        for entry in data["services"].values():
+            verify_registry_image(entry, data["release_tag"])
+    return data
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    inputs = commands.add_parser("validate-inputs")
+    inputs.add_argument("--ref", required=True)
+    inputs.add_argument("--tag", required=True)
+    dispatch = commands.add_parser("verify-dispatch")
+    dispatch.add_argument("--event-file", type=Path, required=True)
+    dispatch.add_argument("--output", type=Path, required=True)
+    dispatch.add_argument("--github-output", type=Path)
+    make = commands.add_parser("create")
+    make.add_argument("--source-root", type=Path, required=True)
+    make.add_argument("--output", type=Path, required=True)
+    make.add_argument("--source-ref", required=True)
+    make.add_argument("--tag", required=True)
+    make.add_argument("--run-id", required=True)
+    make.add_argument("--workflow-repository", required=True)
+    make.add_argument("--workflow-sha", required=True)
+    make.add_argument("--event-name", required=True)
+    make.add_argument("--dispatch-evidence", type=Path)
+    check = commands.add_parser("verify")
+    check.add_argument("--bundle", type=Path, required=True)
+    check.add_argument("--expected-run-id")
+    check.add_argument("--expected-infra-sha")
+    check.add_argument("--expected-workflow-sha")
+    check.add_argument("--registry-check", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "validate-inputs":
+            validate_ref(args.ref)
+            validate_tag(args.tag)
+        elif args.command == "verify-dispatch":
+            verify_dispatch_event(args)
+        elif args.command == "create":
+            create(args)
+        else:
+            verify_bundle(args.bundle, expected_run_id=args.expected_run_id,
+                          expected_infra_sha=args.expected_infra_sha,
+                          expected_workflow_sha=args.expected_workflow_sha,
+                          registry_check=args.registry_check)
+    except (ValueError, OSError, TypeError, KeyError, subprocess.TimeoutExpired) as error:
+        # Do not reflect untrusted JSON/registry output or subprocess stderr.
+        print(f"release manifest rejected ({type(error).__name__})", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

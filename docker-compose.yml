@@ -17,11 +17,11 @@
 #   routing — 경로 라우팅 엔진 (osrm-foot / osrm-bicycle). full 에 포함되지 않는
 #             별도 프로파일이다. OSRM 데이터(scripts/osrm-rebuild.sh)를 빌드한
 #             뒤에만 기동한다. hub 는 이 서비스에 depends_on 을 걸지 않으며,
-#             미기동/미설정 시 결정적 스텁 지오메트리로 폴백한다.
+#             미기동/미설정 시 실제 경로를 만들 수 없다는 오류를 반환한다.
 #   프로파일에 속하지 않는 서비스는 `docker compose up` 시 기동되지 않는다.
 #
 # 환경 변수:
-#   x-app-env 앵커가 ./.env 파일을 읽어 애플리케이션 컨테이너에 주입한다.
+#   --env-file로 선택한 파일에서 각 서비스의 명시된 허용 변수만 주입한다.
 #   postgres 의 POSTGRES_* 변수는 동일한 .env 에서 치환된다.
 #
 # 컨테이너 이름은 map-service-<서비스명> 으로 고정한다. 자동 생성 이름
@@ -34,8 +34,8 @@
 
 name: map-service
 
-# x-app-env — 애플리케이션 컨테이너 공통 환경설정.
-# user / agent / hub / yolo 모두 동일 .env 파일을 공유한다.
+# 서비스별 environment 허용목록으로 비밀값 전달 범위를 제한한다.
+# 값 없는 YAML 항목은 선택한 --env-file/실행 환경에 있을 때만 전달된다.
 # 로그가 무한히 쌓이지 않게 한다.
 #
 # 기본값은 크기 제한이 없다. 상태 확인만으로도 서비스마다 하루 수만 줄이
@@ -49,9 +49,6 @@ x-logging: &default-logging
     options:
       max-size: "10m"
       max-file: "3"
-
-x-app-env: &app-env
-  env_file: ./.env
 
 services:
   # postgres — PostGIS 확장이 포함된 메인 RDB.
@@ -208,7 +205,7 @@ services:
     build:
       context: ../map-service-user
     container_name: map-service-user
-    <<: [*app-env, *default-logging]
+    <<: *default-logging
     restart: unless-stopped
     # 유휴 약 670MiB. 상한을 걸면 JVM 이 힙을 상한 기준으로 다시 잡으므로
     # 아래 JAVA_TOOL_OPTIONS 로 비율을 함께 올린다. 둘 중 하나만 넣으면
@@ -219,6 +216,112 @@ services:
           cpus: "2.0"  # 코어 수를 넘는 상한은 2코어 서버에서 생성이 거절된다
           memory: 2g
     environment:
+      AGENT_BASE_URL:
+      AGENT_TIMEOUT_SECONDS:
+      APPLE_CLIENT_ID:
+      APPLE_ENABLED:
+      APPLE_KEY_ID:
+      APPLE_PRIVATE_KEY_B64:
+      APPLE_TEAM_ID:
+      APPLE_VALIDATION_DELAY_MS:
+      AUTH_ENFORCED:
+      CHAT_BROADCAST_CHANNEL:
+      CHAT_EXPIRY_GRACE_DAYS:
+      CHAT_EXPIRY_SWEEP_INTERVAL_MS:
+      CHAT_HISTORY_PAGE_SIZE:
+      CHAT_INVITE_BASE_URL:
+      CHAT_INVITE_PREVIEW_RATE_LIMIT:
+      CHAT_INVITE_PREVIEW_RATE_WINDOW_SECONDS:
+      CHAT_INVITE_RATE_LIMIT:
+      CHAT_INVITE_RATE_WINDOW_SECONDS:
+      CHAT_INVITE_TTL_DAYS:
+      CHAT_MAX_MESSAGE_LENGTH:
+      CHAT_MAX_PARTICIPANTS:
+      CHAT_SEND_RATE_LIMIT:
+      CHAT_SEND_RATE_WINDOW_SECONDS:
+      CHAT_WS_ENDPOINT:
+      CORS_ALLOWED_ORIGINS:
+      HUB_BASE_URL:
+      HUB_TIMEOUT_SECONDS:
+      INTERNAL_SERVICE_TOKEN:
+      JWT_ACCESS_TTL:
+      JWT_PRIVATE_KEY:
+      JWT_PUBLIC_KEY:
+      JWT_REFRESH_TTL:
+      KAKAO_APP_CALLBACK_SCHEME:
+      KAKAO_AUTHORIZE_URI:
+      KAKAO_OAUTH_CLIENT_ID:
+      KAKAO_OAUTH_CLIENT_SECRET:
+      KAKAO_OAUTH_REDIRECT_URI:
+      KAKAO_TOKEN_URI:
+      KAKAO_USER_INFO_URI:
+      LOCATION_ENC_ACTIVE_KID:
+      LOCATION_ENC_ENABLED:
+      LOCATION_ENC_KEYS:
+      LOCATION_WIRE_ENABLED:
+      LOCATION_WIRE_KEY:
+      LOCATION_WIRE_MAX_AGE_SECONDS:
+      NEARBY_RADIUS_METERS:
+      NEARBY_SIZE:
+      POSTGRES_DB:
+      POSTGRES_HOST:
+      POSTGRES_PASSWORD:
+      POSTGRES_PORT:
+      POSTGRES_USER:
+      RECOMMEND_CACHE_BUDGET_ROUND_STEP:
+      RECOMMEND_CACHE_REFRESH_EVERY_HITS:
+      RECOMMEND_CACHE_REFRESH_QUEUE_CAPACITY:
+      RECOMMEND_CACHE_TIME_ROUND_STEP_MINUTES:
+      REDIS_CACHE_LINK_TTL_SECONDS:
+      REDIS_CACHE_TTL_SECONDS:
+      REDIS_DB_BLACKLIST:
+      REDIS_DB_CACHE:
+      REDIS_DB_CHAT:
+      REDIS_DB_COUNTERS:
+      REDIS_DB_DEFAULT:
+      REDIS_DB_DRAFTS:
+      REDIS_DB_RATELIMIT:
+      REDIS_DB_STREAMS:
+      REDIS_DRAFT_TTL_SECONDS:
+      REDIS_HOST:
+      REDIS_PASSWORD:
+      REDIS_PORT:
+      RESEARCH_DAILY_LIMIT:
+      REVIEWS_PREWARM_BATCH_SIZE:
+      REVIEWS_PREWARM_ENABLED:
+      REVIEWS_PREWARM_MAX_PLACES:
+      REVIEWS_PREWARM_POOL_SIZE:
+      REVIEWS_PREWARM_QUEUE_CAPACITY:
+      REVIEWS_SUMMARY_TTL_SECONDS:
+      STREAMS_COMMAND_TIMEOUT_SEC:
+      STREAMS_WATCHDOG_INTERVAL_MS:
+      STREAM_CONSUMER:
+      STREAM_DLQ:
+      STREAM_GROUP:
+      STREAM_MAXLEN:
+      STREAM_MAX_RETRY:
+      STREAM_MIN_IDLE_MS:
+      STREAM_NAME:
+      STREAM_RECLAIM_BATCH:
+      STREAM_RECLAIM_INTERVAL_MS:
+      TESTER_SEED_ENABLED:
+      TESTER_SEED_PASSWORD:
+      TRAINING_CAPTURE_ENABLED:
+      TRAINING_EXPORT_BATCH_SIZE:
+      TRAINING_EXPORT_ENABLED:
+      TRAINING_EXPORT_EXCLUDE_TEST_ACCOUNTS:
+      TRAINING_EXPORT_OUTPUT_DIR:
+      TRAINING_EXPORT_TEST_EMAIL_DOMAINS:
+      TRAINING_EXPORT_USER_REF_SALT:
+      TRIP_POLL_INTERVAL_MS:
+      TRIP_POLL_TIMEOUT_SECONDS:
+      USER_INTERNAL_TRUSTED_CIDRS:
+      USER_RATELIMIT_TRUSTED_PROXIES:
+      VISION_DAILY_LIMIT:
+      VISION_INTERNAL_TOKEN:
+      WEATHER_WATCH_ENABLED:
+      WEATHER_WATCH_INITIAL_DELAY_MS:
+      WEATHER_WATCH_INTERVAL_MS:
       # 컨테이너 상한의 70%를 힙으로 쓴다. 나머지 30%는 스레드 스택·메타스페이스·
       # 네이티브 버퍼 몫이다. 지정하지 않으면 기본 25%가 적용된다.
       JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=70"
@@ -245,7 +348,62 @@ services:
     build:
       context: ../map-service-agent
     container_name: map-service-agent
-    <<: [*app-env, *default-logging]
+    environment:
+      AUTH_ENFORCED:
+      CANDIDATES_MAX_BASE:
+      CANDIDATES_PER_DAY:
+      CHECKPOINT_ENABLED:
+      CHECKPOINT_ENC_ACTIVE_KID:
+      CHECKPOINT_ENC_KEYS:
+      GEMINI_API_KEY:
+      GEMINI_HTTP_TIMEOUT_SECONDS:
+      GEMINI_MAX_CALLS_PER_REQUEST:
+      GEMINI_MAX_OUTPUT_TOKENS:
+      GEMINI_MODEL:
+      GEMINI_RETRY_ATTEMPTS:
+      GEMINI_RETRY_INITIAL_DELAY:
+      GEMINI_RETRY_MAX_DELAY:
+      GEMINI_RETRY_STATUS_CODES:
+      GEMINI_RPD_CAP:
+      GEMINI_RPD_LIMIT:
+      GEMINI_RPM_LIMIT:
+      GEMINI_TEMPERATURE:
+      GEMINI_THINKING_BUDGET:
+      GEMINI_TIMEOUT_SECONDS:
+      HUB_BASE_URL:
+      HUB_TIMEOUT_SECONDS:
+      INTERNAL_SERVICE_TOKEN:
+      JOB_TIMEOUT_SECONDS:
+      LANGGRAPH_SCHEMA:
+      LOCATION_WIRE_KEY:
+      LOG_LEVEL:
+      PERSONALIZATION_ENABLED:
+      POSTGRES_DB:
+      POSTGRES_HOST:
+      POSTGRES_PASSWORD:
+      POSTGRES_PORT:
+      POSTGRES_USER:
+      REDIS_DB_RATELIMIT:
+      REDIS_DB_STREAMS:
+      REDIS_URL:
+      REVIEWS_DISPLAY:
+      REVIEWS_ENRICH_ENABLED:
+      REVIEWS_FETCH_CAP_PER_JOB:
+      REVIEWS_MAX_PLACES:
+      RULES_ENABLED:
+      SEGMENT_STATS_PATH:
+      SHUTDOWN_GRACE_SECONDS:
+      STATUS_STREAM_MAXLEN:
+      STATUS_STREAM_NAME:
+      STREAM_MAXLEN:
+      STREAM_NAME:
+      SUMMARY_ENABLED:
+      SUMMARY_MAX_LLM_CALLS:
+      SUMMARY_MAX_PLACES:
+      TIMELINE_BUFFER_MINUTES:
+      TIMELINE_ENABLED:
+      TRAINING_CAPTURE_ENABLED: ${TRAINING_CAPTURE_ENABLED:-false}
+    <<: *default-logging
     restart: unless-stopped
     # 종료 신호를 받고 정리할 시간을 넉넉히 준다. 이 서비스는 진행 중인
     # 생성 작업을 기다렸다가 못 끝낸 것에 실패를 알리고 나가도록 되어
@@ -287,7 +445,90 @@ services:
     build:
       context: ../map-service-hub
     container_name: map-service-hub
-    <<: [*app-env, *default-logging]
+    <<: *default-logging
+    environment:
+      AIRKOREA_CACHE_TTL_SEC:
+      AIRKOREA_FAIL_CACHE_TTL_SEC:
+      AIRKOREA_NUMOFROWS:
+      AIRKOREA_REQUEST_TIMEOUT_SEC:
+      AIRKOREA_SERVICE_KEY:
+      AIR_MAX_AGE_HOURS:
+      AUTH_ENFORCED:
+      DURUNUBI_GPX_TIMEOUT_SEC:
+      DURUNUBI_NUMOFROWS:
+      DURUNUBI_RADIUS_M:
+      DURUNUBI_REQUEST_TIMEOUT_SEC:
+      DURUNUBI_SYNC_INTERVAL_HOURS:
+      GOOGLE_MAPS_API_KEY:
+      GOOGLE_PHOTOS_DAILY_MEDIA_CAP:
+      GOOGLE_PHOTOS_MAX_COUNT:
+      GOOGLE_PHOTOS_MAX_WIDTH_PX:
+      GOOGLE_PHOTOS_TOTAL_BUDGET_SEC:
+      GOOGLE_PLACEID_CACHE_TTL_SEC:
+      GOOGLE_PLACEID_NEG_CACHE_TTL_SEC:
+      GOOGLE_PLACES_BIAS_RADIUS_M:
+      GOOGLE_PLACES_TIMEOUT_SEC:
+      HUB_DATABASE_URL:
+      HUB_INTERNAL_TRUSTED_CIDRS:
+      INTERNAL_SERVICE_TOKEN:
+      KAKAO_CACHE_TTL_SEC:
+      KAKAO_DEFAULT_RADIUS_M:
+      KAKAO_DEFAULT_SIZE:
+      KAKAO_REQUEST_TIMEOUT_SEC:
+      KAKAO_REST_API_KEY:
+      KMA_NUMOFROWS:
+      KMA_POLL_INTERVAL_SEC:
+      KMA_RATE_LIMIT_SLEEP_SEC:
+      KMA_REQUEST_TIMEOUT_SEC:
+      KMA_RETRY_INTERVAL_SEC:
+      KMA_RETRY_MAX_DURATION_SEC:
+      KMA_SERVICE_KEY:
+      LOCATION_WIRE_KEY:
+      LOG_LEVEL:
+      NAVER_BLOG_CACHE_TTL_SEC:
+      NAVER_BLOG_DEFAULT_DISPLAY:
+      NAVER_BLOG_TIMEOUT_SEC:
+      NAVER_CLIENT_ID:
+      NAVER_CLIENT_SECRET:
+      ODSAY_API_KEY:
+      ODSAY_API_KEY_FALLBACK:
+      ODSAY_CACHE_COORD_DIGITS:
+      ODSAY_CACHE_TTL_SEC:
+      ODSAY_DAILY_CALL_CAP:
+      ODSAY_FAIL_CACHE_TTL_SEC:
+      ODSAY_REQUEST_TIMEOUT_SEC:
+      ODSAY_TOTAL_BUDGET_SEC:
+      OSRM_BICYCLE_BASE_URL:
+      OSRM_FOOT_BASE_URL:
+      OSRM_TIMEOUT_SEC:
+      PLACES_STUB_MODE:
+      PM_CACHE_TTL_SEC:
+      PM_DEFAULT_RADIUS_M:
+      PM_FAIL_CACHE_TTL_SEC:
+      PM_NUMOFROWS:
+      PM_PROVIDERS:
+      PM_REQUEST_TIMEOUT_SEC:
+      PM_SERVICE_KEY:
+      PM_TOTAL_BUDGET_SEC:
+      REDIS_DB_CACHE:
+      REDIS_URL:
+      ROUTE_CACHE_TTL_SEC:
+      ROUTE_MAX_POINTS:
+      SEOUL_BIKE_CACHE_TTL_SEC:
+      SEOUL_BIKE_DEFAULT_RADIUS_M:
+      SEOUL_BIKE_MAX_PAGES:
+      SEOUL_BIKE_PAGE_SIZE:
+      SEOUL_BIKE_PARTIAL_CACHE_TTL_SEC:
+      SEOUL_BIKE_REQUEST_TIMEOUT_SEC:
+      SEOUL_BIKE_TOTAL_BUDGET_SEC:
+      SEOUL_OPENAPI_KEY:
+      TOUR_API_SERVICE_KEY:
+      TRANSIT_BUS_DOMINANCE_RATIO:
+      WEATHER_NOW_CACHE_TTL_SEC:
+      WEATHER_NOW_ENRICH_BUDGET_SEC:
+      WEATHER_NOW_MAX_AGE_HOURS:
+      WEATHER_NOW_OBSERVATION_BUDGET_SEC:
+      WEATHER_SNAPSHOT_RETENTION_DAYS:
     restart: unless-stopped
     # 유휴 약 115MiB. 외부 응답을 메모리에 오래 들고 있지 않는다.
     deploy:
@@ -313,7 +554,7 @@ services:
 
   # yolo — 카메라 실시간 인식 서비스 (YOLO 추론 + Gemini Vision 식별).
   # 클라이언트가 WebSocket(/ws/vision)으로 프레임을 보내면 객체를 찾아
-  # 무엇인지 설명해 돌려준다. DB·Redis·다른 서비스를 쓰지 않아 depends_on 이 없다.
+  # 무엇인지 설명해 돌려준다. User permit이 실패하면 인증/작업을 거절한다.
   # YOLO 가중치는 이미지 빌드 시 내장되므로 기동에 네트워크가 필요 없다.
   #
   # 프로파일을 vision 으로 분리한 이유: 이미지에 torch 가 들어가 무겁고,
@@ -335,12 +576,23 @@ services:
     build:
       context: ../map-service-yolo
     container_name: map-service-yolo
-    <<: [*app-env, *default-logging]
+    <<: *default-logging
     environment:
+      GEMINI_MODEL:
+      KAKAO_REST_API_KEY:
+      LOG_LEVEL:
+      YOLO_CONFIDENCE:
+      YOLO_MODEL_PATH:
       GEMINI_API_KEY: ${VISION_GEMINI_API_KEY:-${GEMINI_API_KEY:-}}
       GEMINI_TIMEOUT_SECONDS: ${VISION_GEMINI_TIMEOUT_SECONDS:-25.0}
       JOB_TIMEOUT_SECONDS: ${VISION_JOB_TIMEOUT_SECONDS:-45.0}
       WS_MAX_JOBS_PER_CONNECTION: ${VISION_WS_MAX_JOBS:-60}
+      VISION_INTERNAL_TOKEN: ${VISION_INTERNAL_TOKEN:?전용 Vision 승인 토큰이 필요하다}
+      USER_SERVICE_BASE_URL: ${USER_SERVICE_BASE_URL:-http://user:8080}
+      VISION_PERMIT_TIMEOUT_SECONDS: ${VISION_PERMIT_TIMEOUT_SECONDS:-5}
+      VISION_MAX_CONCURRENT_JOBS: ${VISION_MAX_CONCURRENT_JOBS:-2}
+      WS_IDLE_TIMEOUT_SECONDS: ${WS_IDLE_TIMEOUT_SECONDS:-120}
+      WS_MAX_MESSAGES_PER_CONNECTION: ${WS_MAX_MESSAGES_PER_CONNECTION:-240}
     restart: unless-stopped
     # torch 와 가중치를 프로세스 안에 올린다. 다른 서비스보다 한 자리 크다.
     deploy:

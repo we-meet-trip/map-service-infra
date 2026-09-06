@@ -94,6 +94,11 @@ set_kv ADMIN_DATABASE_URL "postgresql+psycopg://map_admin:${TEST_PW}@postgres:54
 set_kv INTERNAL_SERVICE_TOKEN test-internal-token-not-a-real-secret-value
 set_kv ADMIN_BOOTSTRAP_PASSWORD "$TEST_PW"
 set_kv GF_SECURITY_ADMIN_PASSWORD "$TEST_PW"
+vision_token=$(prev VISION_INTERNAL_TOKEN)
+if [ -z "$vision_token" ] || [[ "$vision_token" = replace-* ]]; then
+  vision_token=$(openssl rand -hex 32)
+fi
+set_kv VISION_INTERNAL_TOKEN "$vision_token"
 
 # (3) agent 는 이 값이 비면 부팅을 멈춘다. 뜨기는 하되 실제 호출은 거절당하도록
 #     한눈에 가짜인 값을 넣는다. 비워 두면 부팅 실패와 구분이 안 된다.

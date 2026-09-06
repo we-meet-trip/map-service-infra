@@ -5,7 +5,7 @@
 #
 # 환경파일이 두 겹인 것에 주의한다.
 #   --env-file  : 이 YAML 안의 ${...} 를 채운다(호스트 쪽). POSTGRES_PASSWORD 같은 값.
-#   env_file:   : 컨테이너 안으로 주입한다(컨테이너 쪽). 아래에서 .env.test 로 덮는다.
+#   environment: 밑판의 서비스별 허용목록을 --env-file .env.test로 해석한다.
 # --env-file 을 빠뜨리면 compose 는 기본값인 ./.env 를 읽는다. 그러면 컨테이너는
 # 시험 값을 받는데 postgres 는 운영 비밀번호로 뜨고, 아무 오류도 나지 않는다.
 # 그래서 아래 postgres 에 표시 하나를 달아 두었다. --env-file 을 빠뜨리면
@@ -64,8 +64,6 @@ services:
 
   user:
     container_name: !reset null
-    env_file: !override
-      - ./.env.test
     ports: !override
       - "127.0.0.1:8280:8080"
     deploy:
@@ -79,8 +77,6 @@ services:
 
   agent:
     container_name: !reset null
-    env_file: !override
-      - ./.env.test
     ports: !override
       - "127.0.0.1:8200:8000"
     deploy:
@@ -91,8 +87,6 @@ services:
 
   hub:
     container_name: !reset null
-    env_file: !override
-      - ./.env.test
     ports: !override
       - "127.0.0.1:8201:8000"
     deploy:
@@ -103,8 +97,6 @@ services:
 
   yolo:
     container_name: !reset null
-    env_file: !override
-      - ./.env.test
     ports: !override
       - "127.0.0.1:8204:8000"
     # 2코어 시험 서버에 맞춘 상한. 밑판의 값을 그대로 두면 코어 수를 넘어
