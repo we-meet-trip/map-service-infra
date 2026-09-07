@@ -31,13 +31,16 @@ class TopologyTests(unittest.TestCase):
 
     def test_application_smoke_does_not_depend_on_central_admin_availability(self):
         calls = []
-        def http(url, expected):
+        def http(url, timeout):
             calls.append(url)
-            return b'{"status":"UP"}'
-        with patch.object(deploy, 'ADMIN_DETACHED', True), patch.object(deploy, 'http_status', side_effect=http):
+            self.assertGreater(timeout, 0)
+            return (401 if url.endswith("/me") else 200), b'{"status":"UP"}'
+        with patch.object(deploy, 'ADMIN_DETACHED', True), patch.object(deploy, 'http_response', side_effect=http):
             deploy.smoke()
         self.assertFalse(any(':8202' in url or ':8203' in url for url in calls))
         self.assertTrue(any('/healthz/app' in url for url in calls))
+        self.assertEqual(sum(url.startswith(deploy.PUBLIC_URL) for url in calls), 3)
+        self.assertTrue(any(url == deploy.PUBLIC_URL + '/api/v1/users/me' for url in calls))
 
     def test_detached_compose_never_merges_central_app_images_and_rollback_pins_are_kept(self):
         with tempfile.TemporaryDirectory() as temporary, patch.object(deploy, 'ADMIN_DETACHED', True):
