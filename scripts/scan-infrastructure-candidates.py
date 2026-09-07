@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / 'security/infrastructure/manifest.json'
@@ -49,10 +50,18 @@ def load_spec():
     require({r['service'] for r in spec['services']}==SERVICES and len(spec['services'])==9, 'exact_nine_services')
     for row in spec['services']:
         require(re.fullmatch(r'[a-z0-9/_-]+@sha256:[a-f0-9]{64}', row['current']), 'immutable_current_required')
-        require(row['build'] in ('postgres','postgres-debian','preserve','upstream','os-update'), 'build_mode')
+        require(row['build'] in ('postgres','postgres-debian','preserve','upstream','os-update','go-security','grafana-security'), 'build_mode')
         if row['build']=='postgres-debian':
             require(row['service']=='postgres' and row['current']==POSTGRES_CURRENT
                     and row['candidate_selector']==POSTGRES_DEBIAN_BASE,'pinned_postgres_debian_contract')
+        elif row['build']=='go-security':
+            pins=json.loads((ROOT/'security/infrastructure/go-security/pins.json').read_text())['services']
+            require(row['service'] in pins and row['candidate_selector']==pins[row['service']]['runtime_base'],
+                    'pinned_go_security_contract')
+        elif row['build']=='grafana-security':
+            pins=json.loads((ROOT/'security/infrastructure/grafana-core-security/pins.json').read_text())
+            require(row['service']=='grafana' and row['candidate_selector']==pins['runtime_base'],
+                    'pinned_grafana_security_contract')
         else:
             require(row['candidate_selector'].split(':')[0].split('@')[0]==row['current'].split('@')[0], 'repository_change_forbidden')
     require(spec['candidate_security_approved'] is False, 'unreviewed_manifest_cannot_approve')
@@ -96,6 +105,57 @@ def oci_identity(path):
         return {'index_digest':index_digest,'manifest_digest':descriptor['digest'],'config_digest':index['config']['digest'],'archive_sha256':sha(path),'source_sha':config.get('config',{}).get('Labels',{}).get('org.opencontainers.image.revision'),'runtime_config':config.get('config',{}),'rootfs':config.get('rootfs',{})}
 
 
+def export_build_evidence(row, image, identity, output):
+    paths={'postgres-debian':'/usr/share/map-candidate',
+           'go-security':'/usr/share/map-security/go',
+           'grafana-security':'/usr/share/map-security/grafana-core'}
+    path=paths.get(row['build'])
+    if not path:return
+    token=uuid.uuid4().hex
+    name='map-build-evidence-'+token[:16]
+    def owned_unstarted(actual):
+        require(actual['Config']['Labels'].get('map.build.evidence')==token,'build_evidence_owner')
+        require(actual['Image']==image,'build_evidence_image')
+        state=actual['State']
+        require(state['Status']=='created' and state['Running'] is False
+                and state['StartedAt'].startswith('0001-01-01T00:00:00'),'build_evidence_not_unstarted')
+    try:
+        # Never start this container or attach an existing data/host volume.
+        run(['docker','create','--name',name,'--label','map.build.evidence='+token,image],timeout=60)
+        owned_unstarted(json.loads(run(['docker','inspect',name],timeout=30).stdout)[0])
+        raw=run(['docker','cp',name+':'+path+'/.','-'],timeout=120).stdout
+        require(len(raw)<64*1024*1024,'bounded_build_evidence_archive')
+        archive_path=output/'candidate-build-evidence.tar';archive_path.write_bytes(raw)
+        directory=output/'build-evidence';directory.mkdir()
+        files={}
+        expanded=0;members=0
+        with tarfile.open(archive_path,'r:') as archive:
+            for member in archive:
+                members+=1;expanded+=member.size
+                require(members<=20000 and expanded<64*1024*1024,'bounded_build_evidence_expanded')
+                relative=Path(member.name)
+                require(not relative.is_absolute() and '..' not in relative.parts,'build_evidence_path_escape')
+                require(member.isdir() or member.isfile(),'build_evidence_links_forbidden')
+                if member.isdir():continue
+                require(member.size<16*1024*1024,'bounded_build_evidence_file')
+                data=archive.extractfile(member).read()
+                target=directory/relative;target.parent.mkdir(parents=True,exist_ok=True)
+                with target.open('xb') as stream:stream.write(data)
+                files[str(relative)]=hashlib.sha256(data).hexdigest()
+        require(bool(files),'build_evidence_empty')
+        write(output/'build-evidence-receipt.json',{'runtime_image_id':image,
+              'config_digest':identity['config_digest'],'archive_sha256':sha(archive_path),
+              'source_sha':identity['source_sha'],'container_started':False,'files':files})
+    finally:
+        process=run(['docker','inspect',name],accepted=(0,1),timeout=30)
+        if process.returncode!=0:
+            require(b'No such object:' in process.stderr,'build_evidence_cleanup_inspect_failed')
+        if process.returncode==0:
+            actual=json.loads(process.stdout)[0]
+            owned_unstarted(actual)
+            run(['docker','rm','-v',name],timeout=60)
+
+
 def build_candidate(row, base, output, source_sha):
     run(['docker','pull','--platform','linux/amd64',base],timeout=600)
     inspected=json.loads(run(['docker','image','inspect',base]).stdout)[0]
@@ -103,7 +163,15 @@ def build_candidate(row, base, output, source_sha):
     require(re.fullmatch(r'[a-zA-Z0-9_.:-]+',user),'runtime_user_contract')
     oci=output/'candidate.oci.tar';docker=output/'candidate.docker.tar'
     tag='map-infra-candidate:'+row['service']+'-'+source_sha[:12]
-    build_process=run(['docker','buildx','build','--platform','linux/amd64','--provenance=false','--file',str(ROOT/'security/infrastructure'/('Dockerfile.'+row['build'])),'--build-arg','BASE='+base,'--build-arg','SOURCE_SHA='+source_sha,'--build-arg','RUNTIME_USER='+user,'--tag',tag,'--output','type=oci,dest='+str(oci),'--output','type=docker,dest='+str(docker),str(ROOT/'security/infrastructure')],accepted=(0,1),timeout=2400 if row['build']=='postgres-debian' else 1200)
+    args=['docker','buildx','build','--platform','linux/amd64','--provenance=false','--file',str(ROOT/'security/infrastructure'/('Dockerfile.'+row['build'])),'--build-arg','BASE='+base,'--build-arg','SOURCE_SHA='+source_sha,'--build-arg','RUNTIME_USER='+user]
+    if row['build']=='go-security':args+=['--build-arg','SERVICE='+row['service']]
+    args+=['--tag',tag,'--output','type=oci,dest='+str(oci),'--output','type=docker,dest='+str(docker),str(ROOT/'security/infrastructure')]
+    timeout={'postgres-debian':2400,'go-security':2700,'grafana-security':4200}.get(row['build'],1200)
+    try:
+        build_process=run(args,accepted=(0,1),timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        (output/'candidate-build.log').write_bytes((error.stderr or b'')[-120000:])
+        raise ValueError('candidate_build_timeout_'+str(timeout)) from None
     # Public source build only; no runtime credentials are supplied to builds.
     (output/'candidate-build.log').write_bytes(build_process.stderr[-120000:])
     require(build_process.returncode==0,'candidate_build_failed')
@@ -127,6 +195,7 @@ def build_candidate(row, base, output, source_sha):
     identity['scan_archive_format']='docker-save'
     docker.unlink()  # Keep the verified Docker save archive until Trivy reads it.
     write(output/'candidate-identity.json',identity)
+    export_build_evidence(row,current['Id'],identity,output)
     return current['Id'],identity
 
 
@@ -196,6 +265,10 @@ def execute(spec, output, selected):
     source_sha=run(['git','-C',str(ROOT),'rev-parse','HEAD']).stdout.decode().strip()
     require(re.fullmatch(r'[a-f0-9]{40}',source_sha),'source_sha')
     write(output/'input-manifest.json',spec)
+    write(output/'build-tool-versions.json',{
+        'docker':run(['docker','version','--format','{{json .}}']).stdout.decode().strip(),
+        'buildx':run(['docker','buildx','version']).stdout.decode().strip(),
+        'python':sys.version,'source_sha':source_sha})
     run(['docker','pull',spec['scanner']],timeout=600)
     run(['docker','run','--rm','--user',f'{os.getuid()}:{os.getgid()}','-v',str(cache)+':/cache',spec['scanner'],'image','--cache-dir','/cache','--download-db-only'],timeout=600)
     db=json.loads((cache/'db/metadata.json').read_text())

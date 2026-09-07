@@ -9,8 +9,8 @@
     {
       "service": "grafana",
       "current": "grafana/grafana@sha256:f772d434e8fab0049deb2b1b30abd43342bcfca1537614aa8d36080232cf4283",
-      "candidate_selector": "grafana/grafana:13.2.1",
-      "build": "os-update",
+      "candidate_selector": "grafana/grafana@sha256:1dec240d14e232597dce9bfa56dae55f4397b138cdc91e3ee92ac6b157e2fc49",
+      "build": "grafana-security",
       "kind": "stateful",
       "prior_counts": {
         "CRITICAL": 3,
@@ -21,8 +21,8 @@
     {
       "service": "prometheus",
       "current": "prom/prometheus@sha256:f6639335d34a77d9d9db382b92eeb7fc00934be8eae81dbc03b31cfe90411a94",
-      "candidate_selector": "prom/prometheus:v3.14.0",
-      "build": "upstream",
+      "candidate_selector": "prom/prometheus@sha256:e906cef998316bbe319f98711e1b4d8613ad37e14b08ff831d7036e77b7464f9",
+      "build": "go-security",
       "kind": "stateful",
       "prior_counts": {
         "CRITICAL": 8,
@@ -33,8 +33,8 @@
     {
       "service": "node-exporter",
       "current": "prom/node-exporter@sha256:4032c6d5bfd752342c3e631c2f1de93ba6b86c41db6b167b9a35372c139e7706",
-      "candidate_selector": "prom/node-exporter:v1.12.1",
-      "build": "upstream",
+      "candidate_selector": "prom/node-exporter@sha256:da83fae85603c4e47e6c68369a7d746e2dda683dc35ea2e234b4f171e0d92798",
+      "build": "go-security",
       "kind": "stateless",
       "prior_counts": {
         "CRITICAL": 2,
@@ -45,8 +45,8 @@
     {
       "service": "postgres-exporter",
       "current": "prometheuscommunity/postgres-exporter@sha256:38606faa38c54787525fb0ff2fd6b41b4cfb75d455c1df294927c5f611699b17",
-      "candidate_selector": "prometheuscommunity/postgres-exporter:v0.20.1",
-      "build": "upstream",
+      "candidate_selector": "prometheuscommunity/postgres-exporter@sha256:4f3d82803c1f99ea5e767890de3557d2479ebbc711f63f2e04c663daa840057a",
+      "build": "go-security",
       "kind": "stateless",
       "prior_counts": {
         "CRITICAL": 2,

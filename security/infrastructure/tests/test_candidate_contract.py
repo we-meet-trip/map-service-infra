@@ -30,7 +30,10 @@ class CandidateContract(unittest.TestCase):
             data=json.loads(json.dumps(original))
             row=next(x for x in data['services'] if x['service']==service)
             row.update(build='postgres-debian',candidate_selector=selector)
-            with patch.object(Path,'read_text',return_value=json.dumps(data)):
+            original_read=Path.read_text
+            def read(path,*args,**kwargs):
+                return json.dumps(data) if path==c.SPEC else original_read(path,*args,**kwargs)
+            with patch.object(Path,'read_text',read):
                 with self.assertRaisesRegex(ValueError,'pinned_postgres_debian_contract'):
                     c.load_spec()
 
@@ -68,6 +71,31 @@ class CandidateContract(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'container_owner_mismatch'):
                 sandbox.clean()
             self.assertEqual(1, run.call_count)
+
+    def test_network_cleanup_requires_owner_and_runs_after_containers(self):
+        sandbox=f.Sandbox(Path('/unused')); sandbox.containers=['own-container']; sandbox.networks=['own-network']
+        calls=[]
+        def run(args):
+            calls.append(args)
+            if args[1:2]==['inspect']:
+                return json.dumps([{'Config':{'Labels':{'map.infra.fixture':sandbox.token}}}]).encode()
+            if args[1:3]==['network','inspect']:
+                return json.dumps([{'Labels':{'map.infra.fixture':sandbox.token}}]).encode()
+            return b''
+        with patch.object(sandbox,'run',side_effect=run):sandbox.clean()
+        self.assertLess(calls.index(['docker','rm','-f','-v','own-container']),calls.index(['docker','network','rm','own-network']))
+        with patch.object(sandbox,'run',return_value=json.dumps([{'Labels':{}}]).encode()) as mocked:
+            sandbox.containers=[]
+            with self.assertRaisesRegex(ValueError,'network_owner_mismatch'):sandbox.clean()
+            self.assertEqual(mocked.call_count,1)
+
+    def test_fixture_network_is_internal_and_uniquely_owned(self):
+        sandbox=f.Sandbox(Path('/unused'))
+        with patch.object(sandbox,'run',return_value=b'') as run:
+            name=sandbox.create_network('grafana-plugin')
+        self.assertEqual(sandbox.networks,[name])
+        self.assertIn(sandbox.token,name)
+        self.assertEqual(run.call_args.args[0],['docker','network','create','--internal','--label','map.infra.fixture='+sandbox.token,name])
 
     def test_unexpected_scan_exit_is_not_zero_findings(self):
         with patch.object(c.subprocess, 'run') as run:

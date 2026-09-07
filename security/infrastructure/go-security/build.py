@@ -306,6 +306,10 @@ def http_smoke(recipe, binaries, evidence, run):
                                         and len(resource.read()) > 100, 'embedded_ui_asset')
                         checks[variant + '_ui_and_scripts'] = True
                         checks.update(promtool_config=True, promtool_rules=True)
+                except Exception:
+                    log.flush()
+                    sys.stderr.write(logs.read_bytes()[-12000:].decode(errors='replace'))
+                    raise
                 finally:
                     process.terminate()
                     try:

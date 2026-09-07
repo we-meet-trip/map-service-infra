@@ -26,11 +26,20 @@ class Sandbox:
         self.token = uuid.uuid4().hex[:12]
         self.containers = []
         self.volumes = []
+        self.networks = []
 
     def run(self, args, **kwargs):
         p = subprocess.run(args, capture_output=True, timeout=kwargs.pop('timeout', 120), **kwargs)
         require(p.returncode == 0, 'fixture_command_failed:' + Path(args[0]).name)
         return p.stdout
+
+    def create_network(self, label):
+        require(re.fullmatch(r'[a-z0-9-]+', label), 'fixture_network_label')
+        name = 'map-infra-' + self.token + '-' + label
+        self.run(['docker', 'network', 'create', '--internal', '--label',
+                  'map.infra.fixture=' + self.token, name])
+        self.networks.append(name)
+        return name
 
     def create(self, image, label, port, data_path=None, seed=None, extra=(), command=()):
         name = 'map-infra-' + self.token + '-' + label
@@ -92,6 +101,10 @@ class Sandbox:
             meta = json.loads(self.run(['docker', 'volume', 'inspect', name]))[0]
             require(meta['Labels'].get('map.infra.fixture') == self.token, 'volume_owner_mismatch')
             self.run(['docker', 'volume', 'rm', name])
+        for name in reversed(self.networks):
+            meta = json.loads(self.run(['docker', 'network', 'inspect', name]))[0]
+            require(meta['Labels'].get('map.infra.fixture') == self.token, 'network_owner_mismatch')
+            self.run(['docker', 'network', 'rm', name])
 
 
 def tree_hashes(path):
@@ -161,9 +174,18 @@ def prometheus(s, old, new):
 
 
 def grafana(s, old, new):
+    spec = importlib.util.spec_from_file_location('grafana_plugin_fixture',
+        Path(__file__).with_name('grafana-core-security') / 'plugin_fixture.py')
+    plugins = importlib.util.module_from_spec(spec); spec.loader.exec_module(plugins)
+    network = s.create_network('grafana-plugin')
+    prometheus_image = 'prom/prometheus@sha256:f6639335d34a77d9d9db382b92eeb7fc00934be8eae81dbc03b31cfe90411a94'
+    s.run(['docker', 'pull', '--platform', 'linux/amd64', prometheus_image], timeout=600)
+    prom, prom_origin = s.create(prometheus_image, 'grafana-prom', 9090, '/prometheus',
+        extra=('--network', network, '--network-alias', 'map-fixture-prom'))
+    s.wait(prom_origin, '/-/ready')
     password = uuid.uuid4().hex
     credentials = 'fixture-admin:' + password
-    options = ('-e', 'GF_SECURITY_ADMIN_USER=fixture-admin', '-e', 'GF_SECURITY_ADMIN_PASSWORD=' + password,
+    options = ('--network', network, '-e', 'GF_SECURITY_ADMIN_USER=fixture-admin', '-e', 'GF_SECURITY_ADMIN_PASSWORD=' + password,
                '-e', 'GF_AUTH_ANONYMOUS_ENABLED=false', '-e', 'GF_ANALYTICS_REPORTING_ENABLED=false',
                '-e', 'GF_ANALYTICS_CHECK_FOR_UPDATES=false', '-e', 'GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false',
                '-e', 'GF_PLUGINS_PREINSTALL_DISABLED=true')
@@ -186,12 +208,18 @@ def grafana(s, old, new):
         require(any(Path(m.name).name == 'grafana.db' for m in archive if m.isfile()), 'grafana_sqlite_backup_missing')
     forward, url = s.create(new, 'grafana-new', 3000, '/var/lib/grafana', backup, options)
     s.wait(url, '/api/health'); assert_dashboard(url)
+    plugin_forward = plugins.check(s, url, credentials)
     s.run(['docker', 'restart', forward]); url = s.origin(forward, 3000); s.wait(url, '/api/health'); assert_dashboard(url)
+    plugin_restart = plugins.check(s, url, credentials)
+    require(plugin_forward['prometheus_datasource_created'] and not plugin_restart['prometheus_datasource_created'],
+            'grafana_plugin_datasource_restart_persistence')
     upgraded = s.stop_copy(forward, '/var/lib/grafana', 'grafana-post-upgrade')
     rollback, url = s.create(old, 'grafana-rollback', 3000, '/var/lib/grafana', backup, options)
     s.wait(url, '/api/health'); assert_dashboard(url)
     require(tree_hashes(backup) == hashes, 'retained_grafana_backup_mutated')
     outcome = {'pre_upgrade_backup_restore': True, 'forward_dashboard_and_admin_auth': True,
+               'plugins_forward': plugin_forward, 'plugins_restart': plugin_restart,
+               'prometheus_fixture_image': prometheus_image, 'fixture_network_internal': True,
                'candidate_restart_persistence': True, 'pre_backup_unchanged': True,
                'post_upgrade_data_direct_downgrade': 'NOT_TESTED'}
     try:
