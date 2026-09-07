@@ -19,7 +19,7 @@ class InfrastructurePinStartupTests(unittest.TestCase):
             (root / ".env.test").write_text(
                 "POSTGRES_PASSWORD=synthetic\nHUB_DATABASE_URL=synthetic\n"
                 "GEMINI_API_KEY=synthetic\nADMIN_DATABASE_URL=synthetic\n"
-                "MAP_ADMIN_PASSWORD=synthetic\n")
+                "MAP_ADMIN_PASSWORD=synthetic\nUSER_DATABASE_USER=map_user_runtime\nUSER_DATABASE_PASSWORD=synthetic-runtime\n")
             pins = root / "pins"
             pins.mkdir()
             for name in ("compose.images.yml", "compose.admin-images.yml",

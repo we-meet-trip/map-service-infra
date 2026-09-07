@@ -148,7 +148,7 @@ dca() { docker compose --env-file "$ENV_FILE" "${ADMIN_FILES[@]}" "$@"; }
 
 # 값이 비면 그 서비스가 부팅하다 멈추는 것들만 미리 본다. 여기서 걸러 내지
 # 않으면 컨테이너가 뜨다 죽기를 반복하는 모습으로만 드러난다.
-for key in POSTGRES_PASSWORD HUB_DATABASE_URL GEMINI_API_KEY; do
+for key in POSTGRES_PASSWORD HUB_DATABASE_URL GEMINI_API_KEY USER_DATABASE_USER USER_DATABASE_PASSWORD; do
   if ! grep -qE "^${key}=.+" "$ENV_FILE"; then
     echo "$ENV_FILE 에 $key 값이 없다" >&2
     exit 1
@@ -299,6 +299,18 @@ if [ "${tables:-0}" -lt 1 ]; then
   exit 1
 fi
 echo "     hub_data 표 ${tables}개"
+
+# MAP_USER_STANDALONE_MIGRATION_VERSION=1
+# The helper consumes rendered configuration privately, extracts only the exact
+# User image/runtime contract, and never forwards serving environment to the job.
+# Role/owner provisioning and its verified backup are separate prerequisites.
+user_migration_receipt="/var/lib/map-deploy/user-migration-$(python3 -c 'import uuid; print(uuid.uuid4().hex)').json"
+if ! dc "${PROFILES[@]}" config --format json | python3 scripts/user-migration-job.py \
+    --credentials "${USER_MIGRATION_CREDENTIALS_FILE:-/etc/map-deploy/user-migration.env}" \
+    --operation migrate --receipt "$user_migration_receipt"; then
+  echo 'User standalone migration failed; application startup is blocked' >&2
+  exit 1
+fi
 
 echo "[$LABEL] 4/4 애플리케이션 기동"
 # 상태가 정상이 될 때까지 기다린다. 기다리지 않으면 표 손질에 실패해 뜨다
