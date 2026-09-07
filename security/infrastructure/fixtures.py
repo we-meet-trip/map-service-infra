@@ -324,18 +324,22 @@ def grafana(s, old, new):
 
 
 def smoke(s, service, image):
+    if service == 'postgres-exporter':
+        spec = importlib.util.spec_from_file_location('pg_exporter_fixture',
+            Path(__file__).with_name('fixtures') / 'postgres_exporter.py')
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        return module.check(s, image)
     if service == 'dns':
         data = s.run(['docker', 'run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
                       '--security-opt', 'no-new-privileges:true', image, '--version'])
         require(b'curl ' in data and b'https' in data, 'curl_tls_protocols_missing')
         return {'offline_binary_protocol_smoke': True, 'provider_dns_update_executed': False}
-    ports = {'proxy': 80, 'node-exporter': 9100, 'postgres-exporter': 9187, 'redis-exporter': 9121}
-    extra = ('-e', 'DATA_SOURCE_NAME=postgresql://fixture:fixture@127.0.0.1:1/fixture?sslmode=disable') if service == 'postgres-exporter' else ()
-    name, url = s.create(image, service, ports[service], extra=extra)
+    ports = {'proxy': 80, 'node-exporter': 9100, 'redis-exporter': 9121}
+    name, url = s.create(image, service, ports[service])
     path = '/' if service == 'proxy' else '/metrics'
     body = s.wait(url, path)
     marker = {'proxy': b'nginx', 'node-exporter': b'node_exporter_build_info',
-              'postgres-exporter': b'pg_exporter', 'redis-exporter': b'redis_exporter_build_info'}[service]
+              'redis-exporter': b'redis_exporter_build_info'}[service]
     require(marker.lower() in body.lower(), 'stateless_endpoint_content_missing')
     return {'isolated_http_smoke': True, 'serving_database_credentials_used': False,
             'host_filesystem_or_docker_socket_mounted': False}
