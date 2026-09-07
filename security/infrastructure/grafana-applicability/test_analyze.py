@@ -1,3 +1,4 @@
+import concurrent.futures,io,threading,time,unittest.mock
 import importlib.util,json,pathlib,tempfile,unittest,hashlib,urllib.request,urllib.error
 SPEC=importlib.util.spec_from_file_location('applicability',pathlib.Path(__file__).with_name('analyze.py'));m=importlib.util.module_from_spec(SPEC);SPEC.loader.exec_module(m)
 class EvidenceBoundaryTests(unittest.TestCase):
@@ -35,6 +36,27 @@ class EvidenceBoundaryTests(unittest.TestCase):
     with urllib.request.urlopen(url+path,timeout=2) as response:self.assertEqual(response.read(),body)
     with self.assertRaises(urllib.error.HTTPError) as error:urllib.request.urlopen(url+'/ID/GO-2026-6303.json.gz',timeout=2)
     self.assertEqual(error.exception.code,409);self.assertEqual(db.errors[0]['reason'],'frozen_miss')
+   finally:db.close()
+ def test_concurrent_requests_and_duplicate_keys_keep_one_frozen_value(self):
+  # Reproduce the client's nested parallel fetches using a real local HTTP server.
+  # A sequential HTTPServer never reaches this four-request barrier.
+  with tempfile.TemporaryDirectory() as tmp:
+   db=m.FrozenDatabase(pathlib.Path(tmp));url=db.start();barrier=threading.Barrier(4);counts={};lock=threading.Lock();real_urlopen=urllib.request.urlopen
+   def fake_upstream(request,*args,**kwargs):
+    if not isinstance(request,str) or not request.startswith('https://vuln.go.dev'):return real_urlopen(request,*args,**kwargs)
+    with lock:counts[request]=counts.get(request,0)+1
+    barrier.wait(timeout=3)
+    body=io.BytesIO(request.encode());body.headers={'Content-Type':'application/json'};return body
+   try:
+    paths=['/ID/GO-2026-'+str(1000+i)+'.json.gz' for i in range(4)]
+    def fetch(path):
+     with real_urlopen(url+path,timeout=5) as response:return response.read()
+    with unittest.mock.patch.object(m.urllib.request,'urlopen',side_effect=fake_upstream),concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+     results=list(pool.map(fetch,paths+paths))
+    self.assertEqual(results,[('https://vuln.go.dev'+p).encode() for p in paths+paths]);self.assertEqual(list(counts.values()),[1]*4)
+    db.frozen=True
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:self.assertEqual(list(pool.map(fetch,paths+paths)),results)
+    self.assertEqual(db.errors,[])
    finally:db.close()
  def test_module_and_symbol_metadata_are_not_interchangeable(self):
   with tempfile.TemporaryDirectory() as tmp:

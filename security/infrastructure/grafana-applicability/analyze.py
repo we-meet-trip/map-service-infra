@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Exact, non-executing binary applicability evidence; never overrides strict Trivy gate."""
-import argparse,collections,datetime,gzip,hashlib,http.server,importlib.util,io,json,os,pathlib,re,shutil,subprocess,tarfile,threading,time,urllib.request,zipfile
+import argparse,collections,concurrent.futures,datetime,gzip,hashlib,http.server,importlib.util,io,json,os,pathlib,re,shutil,subprocess,tarfile,threading,time,urllib.request,zipfile
 ROOT=pathlib.Path(__file__).resolve().parents[3]
 SOURCE='11e4c140c291536dd24cd6860e753c3165120422'
 ARTIFACT=10009460195
@@ -86,7 +86,24 @@ def extract_binaries(oci,destination):
 
 class FrozenDatabase:
  """Populate during module scans; replay the identical HTTP bytes for symbol scans."""
- def __init__(self,directory):self.directory=directory;self.rows={};self.frozen=False;self.errors=[]
+ def __init__(self,directory):
+  self.directory=directory;self.rows={};self.frozen=False;self.errors=[];self.lock=threading.Lock();self.path_locks={}
+ def cached(self,path):
+  # govulncheck requests up to 10 modules x 10 IDs concurrently. Serialize only
+  # identical keys; a global fetch lock would starve the client's TCP backlog.
+  with self.lock:lock=self.path_locks.setdefault(path,threading.Lock())
+  with lock:
+   if path not in self.rows:
+    if self.frozen:self.errors.append({'path':path,'reason':'frozen_miss'});return None
+    try:
+     with urllib.request.urlopen('https://vuln.go.dev'+path,timeout=30) as r:
+      body=r.read(32*1024**2);headers={k:v for k,v in r.headers.items() if k.lower() in ('content-type','content-encoding','last-modified')}
+      require(len(body)<32*1024**2,'bounded_go_db')
+     target=self.directory/path.lstrip('/');target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(body)
+     self.rows[path]={'sha256':hashlib.sha256(body).hexdigest(),'headers':headers,'bytes':len(body)}
+    except Exception as e:self.errors.append({'path':path,'error_type':type(e).__name__});raise
+   row=self.rows[path];body=(self.directory/path.lstrip('/')).read_bytes();require(hashlib.sha256(body).hexdigest()==row['sha256'],'cached_db_checksum')
+   return row,body
  def start(self):
   owner=self
   class Handler(http.server.BaseHTTPRequestHandler):
@@ -96,23 +113,28 @@ class FrozenDatabase:
    def respond(self,head):
     path=self.path
     if not re.fullmatch(r'/(?:index/[A-Za-z0-9_-]+|ID/GO-\d{4}-\d+)\.json(?:\.gz)?',path):self.send_error(400);return
-    if path not in owner.rows:
-     if owner.frozen:owner.errors.append({'path':path,'reason':'frozen_miss'});self.send_error(409);return
-     try:
-      with urllib.request.urlopen('https://vuln.go.dev'+path,timeout=30) as r:
-       body=r.read(32*1024**2);headers={k:v for k,v in r.headers.items() if k.lower() in ('content-type','content-encoding','last-modified')}
-       require(len(body)<32*1024**2,'bounded_go_db')
-      target=owner.directory/path.lstrip('/');target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(body)
-      owner.rows[path]={'sha256':hashlib.sha256(body).hexdigest(),'headers':headers,'bytes':len(body)}
-     except Exception as e:owner.errors.append({'path':path,'error_type':type(e).__name__});self.send_error(502);return
-    row=owner.rows[path];body=(owner.directory/path.lstrip('/')).read_bytes();require(hashlib.sha256(body).hexdigest()==row['sha256'],'cached_db_checksum')
+    try:cached=owner.cached(path)
+    except Exception:self.send_error(502);return
+    if cached is None:self.send_error(409);return
+    row,body=cached
     self.send_response(200)
     for k,v in row['headers'].items():self.send_header(k,v)
     self.send_header('Content-Length',str(len(body)));self.end_headers()
     if not head:self.wfile.write(body)
-  self.server=http.server.HTTPServer(('127.0.0.1',0),Handler);self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start();return 'http://127.0.0.1:'+str(self.server.server_port)
+  class PoolServer(http.server.HTTPServer):
+   request_queue_size=128
+   def __init__(self,*args):
+    self.pool=concurrent.futures.ThreadPoolExecutor(max_workers=16);super().__init__(*args)
+   def process_request(self,request,client_address):self.pool.submit(self.respond,request,client_address)
+   def respond(self,request,client_address):
+    try:self.finish_request(request,client_address)
+    except Exception:self.handle_error(request,client_address)
+    finally:self.shutdown_request(request)
+   def server_close(self):
+    super().server_close();self.pool.shutdown(wait=True)
+  self.server=PoolServer(('127.0.0.1',0),Handler);self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start();return 'http://127.0.0.1:'+str(self.server.server_port)
  def close(self):
-  self.server.shutdown();self.thread.join();write(self.directory/'receipt.json',{'upstream':'https://vuln.go.dev','frozen_for_all_symbol_scans':self.frozen,'responses':self.rows,'errors':self.errors})
+  self.server.shutdown();self.thread.join();self.server.server_close();write(self.directory/'receipt.json',{'upstream':'https://vuln.go.dev','frozen_for_all_symbol_scans':self.frozen,'responses':self.rows,'errors':self.errors})
 
 def messages(path):
  raw=path.read_text();decoder=json.JSONDecoder();values=[]
@@ -142,6 +164,7 @@ def analyze(output):
  require(dict(counts)=={'HIGH':155,'CRITICAL':3},'original_strict_findings')
  require(sha(inputs/'grafana/candidate.oci.tar')==OCI_SHA,'input_oci_checksum')
  extraction=output.parent/'grafana-extracted';require(not extraction.exists(),'fresh_extraction_required');extract_binaries(inputs/'grafana/candidate.oci.tar',extraction)
+ (extraction.parent/'oci-layer-verification.json').replace(output/'oci-layer-verification.json')
  before=(inputs/'grafana/build-evidence/preserved-files-before.sha256').read_bytes();after=(inputs/'grafana/build-evidence/preserved-files-after.sha256').read_bytes();require(before==after,'preserved_plugin_tree_receipt')
  expected={row.split(None,1)[1].lstrip('/'):row.split(None,1)[0] for row in after.decode().splitlines()}
  build=json.loads((inputs/'grafana/build-evidence/build-receipt.json').read_text());require(sha(extraction/CORE)==build['binary_sha256'],'core_binary_sha')
