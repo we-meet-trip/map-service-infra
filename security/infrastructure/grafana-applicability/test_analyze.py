@@ -1,4 +1,4 @@
-import importlib.util,json,pathlib,tempfile,unittest
+import importlib.util,json,pathlib,tempfile,unittest,hashlib,urllib.request,urllib.error
 SPEC=importlib.util.spec_from_file_location('applicability',pathlib.Path(__file__).with_name('analyze.py'));m=importlib.util.module_from_spec(SPEC);SPEC.loader.exec_module(m)
 class EvidenceBoundaryTests(unittest.TestCase):
  def test_report_decoder_keeps_zero_exit_findings(self):
@@ -23,6 +23,19 @@ class EvidenceBoundaryTests(unittest.TestCase):
   self.assertTrue(m.selected(m.PREFIX+'prometheus/gpx_grafana-prometheus-datasource_linux_amd64'))
   for name in (m.PREFIX+'prometheus/gpx_grafana-prometheus-datasource_windows_amd64',m.PREFIX+'prometheus/gpx_grafana-prometheus-datasource_linux_arm64',m.PREFIX+'unknown/plugin.json',m.PREFIX+'prometheus/node_modules/evil'):
    self.assertFalse(m.selected(name),name)
+ def test_frozen_database_supports_official_head_probe_and_refuses_miss(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   root=pathlib.Path(tmp);path='/index/modules.json.gz';body=b'fixed-public-db-bytes'
+   (root/'index').mkdir();(root/path.lstrip('/')).write_bytes(body)
+   db=m.FrozenDatabase(root);db.rows[path]={'sha256':hashlib.sha256(body).hexdigest(),'headers':{'Content-Type':'application/octet-stream'},'bytes':len(body)};db.frozen=True
+   url=db.start()
+   try:
+    with urllib.request.urlopen(urllib.request.Request(url+path,method='HEAD'),timeout=2) as response:
+     self.assertEqual(response.status,200);self.assertEqual(response.read(),b'');self.assertEqual(int(response.headers['Content-Length']),len(body))
+    with urllib.request.urlopen(url+path,timeout=2) as response:self.assertEqual(response.read(),body)
+    with self.assertRaises(urllib.error.HTTPError) as error:urllib.request.urlopen(url+'/ID/GO-2026-6303.json.gz',timeout=2)
+    self.assertEqual(error.exception.code,409);self.assertEqual(db.errors[0]['reason'],'frozen_miss')
+   finally:db.close()
  def test_module_and_symbol_metadata_are_not_interchangeable(self):
   with tempfile.TemporaryDirectory() as tmp:
    p=pathlib.Path(tmp)/'report';p.write_text(json.dumps({'finding':{'osv':'GO-test','trace':[{'module':'x','version':'v1'}]}}))

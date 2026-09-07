@@ -91,7 +91,9 @@ class FrozenDatabase:
   owner=self
   class Handler(http.server.BaseHTTPRequestHandler):
    def log_message(self,*args):pass
-   def do_GET(self):
+   def do_HEAD(self):self.respond(head=True)
+   def do_GET(self):self.respond(head=False)
+   def respond(self,head):
     path=self.path
     if not re.fullmatch(r'/(?:index/[A-Za-z0-9_-]+|ID/GO-\d{4}-\d+)\.json(?:\.gz)?',path):self.send_error(400);return
     if path not in owner.rows:
@@ -106,7 +108,8 @@ class FrozenDatabase:
     row=owner.rows[path];body=(owner.directory/path.lstrip('/')).read_bytes();require(hashlib.sha256(body).hexdigest()==row['sha256'],'cached_db_checksum')
     self.send_response(200)
     for k,v in row['headers'].items():self.send_header(k,v)
-    self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+    self.send_header('Content-Length',str(len(body)));self.end_headers()
+    if not head:self.wfile.write(body)
   self.server=http.server.HTTPServer(('127.0.0.1',0),Handler);self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start();return 'http://127.0.0.1:'+str(self.server.server_port)
  def close(self):
   self.server.shutdown();self.thread.join();write(self.directory/'receipt.json',{'upstream':'https://vuln.go.dev','frozen_for_all_symbol_scans':self.frozen,'responses':self.rows,'errors':self.errors})
