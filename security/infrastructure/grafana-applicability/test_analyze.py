@@ -58,6 +58,14 @@ class EvidenceBoundaryTests(unittest.TestCase):
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:self.assertEqual(list(pool.map(fetch,paths+paths)),results)
     self.assertEqual(db.errors,[])
    finally:db.close()
+ def test_stripped_symbol_fallback_is_explicit_not_function_evidence(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   p=pathlib.Path(tmp)/'extract'
+   for symbols,expected in (([],True),([{'Pkg':'main','Name':'main'}],False)):
+    p.write_text(json.dumps({'name':'govulncheck-extract','version':'0.1.0'})+'\n'+json.dumps({'goos':'linux','goarch':'amd64','pkgSymbols':symbols}))
+    self.assertEqual(m.extraction_precision(p)['module_fallback'],expected)
+   p.write_text('{}\n{}')
+   with self.assertRaises(ValueError):m.extraction_precision(p)
  def test_module_and_symbol_metadata_are_not_interchangeable(self):
   with tempfile.TemporaryDirectory() as tmp:
    p=pathlib.Path(tmp)/'report';p.write_text(json.dumps({'finding':{'osv':'GO-test','trace':[{'module':'x','version':'v1'}]}}))

@@ -142,6 +142,14 @@ def messages(path):
   raw=raw.lstrip();obj,end=decoder.raw_decode(raw);values.append(obj);raw=raw[end:]
  require(bool(values),'govulncheck_json_empty');return values
 
+def extraction_precision(path):
+ # Diagnostic for this pinned tool/version only, never a cross-version API.
+ events=messages(path)
+ require(len(events)==2 and events[0]=={'name':'govulncheck-extract','version':'0.1.0'},'unexpected_extract_schema')
+ blob=events[1];symbols=blob.get('pkgSymbols',[])
+ require(blob.get('goos')=='linux' and blob.get('goarch')=='amd64','extracted_platform')
+ return {'pinned_extract_schema':'0.1.0','govulncheck_version':'v1.7.0','actual_extracted_symbol_count':len(symbols),'module_fallback':not bool(symbols),'warning':'When module_fallback=true, function names in govulncheck JSON are advisory fallback, NOT extracted function presence.'}
+
 def analyze(output):
  require(os.name=='posix' and pathlib.Path('/proc/meminfo').is_file(),'hosted_linux_required')
  require(not output.exists(),'fresh_output_required');output.mkdir(parents=True)
@@ -179,7 +187,11 @@ def analyze(output):
  tool=json.loads(toolmeta.read_text());require(tool['Sum']=='h1:4MQBuhmXbz2uepNJrf3v+aaZLGDqw1JluwYboegA1qg=' and tool['GoModSum']=='h1:Xw7zvU3e1bsCYYBXu+w4wcn2Kgn27f34WBCTw8LL5Us=','govulncheck_checksum_database_pins')
  command(['go','install','golang.org/x/vuln/cmd/govulncheck@v1.7.0'],commands,'build-analysis-tool',timeout=600)
  govuln=pathlib.Path(os.environ['GOPATH'])/'bin/govulncheck';command([str(govuln),'-version'],commands,'govulncheck-version');command(['go','version','-m',str(govuln)],commands,'govulncheck-buildinfo')
- db=FrozenDatabase(output/'database');url=db.start();summaries={}
+ helper_source=ROOT/'security/infrastructure/grafana-applicability/pclntab/main.go'
+ command(['go','test',str(helper_source),str(helper_source.with_name('main_test.go'))],commands,'pclntab-stripped-fixture-tests',timeout=180)
+ helper=output.parent/'map-pclntab-analysis'
+ command(['go','build','-o',str(helper),str(helper_source)],commands,'pclntab-tool-build',timeout=180)
+ db=FrozenDatabase(output/'database');url=db.start();summaries={};precision={}
  try:
   # Module pass primes every required database response before a frozen symbol pass.
   for mode in ('module','symbol'):
@@ -188,7 +200,12 @@ def analyze(output):
     target=output/'binaries'/name
     if mode=='module':
      command(['go','version','-m',str(binary)],target,'buildinfo')
-     command([str(govuln),'-mode','extract',str(binary)],target,'extracted-symbol-blob')
+     extracted=command([str(govuln),'-mode','extract',str(binary)],target,'extracted-symbol-blob')
+     precision[name]=extraction_precision(extracted)
+     function_path=command([str(helper),str(binary)],target,'pclntab-functions')
+     function_report=json.loads(function_path.read_text());require(function_report['binary_sha256']==sha(binary) and function_report['function_count']>0,'actual_pclntab_binary_binding')
+     precision[name]['actual_pclntab_function_count']=function_report['function_count']
+     write(output/'SYMBOL_PRECISION.json',precision)
     path=command([str(govuln),'-mode','binary','-scan',mode,'-json','-db',url,str(binary)],target,'govulncheck-'+mode,timeout=600)
     events=messages(path);require(any('config' in e for e in events),'govulncheck_config_required')
     findings=[e['finding'] for e in events if 'finding' in e];osvs={e['osv']['id']:e['osv'] for e in events if 'osv' in e}
@@ -196,7 +213,7 @@ def analyze(output):
     print(json.dumps({'binary':name,'mode':mode,'finding_records':len(findings)}),flush=True)
  finally:db.close()
  require(not db.errors,'database_fetch_or_frozen_miss')
- write(output/'SUMMARY.json',{'schema':'map-grafana-binary-applicability-v1','source_candidate':SOURCE,'source_manifest':MANIFEST,'original_artifact':ARTIFACT,'original_raw_trivy_sha256':RAW_SHA,'original_strict_findings':dict(counts),'strict_gate':'FAIL_RETAINED','target_binaries_executed':False,'scope':'binary symbol presence, not source call graph or exploitability proof; JSON exit0 is execution success, not findings0','database_frozen_symbol_pass':True,'binaries':summaries})
+ write(output/'SUMMARY.json',{'schema':'map-grafana-binary-applicability-v1','source_candidate':SOURCE,'source_manifest':MANIFEST,'original_artifact':ARTIFACT,'original_raw_trivy_sha256':RAW_SHA,'original_strict_findings':dict(counts),'strict_gate':'FAIL_RETAINED','target_binaries_executed':False,'scope':'binary symbol presence, not source call graph or exploitability proof; JSON exit0 is execution success, not findings0','database_frozen_symbol_pass':True,'symbol_precision':precision,'binaries':summaries})
  # Publish evidence only, not the ~1GiB wrapper/extracted rootfs/OCI.
  (inputs/'grafana/candidate.oci.tar').unlink() # Only this fresh, owned temporary copy; original Actions artifact remains.
  write(output/'SHA256SUMS.json',{str(p.relative_to(output)):sha(p) for p in output.rglob('*') if p.is_file() and p.name!='SHA256SUMS.json'})
