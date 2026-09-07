@@ -20,6 +20,8 @@ separate autotest archive bytes are checked against the sizes and SHA256 values
 published by the OSGeo/gdal GitHub release API. `upstream-release.json` records
 that primary metadata. No claim is made of detached GPG signature verification.
 APT installs use normal signed repositories; no authentication bypass exists.
+Transient HTTP/transport failures retry at most three times against the same URL.
+TLS verification and checksum failures do not retry or weaken their checks.
 
 The disposable builder installs the exact distribution GDAL development package
 and records its complete raster/vector driver inventory. The new source build
@@ -61,3 +63,12 @@ Primary sources reviewed 2026-09-07:
 - https://postgis.net/docs/RT_ST_AsGDALRaster.html
 - https://postgis.net/docs/RT_ST_FromGDALRaster.html
 - https://postgis.net/docs/RT_ST_GDALDrivers.html
+
+The corresponding PGDG source package patch series was read and checksum-bound
+to its official .dsc: it contains only data repack and Python installer changes,
+no security backport patch. The source-based candidate excludes the same two
+redistribution-excluded WKT files from its installed data, preserves the complete
+distribution copyright inventory plus upstream/Lerc notices, and explicitly
+requests Debian `hardening=+all` flags. Runtime ELF RELRO, BIND_NOW and stack
+protector symbols are required. `distribution-review.json` records the exact
+metadata scope; this read-only review does not claim .dsc signature verification.

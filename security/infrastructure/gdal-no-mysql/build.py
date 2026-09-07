@@ -12,12 +12,14 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import ssl
 import stat
 import subprocess
 import sys
 import tarfile
 import time
 import urllib.request
+import urllib.error
 import zipfile
 
 VERSION = '3.13.2'
@@ -88,14 +90,35 @@ def download(asset, root):
     name, size, expected = ASSETS[asset]
     target = root / name
     url = 'https://github.com/OSGeo/gdal/releases/download/v3.13.2/' + name
-    with urllib.request.urlopen(url, timeout=120) as src, target.open('xb') as dst:
-        total = 0
-        while block := src.read(1024 * 1024):
-            total += len(block)
-            require(total <= size, 'upstream_asset_size_limit')
-            dst.write(block)
-    require(total == size and sha(target) == expected, 'upstream_asset_checksum_mismatch')
+    require(not target.exists(), 'upstream_target_already_exists')
+    attempts = []
+    for attempt in range(1, 4):
+        partial = root / (name + '.attempt-' + str(attempt) + '.partial')
+        try:
+            with urllib.request.urlopen(url, timeout=120) as src, partial.open('xb') as dst:
+                total = 0
+                while block := src.read(1024 * 1024):
+                    total += len(block)
+                    require(total <= size, 'upstream_asset_size_limit')
+                    dst.write(block)
+            # Size/checksum failures are not transient and never retried.
+            require(total == size and sha(partial) == expected, 'upstream_asset_checksum_mismatch')
+            partial.rename(target)
+            attempts.append({'attempt': attempt, 'status': 'PASS'})
+            break
+        except urllib.error.HTTPError as error:
+            code = 'HTTP_' + str(error.code)
+            retry = error.code in (408, 429, 500, 502, 503, 504)
+        except (urllib.error.URLError, TimeoutError) as error:
+            reason = getattr(error, 'reason', error)
+            code = 'TLS_VERIFY' if isinstance(reason, ssl.SSLCertVerificationError) else 'TRANSPORT'
+            retry = code != 'TLS_VERIFY'
+        attempts.append({'attempt': attempt, 'status': code})
+        print('gdal_download_attempt=' + json.dumps({'asset': asset, **attempts[-1]}), flush=True)
+        require(retry and attempt < 3, 'upstream_download_failed_' + code)
+        time.sleep(attempt * 2)
     return target, {'url': url, 'size': size, 'sha256': expected,
+                    'attempts': attempts,
                     'authenticity': 'Exact asset digest published by official OSGeo/gdal GitHub release; no detached-signature claim'}
 
 
@@ -169,8 +192,20 @@ def build(source_sha):
         receipt['assets'] = {'source': source_proof, 'tests': tests_proof}
         tree = unpack(source, tests, root)
         build_dir = root / 'build'
+        hardening_env = os.environ | {'DEB_BUILD_MAINT_OPTIONS': 'hardening=+all'}
+        flags = {key: run('hardening-' + key.lower(), ['dpkg-buildflags', '--get', key],
+                          env=hardening_env).strip() for key in ('CFLAGS', 'CPPFLAGS', 'CXXFLAGS', 'LDFLAGS')}
+        require('-fstack-protector-strong' in flags['CFLAGS'] and '-fstack-protector-strong' in flags['CXXFLAGS']
+                and '-D_FORTIFY_SOURCE=' in flags['CPPFLAGS']
+                and '-Wl,-z,relro' in flags['LDFLAGS'] and '-Wl,-z,now' in flags['LDFLAGS'],
+                'debian_hardening_flags_missing')
+        receipt['debian_hardening_flags'] = flags
         run('configure', ['cmake', '-S', str(tree), '-B', str(build_dir), '-G', 'Ninja',
             '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_INSTALL_PREFIX=/usr/local',
+            '-DCMAKE_C_FLAGS=' + flags['CPPFLAGS'] + ' ' + flags['CFLAGS'],
+            '-DCMAKE_CXX_FLAGS=' + flags['CPPFLAGS'] + ' ' + flags['CXXFLAGS'],
+            '-DCMAKE_SHARED_LINKER_FLAGS=' + flags['LDFLAGS'],
+            '-DCMAKE_EXE_LINKER_FLAGS=' + flags['LDFLAGS'],
             '-DGDAL_USE_MYSQL:BOOL=OFF', '-DOGR_ENABLE_DRIVER_MYSQL:BOOL=OFF',
             '-DBUILD_PYTHON_BINDINGS=OFF', '-DBUILD_JAVA_BINDINGS=OFF', '-DBUILD_CSHARP_BINDINGS=OFF',
             '-DBUILD_TESTING=ON', '-DUSE_EXTERNAL_GTEST=ON'])
@@ -200,6 +235,11 @@ def build(source_sha):
         linked = run('runtime-ldd', ['ldd', str(libraries[0])], env=env)
         require('not found' not in linked and 'libmariadb' not in linked and 'libmysql' not in linked,
                 'mysql_linkage_or_missing_dependency')
+        elf_program = run('runtime-elf-program-headers', ['readelf', '-W', '-l', str(libraries[0])])
+        elf_dynamic = run('runtime-elf-dynamic', ['readelf', '-W', '-d', str(libraries[0])])
+        elf_symbols = run('runtime-elf-symbols', ['readelf', '-W', '--dyn-syms', str(libraries[0])])
+        require('GNU_RELRO' in elf_program and 'BIND_NOW' in elf_dynamic
+                and '__stack_chk_fail' in elf_symbols, 'runtime_elf_hardening_missing')
         control_dir = root / 'debian'; control_dir.mkdir()
         (control_dir / 'control').write_text('Source: gdal\nSection: libs\nPriority: optional\nMaintainer: MAP Release <mapadmin26@gmail.com>\nStandards-Version: 4.7.0\n\nPackage: libgdal39\nArchitecture: amd64\nDescription: MAP GDAL runtime with the MySQL driver removed\n')
         deps = run('runtime-package-dependencies', ['dpkg-shlibdeps', '-O', '-e'+str(libraries[0])]).strip()
@@ -215,7 +255,16 @@ def build(source_sha):
             path.write_text('#!/bin/sh\nset -e\nldconfig\n')
             path.chmod(0o755)
         copyright_dir = package / 'usr/share/doc/libgdal39'; copyright_dir.mkdir(parents=True)
-        shutil.copy2(tree / 'LICENSE.TXT', copyright_dir / 'copyright')
+        shutil.copy2('/usr/share/doc/libgdal39/copyright', copyright_dir / 'copyright')
+        shutil.copy2(tree / 'LICENSE.TXT', copyright_dir / 'upstream-LICENSE.TXT')
+        shutil.copy2(tree / 'third_party/LercLib/NOTICE', copyright_dir / 'Lerc-NOTICE')
+        # Match PGDG's repack.patch: these WKT extras are excluded from the
+        # distribution source. They were not part of the original image's data.
+        for filename in ('cubewerx_extra.wkt', 'ecw_cs.wkt'):
+            path = package / 'usr/local/share/gdal' / filename
+            require(path.is_file(), 'repack_expected_data_missing')
+            path.unlink()
+        receipt['distribution_excluded_data_files'] = ['cubewerx_extra.wkt', 'ecw_cs.wkt']
         run('debian-package', ['dpkg-deb', '--root-owner-group', '--build', str(package), '/out/map-gdal.deb'])
         receipt.update(status='PASS', package_sha256=sha('/out/map-gdal.deb'), runtime_dependencies=deps,
                        runtime_library_sha256=sha(libraries[0]))

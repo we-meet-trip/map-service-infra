@@ -9,6 +9,9 @@ from unittest.mock import patch
 import zipfile
 import tarfile
 import io
+import hashlib
+import ssl
+import urllib.error
 
 ROOT = Path(__file__).resolve().parents[3]
 def load(name, path):
@@ -29,6 +32,34 @@ def raster_answer():
 
 
 class GdalSafetyTests(unittest.TestCase):
+    def test_transient_504_retries_same_checksum_and_preserves_attempt_receipt(self):
+        data=b'exact source'
+        asset=('gdal-3.13.2.tar.xz',len(data),hashlib.sha256(data).hexdigest())
+        failure=urllib.error.HTTPError('https://github.com/',504,'Gateway Timeout',{},None)
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(g.ASSETS,{'source':asset}), \
+             patch.object(g.urllib.request,'urlopen',side_effect=[failure,io.BytesIO(data)]) as opener, \
+             patch.object(g.time,'sleep') as sleep:
+            target, receipt=g.download('source',Path(tmp))
+            self.assertEqual(target.read_bytes(),data)
+            self.assertEqual(receipt['attempts'],[{'attempt':1,'status':'HTTP_504'},{'attempt':2,'status':'PASS'}])
+            self.assertEqual(opener.call_count,2);sleep.assert_called_once_with(2)
+            self.assertEqual(opener.call_args_list[0].args,opener.call_args_list[1].args)
+
+    def test_download_retry_ceiling_and_tls_checksum_fail_closed(self):
+        asset=('gdal-3.13.2.tar.xz',3,hashlib.sha256(b'yes').hexdigest())
+        failures=[(urllib.error.HTTPError('https://github.com/',504,'Timeout',{},None),3),
+                  (urllib.error.URLError(ssl.SSLCertVerificationError('certificate')),1)]
+        for failure, expected_calls in failures:
+            with tempfile.TemporaryDirectory() as tmp, patch.object(g.urllib.request,'urlopen',side_effect=failure) as opener, \
+                 patch.object(g.time,'sleep'),self.assertRaises(ValueError):
+                try:g.download('source',Path(tmp))
+                finally:self.assertEqual(opener.call_count,expected_calls)
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(g.ASSETS,{'source':asset}), \
+             patch.object(g.urllib.request,'urlopen',return_value=io.BytesIO(b'bad')) as opener, \
+             patch.object(g.time,'sleep') as sleep:
+            with self.assertRaisesRegex(ValueError,'upstream_asset_checksum_mismatch'):g.download('source',Path(tmp))
+            opener.assert_called_once();sleep.assert_not_called()
+
     def test_dependent_option_internal_off_requires_no_mysql_target(self):
         for kind in ('BOOL', 'INTERNAL'):
             cache='GDAL_USE_MYSQL:BOOL=OFF\nOGR_ENABLE_DRIVER_MYSQL:'+kind+'=OFF\n'

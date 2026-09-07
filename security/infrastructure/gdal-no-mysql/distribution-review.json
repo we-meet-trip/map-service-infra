@@ -1,0 +1,22 @@
+{
+  "observed_utc": "2026-09-07T14:32:31.459871+00:00",
+  "source_url": "https://apt.postgresql.org/pub/repos/apt/pool/main/g/gdal/gdal_3.13.2+dfsg-1.pgdg13+1.dsc",
+  "debian_archive_sha256": "5f5f02dcc9842cd659f555eec9650292a48033a92ee4aedb1525fc8935581de6",
+  "debian_archive_bytes": 132276,
+  "metadata_authenticity": "Official PGDG HTTPS and .dsc SHA256/size; no detached signature claim in this read-only review",
+  "patches": [
+    "repack.patch removes two redistribution-excluded WKT data files from install",
+    "pip-install.patch affects disabled Python bindings"
+  ],
+  "security_backport_patch_in_series": false,
+  "pending_hardening_review": "Recipe now requests exact dpkg hardening=+all compiler/linker flags and checks actual ELF RELRO/BIND_NOW/stack protector; actual hosted candidate execution remains required.",
+  "files": {
+    "gdal.dsc": "f6cc83ec201187de68463efa4cb282f0d9098d26afdee8b1f9b3c3a6c63e206e",
+    "gdal.debian.tar.xz": "5f5f02dcc9842cd659f555eec9650292a48033a92ee4aedb1525fc8935581de6",
+    "debian/rules": "c35cf0fb6725b1f4a9251a1d5e2d51e0bf5a2f624e1c6bfbd24ad1d5a958b250",
+    "debian/copyright": "882fe91f740dc1938a6998f31e4fcfcb22f125ff3073b1bc62852cc9a8cca7eb",
+    "debian/patches/series": "3bd1f30fc85fcfaddeccc0af4fc652fd07f7184f6c74cfe6dca951c286f60ce7",
+    "debian/patches/repack.patch": "b7c8cf04f988aa2a152b6be9df13d1533419496d3c5349db1e1fde340bac2aa5",
+    "debian/patches/pip-install.patch": "9a84317689c51e6367d5a9af5928426a335022b3fa676b99b2629d232ea2f47f"
+  }
+}
