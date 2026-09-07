@@ -73,6 +73,21 @@ class FixtureOS:
 
 
 class HostTransactions(unittest.TestCase):
+    def test_uncreated_peer_reservation_does_not_require_learning_creation(self):
+        m = manifest()
+        for field, suffix in (("machine_id", "machine"), ("instance_id", "instance"), ("data_volume_id", "volume")):
+            m["inventory"]["learning"][field] = "reserved-learning-" + suffix
+        host.validate(m)
+        m["inventory"]["learning"]["data_volume_id"] = "unobserved-real-volume"
+        with self.assertRaises(ValueError): host.validate(m)
+
+    def test_current_and_test_hosts_cannot_use_reserved_identity(self):
+        for role in ("prod", "test"):
+            m = manifest()
+            for field, suffix in (("machine_id", "machine"), ("instance_id", "instance"), ("data_volume_id", "volume")):
+                m["inventory"][role][field] = "reserved-" + role + "-" + suffix
+            with self.assertRaises(ValueError): host.validate(m)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="map-bootstrap-filesystem-")
         self.root = Path(self.temp.name).resolve()

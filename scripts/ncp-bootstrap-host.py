@@ -122,6 +122,13 @@ def validate(manifest):
             require(all(isinstance(v, str) and SAFE.fullmatch(v) for v in host.values()), "invalid inventory value")
             values.append(host[field])
         require(len(set(values)) == 4, "cross-role identity, account, volume or secret scope reuse")
+    for role, entry in inv.items():
+        if entry["machine_id"].startswith("reserved-"):
+            require(role not in {"test", manifest["role"]}, "current/test host cannot be a reservation")
+            for field, suffix in (("machine_id", "machine"), ("instance_id", "instance"), ("data_volume_id", "volume")):
+                require(entry[field] == "reserved-" + role + "-" + suffix, "incomplete role reservation")
+        else:
+            require(re.fullmatch(r"[a-f0-9]{32}", entry["machine_id"]), "observed peer machine-id or explicit reservation required")
     require(inv["test"]["provider"] == "gcp", "existing GCP must remain test")
     require(inv[manifest["role"]]["provider"] == "ncp", "new host must be NCP")
     require(inv[manifest["role"]]["machine_id"] == manifest["machine_id"] and inv[manifest["role"]]["instance_id"] == manifest["instance_id"], "inventory identity mismatch")

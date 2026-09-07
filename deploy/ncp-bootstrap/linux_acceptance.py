@@ -231,6 +231,7 @@ def run_fixture(args):
              "--mount", f"type=bind,src={ROOT},dst=/opt/map,readonly",
              "--mount", f"type=bind,src={args.assets.resolve()},dst=/fixture/assets,readonly",
              "--mount", f"type=bind,src={marker},dst=/fixture/marker.json,readonly",
+             "--mount", "type=bind,src=/dev/mapper,dst=/dev/mapper,readonly",
              "--mount", f"type=bind,src={args.output.resolve()},dst=/fixture/evidence",
              "--mount", f"type=bind,src={mount},dst=/srv/map-prod", guest_image], timeout=60)
         created = True
@@ -348,7 +349,9 @@ def guest():
         result["os_package_versions"] = {name: run(["dpkg-query", "-W", "-f=${Version}", name])
                                          for name in ("systemd", "cryptsetup-bin")}
         result["mount_probe"] = json.loads(run(["findmnt", "--json", "--mountpoint", "/srv/map-prod", "--output", "SOURCE,UUID,FSTYPE,OPTIONS"]))
-        result["crypt_probe"] = run(["cryptsetup", "status", result["mount_probe"]["filesystems"][0]["source"]])
+        fixture_source = result["mount_probe"]["filesystems"][0]["source"]
+        result["device_probe"] = {"source_exists": Path(fixture_source).exists(), "control_exists": Path("/dev/mapper/control").exists()}
+        result["crypt_probe"] = run(["cryptsetup", "status", fixture_source], allowed=(0, 4))
         result["preflight"] = host("preflight")
         pin = host("enrollment-hash")["sha256"]
         result["install"] = host("install", "--docker-key", key, "--approved-enrollment-sha256", pin)

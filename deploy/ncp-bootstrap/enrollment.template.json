@@ -25,18 +25,18 @@
       "provider": "ncp"
     },
     "admin": {
-      "machine_id": "REQUIRED_ADMIN_MACHINE_ID",
-      "instance_id": "REQUIRED_ADMIN_INSTANCE_ID",
+      "machine_id": "reserved-admin-machine",
+      "instance_id": "reserved-admin-instance",
       "deploy_account": "map-deploy-admin",
-      "data_volume_id": "REQUIRED_ADMIN_DATA_VOLUME_ID",
+      "data_volume_id": "reserved-admin-volume",
       "secret_scope": "map-admin",
       "provider": "ncp"
     },
     "learning": {
-      "machine_id": "REQUIRED_LEARNING_MACHINE_ID",
-      "instance_id": "REQUIRED_LEARNING_INSTANCE_ID",
+      "machine_id": "reserved-learning-machine",
+      "instance_id": "reserved-learning-instance",
       "deploy_account": "map-deploy-learning",
-      "data_volume_id": "REQUIRED_LEARNING_DATA_VOLUME_ID",
+      "data_volume_id": "reserved-learning-volume",
       "secret_scope": "map-learning",
       "provider": "ncp"
     }

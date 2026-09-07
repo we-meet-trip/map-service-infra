@@ -49,7 +49,28 @@ python3 scripts/ncp-bootstrap-host.py plan --profile learning-cpu
 
 `deploy/ncp-bootstrap/enrollment.template.json`의 placeholder를 공급자 실제 조회값으로 채워 root 전용0600 파일로 보관한다. `approval=pending` 상태로는 설치할 수 없다. 사용자에게 새 호스트/견적 결과를 확인받은 뒤 `approved-empty-host-only`로 만든 **canonical enrollment SHA256**을 별도 검토 경로에서 전달한다. CLI가 내놓은 hash 자체는 사용자 승인이나 공급자 계정 검증이 아니다. quote/network SHA는 외부 검토 문서와 연결해야 하며 값만64자리 채웠다고 검토가 완료되는 것은 아니다.
 
-필요 OS 선행 패키지는 공식 Ubuntu의 python3·ca-certificates·cryptsetup·e2fsprogs·util-linux·systemd다. 배포용 개인 key는 설치하지 않는다. 볼륨 helper는 승인된 **새 추가 디스크**의 serial·용량·rootdisk 분리·미마운트·signature·전체0bytes를 검사한 뒤에만 LUKS2/ext4를 만든다. 알려진 기존 디스크에 format을 적용하거나 실패후 다시 format해 복구하지 않는다. 실제 block 작업과 유료생성은 이 준비 세션에서 수행하지 않는다.
+미생성 peer 역할은 machine/instance/volume을 모두 `reserved-ROLE-machine`, `reserved-ROLE-instance`, `reserved-ROLE-volume`으로 명시한다. 이는 실제 VM 관측값이 아닌 경계 예약이다. 설치 대상과 기존 test는 예약할 수 없다. 이 구분으로 학습 VM 생성이나 HOLD 해제 없이 운영 빈 호스트를 준비할 수 있다. 다른 역할이 생성되면 다음 호스트의 새 enrollment에 실제 조회값을 기록하며, 이미 승인된 enrollment를 임의 덮어쓰지 않는다.
+
+필요 OS 선행 패키지는 공식 Ubuntu의 python3·ca-certificates·cryptsetup·e2fsprogs·util-linux·systemd다. 배포용 개인 key는 설치하지 않는다. 볼륨 helper는 승인된 **새 추가 디스크**의 serial·용량·rootdisk 분리·미마운트·signature·전체0bytes를 검사한 뒤에만 LUKS2/ext4를 만든다. 알려진 기존 디스크에 format을 적용하거나 실패후 다시 format해 복구하지 않는다. 실제 NCP block 작업과 유료생성은 이 준비 세션에서 수행하지 않는다. 원격 CI에서 자기 생성 sparse 파일에 LUKS/ext4를 만드는 검사는 별도 범위다.
+
+`volume.template.json`도 미입력 상태로 실행되지 않는 템플릿이다. 승인된 호스트에서 `lsblk --json --bytes --output PATH,TYPE,SIZE,SERIAL,MAJ:MIN,FSTYPE,MOUNTPOINTS`로 관측한 정확 serial/bytes/장치 번호를 기록한다. NCP 실제 장치가 serial을 제공하지 않으면 검사를 우회하지 않고 공급자 식별 계약을 추가 검토한다. 새 filesystem UUID를 enrollment에, 다른 새 LUKS UUID를 volume contract에 미리 고정한다. `root_enrollment_sha256`은 host `enrollment-hash` 결과와 같다.
+
+```sh
+# 승인된 신규 추가 디스크에서만 실행. 먼저 inspect 결과와 계약을 별도로 검토한다.
+sudo python3 scripts/ncp-bootstrap-volume.py inspect \
+  --enrollment /root/prod-enrollment.json --device-contract /root/prod-volume.json
+python3 scripts/ncp-bootstrap-volume.py contract-hash \
+  --enrollment /root/prod-enrollment.json --device-contract /root/prod-volume.json
+sudo python3 scripts/ncp-bootstrap-volume.py prepare \
+  --enrollment /root/prod-enrollment.json --device-contract /root/prod-volume.json \
+  --key-file /run/private-volume.key --format-empty --approved-volume-sha256 REVIEWED_VOLUME_SHA256
+# 재부팅 또는 안전한 close 후: format 없이 기존 UUID/journal 대조 후 다시 연다.
+sudo python3 scripts/ncp-bootstrap-volume.py restore-mount \
+  --enrollment /root/prod-enrollment.json --device-contract /root/prod-volume.json \
+  --key-file /run/private-volume.key
+```
+
+키 파일은 root 소유0600/32–4096bytes이며 별도 안전한 복구 사본이 필요하다. 루트 디스크/기존 서명/중단된 format은 자동 재포맷되지 않는다. 볼륨 close는 먼저 host rollback으로 runtime을 정지시킨 뒤 volume `rollback`을 사용하며 장치 내용을 삭제하지 않는다.
 
 ```sh
 # 아래는 사용자 승인 뒤 빈 대상 호스트에서 수행할 절차다.
@@ -106,5 +127,7 @@ python3 -B -m unittest discover -s deploy/ncp-bootstrap -p 'test_*.py' -v
 ```
 
 로컬 테스트는 실제 private 파일 설치·검증·복귀와 합성 archive/backup을 사용하고 OS/package/daemon adapter를 주입한다. 실제 NCP 설치 증거가 아니다. age가 있으면 실제 합성 암복호화도 수행한다. `deploy/ncp-bootstrap/linux_acceptance.py` 및 `ci-workflow.yml`은 별도 원격 Ubuntu24/systemd/Docker fixture용이다. 전용 신규 `.github/workflows/ncp-bootstrap-acceptance.yml` 하나를 별도 범위 확인 뒤 추가했다. 기존 workflow는 수정하지 않았다. 이 작업 branch의 bootstrap 변경만 순차 실행하며 develop/master·NCP/GCP 배포는 하지 않는다. 정확 SHA·run·artifact와 실행여부는 루트 세션 evidence HANDOFF에 기록한다.
+
+GitHub draft release는 push 권한이 있어야 조회되므로 전달 전용 job만 `contents: write` 토큰으로 정확 기존 draft asset을 GET 한다. 게시·업로드 API는 사용하지 않는다. privileged fixture는 별도 `contents: read` job에서 실행하고 GitHub 토큰/runner Docker socket을 guest에 전달하지 않는다. [GitHub draft 조회 계약](https://docs.github.com/en/rest/releases/releases#list-releases).
 
 남은 실제 gate: 계정 로그인 견적·quota·정확image/zone, 생성 사용자확인, LUKS 키주입/재부팅복구, 기반이미지 보안 및 NCP용 receiver 승인, network/CIDR/관리 인증, 신규NCP S3 왕복·DB/전체역할 복원·알림도착, 목표p95/p99/동시수용과 RPO1h/RTO4h 실측이다. 이번 설치 준비를 운영전환·스토어출시 완료로 표시하지 않는다.

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "role": "prod",
+  "root_enrollment_sha256": "REQUIRED_CANONICAL_ENROLLMENT_SHA256",
+  "device": "REQUIRED_DIRECT_DEVICE_PATH",
+  "serial": "REQUIRED_OBSERVED_DEVICE_SERIAL",
+  "size_bytes": null,
+  "major_minor": "REQUIRED_OBSERVED_MAJOR_MINOR",
+  "luks_uuid": "REQUIRED_NEW_DISTINCT_LUKS_UUID",
+  "approval": "pending"
+}
