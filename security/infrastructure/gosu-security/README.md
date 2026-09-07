@@ -89,7 +89,9 @@ and 64 MiB total. Complete source hashes, an empty patch, effective module graph
 module download/checksum receipts, Go environment, builder package inventory,
 binary symbols/build info, original signature verification and all executed
 commands/tests remain available under that directory. Root's extractor should
-copy it from an owned stopped candidate container and retain it with the scan.
+copy it from an owned unstarted candidate container and retain it with the scan.
+The integrated PostgreSQL parent stores the same receipts under
+`/usr/share/map-candidate/gosu/` to include them in its existing export tree.
 
 ## Executed remote checks and honest limits
 

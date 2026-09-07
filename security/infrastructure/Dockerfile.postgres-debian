@@ -2,6 +2,18 @@
 # The default is the independently hashed official linux/amd64 child manifest,
 # not the mutable tag or multi-architecture index. No live data is a build input.
 ARG BASE=postgres@sha256:7bade6d532592ca8ce7ee32def7399dad2607c4ea5583839fc4352a095a11ea6
+FROM golang@sha256:bc6beb46032d45f421cf400036bf031cdc64f683ba9cdc124e31d063e71670bd AS gosu_builder
+ARG SOURCE_SHA
+ENV MAP_GOSU_SECURITY_BUILDER=1 GOTOOLCHAIN=local GOWORK=off \
+    GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org \
+    GONOSUMDB="" GOPRIVATE="" CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    GOAMD64=v1 GOMAXPROCS=2 GOMEMLIMIT=1GiB GOFLAGS=-p=2
+# Builder-only signed Debian package installation; actual version is receipted.
+RUN apt-get update && apt-get install -y --no-install-recommends gpgv \
+    && rm -rf /var/lib/apt/lists/*
+COPY gosu-security/ /gosu-recipe/
+RUN python3 /gosu-recipe/build.py --execute-builder --source-sha "$SOURCE_SHA"
+
 FROM ${BASE} AS common
 ARG BASE
 USER 0
@@ -134,6 +146,11 @@ RUN set -eu; \
         ! ldd "$module" | grep -q 'not found'; \
     done; \
     dpkg-query -W > /usr/share/map-candidate/final-packages.tsv
+# Preserve the inherited privilege helper with a current toolchain; source and
+# original signature receipts remain separate from the rebuilt binary identity.
+COPY --from=gosu_builder --chown=0:0 --chmod=0755 /out/gosu /usr/local/bin/gosu
+COPY --from=gosu_builder --chown=0:0 /out/evidence/ /usr/share/map-candidate/gosu/
+RUN test "$(gosu --version)" = '1.19 (go1.26.8 on linux/amd64; gc)'
 LABEL org.opencontainers.image.source="https://github.com/we-meet-trip/map-service-infra" \
       org.opencontainers.image.revision="${SOURCE_SHA}" \
       map.candidate-only="true" \

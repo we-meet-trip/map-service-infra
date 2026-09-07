@@ -10,7 +10,7 @@ import unittest
 from unittest import mock
 
 
-PATH = Path(__file__).resolve().parents[1] / 'security/infrastructure/gosu-security/build.py'
+PATH = Path(__file__).resolve().parents[3] / 'security/infrastructure/gosu-security/build.py'
 SPEC = importlib.util.spec_from_file_location('gosu_security_build', PATH)
 BUILD = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BUILD)
