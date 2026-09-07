@@ -1,4 +1,7 @@
 import contextlib
+import datetime as dt
+import threading
+import time
 import fcntl
 import importlib.util
 import io
@@ -87,18 +90,64 @@ class RedisBackupTests(unittest.TestCase):
 
 
 class BackupTimerTests(unittest.TestCase):
+    @contextlib.contextmanager
+    def timer(self, root, wait=0.2):
+        with patch.object(job, 'STATE', Path(root)), \
+             patch.object(job, 'LOCK_WAIT_SECONDS', wait), \
+             patch.object(job, 'configuration', return_value={'BACKUP_REMOTE': 'gs://fixture/test', 'BACKUP_DIR': '/tmp/fixture'}), \
+             contextlib.redirect_stdout(io.StringIO()):
+            yield
+
     def test_deployment_lock_defers_without_starting_child_and_preserves_success(self):
-        with tempfile.TemporaryDirectory() as root, patch.object(job, 'STATE', Path(root)), patch.object(job, 'configuration', return_value={'BACKUP_REMOTE': 'gs://fixture/test', 'BACKUP_DIR': '/tmp/fixture'}), patch.object(job.subprocess, 'Popen') as child, contextlib.redirect_stdout(io.StringIO()):
+        with tempfile.TemporaryDirectory() as root, patch.object(job.subprocess, 'Popen') as child, self.timer(root):
             target = Path(root) / 'redis-backup-status.json'
             target.write_text(json.dumps({'last_success_at': '2026-09-01T00:00:00+00:00', 'snapshot_at': '2026-09-01T00:00:00+00:00'}))
             with (Path(root) / 'deploy.lock').open('a') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                self.assertEqual(job.entry('redis'), 0)
+                # 이미 목표보다 오래된 사본을 두고 미룬 것은 끝난 실행이 아니다.
+                self.assertEqual(job.entry('redis'), 1)
             child.assert_not_called()
             value = json.loads(target.read_text())
             self.assertEqual(value['code'], 'LOCK_BUSY')
             self.assertEqual(value['snapshot_at'], '2026-09-01T00:00:00+00:00')
             self.assertTrue(value['rpo_1h_overdue'])
+
+    def test_fresh_copy_still_defers_quietly_while_a_deployment_holds_the_lock(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(job.subprocess, 'Popen') as child, self.timer(root):
+            target = Path(root) / 'redis-backup-status.json'
+            fresh = dt.datetime.now(dt.timezone.utc).isoformat()
+            target.write_text(json.dumps({'last_success_at': fresh, 'snapshot_at': fresh}))
+            with (Path(root) / 'deploy.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.assertEqual(job.entry('redis'), 0)
+            child.assert_not_called()
+            self.assertFalse(json.loads(target.read_text())['rpo_1h_overdue'])
+
+    def test_a_neighbour_that_keeps_retaking_the_lock_cannot_starve_the_copy(self):
+        """공개 감독기는 짧은 주기마다 같은 배포 잠금을 다시 잡는다. 한 번
+        시도하고 물러나면 그쪽이 계속 이겨 사본이 조용히 낡는다."""
+        with tempfile.TemporaryDirectory() as root, patch.object(job.subprocess, 'Popen') as child, self.timer(root, wait=5):
+            (Path(root) / 'redis-backup-status.json').write_text(
+                json.dumps({'last_success_at': '2026-09-01T00:00:00+00:00', 'snapshot_at': '2026-09-01T00:00:00+00:00'}))
+            released = threading.Event()
+
+            def neighbour():
+                for _ in range(3):
+                    with (Path(root) / 'deploy.lock').open('a') as held:
+                        fcntl.flock(held, fcntl.LOCK_EX)
+                        time.sleep(0.2)
+                    time.sleep(0.2)
+                released.set()
+
+            worker = threading.Thread(target=neighbour)
+            worker.start()
+            time.sleep(0.05)
+            child.return_value = SimpleNamespace(
+                pid=1, communicate=lambda timeout=None: ('{}', ''), returncode=0)
+            job.entry('redis')
+            worker.join(10)
+            self.assertTrue(released.is_set())
+            child.assert_called_once()
 
     def test_corrupt_status_does_not_prevent_next_success(self):
         with tempfile.TemporaryDirectory() as root, patch.object(job, 'STATE', Path(root)), contextlib.redirect_stdout(io.StringIO()):

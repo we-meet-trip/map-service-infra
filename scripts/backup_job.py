@@ -9,6 +9,7 @@ import signal
 import stat
 import subprocess
 import sys
+import time
 
 CONFIG = Path('/etc/map-deploy/backup.env')
 STATE = Path('/var/lib/map-deploy')
@@ -20,6 +21,23 @@ CHILD_CODES = {'persistence_busy', 'aof_write_unhealthy', 'redis_fork_memory_lim
                'bgsave_not_started', 'bgsave_failed', 'bgsave_timeout', 'snapshot_copy_failed',
                'snapshot_size_limit', 'isolated_restore_timeout', 'restored_key_count_mismatch',
                'restore_version_mismatch', 'operation_cancelled', 'operation_failed', 'command_failed'}
+
+
+LOCK_WAIT_SECONDS = 150
+
+
+def acquire(lock, seconds):
+    """짧게 잡았다 놓기를 되풀이하는 이웃과 겨루려면 한 번 시도로는 모자란다.
+    배포처럼 오래 쥐는 쪽에는 양보하도록 기다리는 시간에 상한을 둔다."""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.5)
 
 
 def configuration():
@@ -68,6 +86,7 @@ def write_status(kind, status):
     pending.write_text(json.dumps(result) + '\n')
     pending.replace(target)
     print(json.dumps(result))
+    return bool(result.get('rpo_1h_overdue'))
 
 
 def entry(kind):
@@ -85,14 +104,19 @@ def entry(kind):
         env['REDIS_BACKUP_DIR'] = str(Path(values['BACKUP_DIR']) / 'redis-v1')
     # Same acquisition order for both timers. The receiver itself already holds
     # deploy.lock and runs its PG backup directly, avoiding recursive acquisition.
+    #
+    # Waiting matters: the public supervisor takes the same deployment lock on
+    # every one of its short cycles, so an attempt that gives up immediately
+    # loses to it again and again and the copy silently ages past its target.
+    # A deployment holds the lock far longer than this wait, so a real one still
+    # defers. Deferring while the copy is already older than its target is not
+    # reported as a completed run.
     with ExitStack() as stack:
         for filename in ('deploy.lock', 'backup.lock'):
             lock = stack.enter_context((STATE / filename).open('a'))
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                write_status(kind, {'success': False, 'deferred': True, 'code': 'LOCK_BUSY'})
-                return 0
+            if not acquire(lock, LOCK_WAIT_SECONDS):
+                overdue = write_status(kind, {'success': False, 'deferred': True, 'code': 'LOCK_BUSY'})
+                return 1 if overdue else 0
         module = 'pg_backup' if kind == 'pg' else 'redis_backup'
         loader = 'from pathlib import Path; import ' + module + '; ' + module + '.ROOT=Path(' + repr(str(REPO)) + '); raise SystemExit(' + module + '.main())'
         process = subprocess.Popen([sys.executable, '-c', loader, 'backup', '--test'], cwd=LIB,
