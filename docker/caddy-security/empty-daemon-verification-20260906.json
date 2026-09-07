@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "scope": "empty_nested_daemon_not_VM_or_OS",
+  "started_at": "2026-09-07T01:41:12.926423+00:00",
+  "dind_digest": "docker@sha256:5efed980cba3fc126cf54e21a5a6ff8849d05b6e0623d6e7612f48e9cd6cd17e",
+  "archive_sha256": "c85c7192e92644fccd75d86bdfca599425603a647e77183b29effaddfe697fcc",
+  "reviewed_identity": {
+    "source_image_id": "sha256:a41831ba2e12a84e3b6a19b2cbf45e7c6ad268faf2996d9db2edd78c3a6fa3ca",
+    "platform_image_id": "sha256:5d27f970d3a1c93e77bd28089bf3294ef40b9f7832648419b8a3c2b43b4bc670",
+    "config_image_id": "sha256:751250cd5a230dc11a3d62ebcfa8c094fca3621705526360d772ea26581ada57"
+  },
+  "network": "none",
+  "host_socket_mounts": 0,
+  "host_bind_mounts": 0,
+  "existing_volume_mounts": 0,
+  "published_ports": 0,
+  "outer_memory_bytes": 1610612736,
+  "outer_cpus": 1,
+  "outer_storage": "768MiB_tmpfs",
+  "status": "PASS",
+  "initial": {
+    "containers": 0,
+    "images": 0,
+    "daemon_id": "13380540-251a-46e7-b2a4-90997fca4e1b",
+    "version": "29.8.0",
+    "driver": "vfs"
+  },
+  "installed": {
+    "id": "sha256:751250cd5a230dc11a3d62ebcfa8c094fca3621705526360d772ea26581ada57",
+    "os": "linux",
+    "architecture": "amd64",
+    "platform_image_id": "sha256:751250cd5a230dc11a3d62ebcfa8c094fca3621705526360d772ea26581ada57",
+    "runtime_checks": {
+      "http": "pass",
+      "tls": "pass",
+      "tls_trust": "explicit_internal_ca",
+      "root_ca_path": "/data/caddy/pki/authorities/local/root.crt",
+      "untrusted_root_rejected": true
+    }
+  },
+  "recovery": {
+    "configuration_failure_exit": 1,
+    "container_replaced": true,
+    "same_image": true,
+    "same_certificate_CA": true,
+    "same_fixture_volumes": true,
+    "http": "pass",
+    "tls_cacert": "pass"
+  },
+  "outer_state": {
+    "oom_killed": false,
+    "restart_count": 0
+  },
+  "fixture_removed": true,
+  "host_existing_containers_preserved": true,
+  "host_existing_volumes_preserved": true,
+  "elapsed_seconds": 10.048
+}
