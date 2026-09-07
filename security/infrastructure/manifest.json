@@ -93,8 +93,8 @@
     {
       "service": "postgres",
       "current": "postgis/postgis@sha256:01a6a70e41e6c4467c8f55f6063555ed72db2d6662cd0d571040d42eadaeb6f6",
-      "candidate_selector": "postgis/postgis:17-3.5-alpine",
-      "build": "postgres",
+      "candidate_selector": "postgres@sha256:7bade6d532592ca8ce7ee32def7399dad2607c4ea5583839fc4352a095a11ea6",
+      "build": "postgres-debian",
       "kind": "stateful",
       "prior_counts": {
         "CRITICAL": 25,

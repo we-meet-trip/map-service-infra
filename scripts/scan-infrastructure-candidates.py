@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / 'security/infrastructure/manifest.json'
 SERVICES = {'postgres','redis','proxy','dns','prometheus','grafana','postgres-exporter','redis-exporter','node-exporter'}
 DIGEST = re.compile(r'sha256:[a-f0-9]{64}')
+POSTGRES_CURRENT = 'postgis/postgis@sha256:01a6a70e41e6c4467c8f55f6063555ed72db2d6662cd0d571040d42eadaeb6f6'
+POSTGRES_DEBIAN_BASE = 'postgres@sha256:7bade6d532592ca8ce7ee32def7399dad2607c4ea5583839fc4352a095a11ea6'
 
 
 def require(value, message):
@@ -47,8 +49,12 @@ def load_spec():
     require({r['service'] for r in spec['services']}==SERVICES and len(spec['services'])==9, 'exact_nine_services')
     for row in spec['services']:
         require(re.fullmatch(r'[a-z0-9/_-]+@sha256:[a-f0-9]{64}', row['current']), 'immutable_current_required')
-        require(row['build'] in ('postgres','preserve','upstream','os-update'), 'build_mode')
-        require(row['candidate_selector'].split(':')[0].split('@')[0]==row['current'].split('@')[0], 'repository_change_forbidden')
+        require(row['build'] in ('postgres','postgres-debian','preserve','upstream','os-update'), 'build_mode')
+        if row['build']=='postgres-debian':
+            require(row['service']=='postgres' and row['current']==POSTGRES_CURRENT
+                    and row['candidate_selector']==POSTGRES_DEBIAN_BASE,'pinned_postgres_debian_contract')
+        else:
+            require(row['candidate_selector'].split(':')[0].split('@')[0]==row['current'].split('@')[0], 'repository_change_forbidden')
     require(spec['candidate_security_approved'] is False, 'unreviewed_manifest_cannot_approve')
     return spec
 
@@ -57,6 +63,7 @@ def resolve(ref, receipt):
     raw=run(['docker','buildx','imagetools','inspect','--raw',ref],timeout=120).stdout
     data=json.loads(raw)
     if '@sha256:' in ref:
+        require('sha256:'+hashlib.sha256(raw).hexdigest()==ref.split('@')[1],'registry_digest_bytes_mismatch')
         actual=ref
     else:
         choices={m['digest'] for m in data.get('manifests',[]) if m.get('platform',{}).get('os')=='linux' and m.get('platform',{}).get('architecture')=='amd64' and m.get('platform',{}).get('variant') in (None,'')}
@@ -96,7 +103,10 @@ def build_candidate(row, base, output, source_sha):
     require(re.fullmatch(r'[a-zA-Z0-9_.:-]+',user),'runtime_user_contract')
     oci=output/'candidate.oci.tar';docker=output/'candidate.docker.tar'
     tag='map-infra-candidate:'+row['service']+'-'+source_sha[:12]
-    run(['docker','buildx','build','--platform','linux/amd64','--provenance=false','--file',str(ROOT/'security/infrastructure'/('Dockerfile.'+row['build'])),'--build-arg','BASE='+base,'--build-arg','SOURCE_SHA='+source_sha,'--build-arg','RUNTIME_USER='+user,'--tag',tag,'--output','type=oci,dest='+str(oci),'--output','type=docker,dest='+str(docker),str(ROOT/'security/infrastructure')],timeout=1200)
+    build_process=run(['docker','buildx','build','--platform','linux/amd64','--provenance=false','--file',str(ROOT/'security/infrastructure'/('Dockerfile.'+row['build'])),'--build-arg','BASE='+base,'--build-arg','SOURCE_SHA='+source_sha,'--build-arg','RUNTIME_USER='+user,'--tag',tag,'--output','type=oci,dest='+str(oci),'--output','type=docker,dest='+str(docker),str(ROOT/'security/infrastructure')],accepted=(0,1),timeout=2400 if row['build']=='postgres-debian' else 1200)
+    # Public source build only; no runtime credentials are supplied to builds.
+    (output/'candidate-build.log').write_bytes(build_process.stderr[-120000:])
+    require(build_process.returncode==0,'candidate_build_failed')
     identity=oci_identity(oci)
     require(identity['source_sha']==source_sha,'candidate_source_sha')
     run(['docker','load','--input',str(docker)],timeout=600)
@@ -220,9 +230,12 @@ def execute(spec, output, selected):
             require(sha(cache/'db/trivy.db')==db_hash,'scanner_database_changed_between_pair')
             summary['services'][service]=item;write(directory/'result.json',item)
             print(json.dumps({'service':service,'status':item['status']}),flush=True)
-    summary['complete']=len(summary['services'])==len(selected)
+    summary['attempted_service_count']=len(summary['services'])
+    summary['complete']=(len(summary['services'])==len(selected)
+                         and all(r['status']!='INCOMPLETE' for r in summary['services'].values()))
     summary['strict_candidate_gate']=summary['complete'] and all(r['status']=='PASS' for r in summary['services'].values())
-    summary['all_nine_evaluated']=set(summary['services'])==SERVICES
+    summary['all_nine_attempted']=set(summary['services'])==SERVICES
+    summary['all_nine_evaluated']=summary['complete'] and summary['all_nine_attempted']
     summary['completed_at']=datetime.now(timezone.utc).isoformat();write(output/'summary.json',summary)
     hashes={str(p.relative_to(output)):sha(p) for p in output.rglob('*') if p.is_file() and cache not in p.parents}
     write(output/'SHA256SUMS.json',hashes)

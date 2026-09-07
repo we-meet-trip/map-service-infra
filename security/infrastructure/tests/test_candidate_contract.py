@@ -24,6 +24,16 @@ class CandidateContract(unittest.TestCase):
         self.assertEqual(43, sum(r['prior_counts']['CRITICAL'] for r in data['services']))
         self.assertIn('edge', data['preserve']); self.assertIn('osrm_image_id', data['preserve'])
 
+    def test_postgres_repository_exception_is_exact_and_cannot_expand(self):
+        original=c.load_spec()
+        for service,selector in [('postgres','postgres:17'),('proxy',c.POSTGRES_DEBIAN_BASE)]:
+            data=json.loads(json.dumps(original))
+            row=next(x for x in data['services'] if x['service']==service)
+            row.update(build='postgres-debian',candidate_selector=selector)
+            with patch.object(Path,'read_text',return_value=json.dumps(data)):
+                with self.assertRaisesRegex(ValueError,'pinned_postgres_debian_contract'):
+                    c.load_spec()
+
     def test_unfixed_critical_findings_are_counted_and_linked(self):
         actual = c.findings({'Results': [{'Target': 'binary', 'Packages': [{'Name': 'stdlib', 'Version': 'go1.25.1'}],
             'Vulnerabilities': [{'VulnerabilityID': 'CVE-fixture', 'Severity': 'CRITICAL', 'Status': 'affected',

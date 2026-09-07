@@ -226,14 +226,14 @@ def check(service, before, candidate, output):
     require(os.environ.get('GITHUB_ACTIONS') == 'true' and os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted'
             and sys.platform == 'linux', 'remote_hosted_ci_only')
     require(re.fullmatch(r'[a-z0-9/_-]+@sha256:[a-f0-9]{64}', before), 'old_digest_required')
-    require(re.fullmatch(r'sha256:[a-f0-9]{64}', candidate), 'candidate_config_digest_required')
+    require(re.fullmatch(r'sha256:[a-f0-9]{64}', candidate), 'candidate_runtime_image_identifier_required')
     if service == 'postgres':
         spec = importlib.util.spec_from_file_location('pg_fixture', Path(__file__).with_name('fixtures') / 'postgres_restore.py')
         module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
         return module.execute(before, candidate, output / 'compatibility')
     directory = output / 'compatibility'; directory.mkdir()
     s = Sandbox(directory)
-    result = {'service': service, 'status': 'FAIL', 'old_image': before, 'candidate_image_config': candidate,
+    result = {'service': service, 'status': 'FAIL', 'old_image': before, 'candidate_runtime_image_id': candidate,
               'synthetic_only': True, 'production_data_or_credentials_used': False,
               'rollback_contract': 'Retain stopped pre-upgrade backup and exact old image; do not reuse mutated live data'}
     try:
