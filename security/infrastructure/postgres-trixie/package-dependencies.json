@@ -1,0 +1,467 @@
+{
+  "schema_version": 1,
+  "scope": "Filtered official package metadata with Release hash/size binding; no APT solver or image execution. Release signatures were not verified in this read-only metadata review; actual image build must use normal signed APT repositories.",
+  "indices": {
+    "pgdg": {
+      "url": "https://apt.postgresql.org/pub/repos/apt/dists/trixie-pgdg/main/binary-amd64/Packages.gz",
+      "last_modified": "Fri, 04 Sep 2026 12:38:49 GMT",
+      "retrieved_utc": "2026-09-07T08:06:45.553586+00:00",
+      "compressed_sha256": "1e3a8d9a9c16a9e2dde2bcc3e8eaf01a9b981df1c2c04ca07366c3a35800b096",
+      "compressed_bytes": 1119528,
+      "selected_packages": [
+        {
+          "Package": "libgdal-dev",
+          "Version": "3.13.2+dfsg-1.pgdg13+1",
+          "Architecture": "amd64",
+          "Source": "gdal",
+          "Depends": "libgdal39 (= 3.13.2+dfsg-1.pgdg13+1), libarchive-dev, libarmadillo-dev, libavif-dev, libblosc-dev, libc6-dev, libcfitsio-dev, libcurl4-gnutls-dev | libcurl-ssl-dev, libdeflate-dev, libexpat1-dev, libexprtk-dev, libfreexl-dev, libfyba-dev, libgeos-dev, libgeotiff-dev (>= 1.5.0), libgif-dev, libhdf4-dev, libhdf5-dev, libheif-dev, libjpeg-dev, libjson-c-dev, libjxl-dev, libkml-dev, libltdl-dev, liblz4-dev, liblzma-dev, libmariadb-dev-compat, libmuparser-dev, libnetcdf-dev, libopenjp2-7-dev, libpcre2-dev, libpng-dev, libpoppler-private-dev, libpq-dev, libproj-dev (>= 6.0.0), libqhull-dev, libspatialite-dev, libsqlite3-dev, libtiff-dev, liburiparser-dev, libwebp-dev, libxerces-c-dev, libxml2-dev, libzstd-dev, unixodbc-dev",
+          "Filename": "pool/main/g/gdal/libgdal-dev_3.13.2+dfsg-1.pgdg13+1_amd64.deb",
+          "Size": "487620",
+          "SHA256": "ee6280c3cd6ce5b99a255134a2b94100dce6b2f03010c66b53474ce8a5c505e4"
+        },
+        {
+          "Package": "libgdal39",
+          "Version": "3.13.2+dfsg-1.pgdg13+1",
+          "Architecture": "amd64",
+          "Source": "gdal",
+          "Depends": "gdal-data (>= 3.13.2+dfsg-1.pgdg13+1), gdal-plugins (>= 3.13.2+dfsg-1.pgdg13+1), libaec0 (>= 1.1.3), libarchive13t64 (>= 3.4.0), libarmadillo14 (>= 1:14.2.3+dfsg), libavif16 (>= 1.2.1), libblosc1 (>= 1.17.1+ds1), libc6 (>= 2.38), libcfitsio10t64 (>= 4.2.0~), libcurl4t64 (>= 7.66.0), libdeflate0 (>= 1.0), libexpat1 (>= 2.0.1), libfreexl1 (>= 1.0.0), libfyba0t64 (>= 4.1.1), libgcc-s1 (>= 12), libgeos-c1t64 (>= 3.14.0~beta3), libgeotiff5 (>= 1.6.0), libgif7 (>= 5.1), libgomp1 (>= 4.9), libhdf4-0 (>= 4.2r4), libhdf5-310 (>= 1.14.4.3), libheif1 (>= 1.19.1), libjpeg62-turbo (>= 1.3.1), libjson-c5 (>= 0.15), libjxl0.11 (>= 0.9.2), libkmlbase1t64 (>= 1.3.0), libkmldom1t64 (>= 1.3.0), libkmlengine1t64 (>= 1.3.0), liblz4-1 (>= 0.0~r130), liblzma5 (>= 5.1.1alpha+20110809), libmariadb3 (>= 3.0.0), libmuparser2v5 (>= 2.3.4), libnetcdf22 (>= 1:4.0.0), libodbc2 (>= 2.3.1), libodbcinst2 (>= 2.3.1), libopenjp2-7 (>= 2.5.0), libpcre2-8-0 (>= 10.22), libpng16-16t64 (>= 1.6.46), libpoppler147 (>= 25.03.0), libpq5, libproj25 (>= 9.4.0), libqhull-r8.0 (>= 2020.1), libspatialite8t64 (>= 4.2.0), libsqlite3-0 (>= 3.38.0), libssl3t64 (>= 3.0.0), libstdc++6 (>= 14), libtiff6 (>= 4.7.0), libwebp7 (>= 1.5.0), libxerces-c3.2t64, libxml2 (>= 2.7.4), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.2.2)",
+          "Filename": "pool/main/g/gdal/libgdal39_3.13.2+dfsg-1.pgdg13+1_amd64.deb",
+          "Size": "11952444",
+          "SHA256": "91b7f5e2c62c5c8414397faa68fe7a4d0076666a2837f0dd765cc3673471eeb6"
+        },
+        {
+          "Package": "libgeos-c1t64",
+          "Version": "3.14.1-2.pgdg13+1",
+          "Architecture": "amd64",
+          "Source": "geos",
+          "Depends": "libc6 (>= 2.32), libgcc-s1 (>= 3.0), libgeos3.14.1 (>= 3.14.0~beta2), libstdc++6 (>= 13.1)",
+          "Breaks": "libgeos-c1v5 (<< 3.14.1-2.pgdg13+1)",
+          "Replaces": "libgeos-c1v5",
+          "Provides": "libgeos-c1v5 (= 3.14.1-2.pgdg13+1)",
+          "Filename": "pool/main/g/geos/libgeos-c1t64_3.14.1-2.pgdg13+1_amd64.deb",
+          "Size": "119232",
+          "SHA256": "53c598ce07e58dcbde9266913b94b380efbf3f024b1572f1943b8a15aef4afe5"
+        },
+        {
+          "Package": "libgeos-dev",
+          "Version": "3.14.1-2.pgdg13+1",
+          "Architecture": "amd64",
+          "Source": "geos",
+          "Depends": "libgeos-c1t64 (= 3.14.1-2.pgdg13+1)",
+          "Filename": "pool/main/g/geos/libgeos-dev_3.14.1-2.pgdg13+1_amd64.deb",
+          "Size": "61868",
+          "SHA256": "75b60f40e62f097fd62976822938cf532a7f9391cb8840d2e7a39abaef494c7a"
+        },
+        {
+          "Package": "libproj-dev",
+          "Version": "9.8.1-1.pgdg13+1",
+          "Architecture": "amd64",
+          "Source": "proj",
+          "Depends": "libproj25 (= 9.8.1-1.pgdg13+1), libcurl4-gnutls-dev | libcurl-ssl-dev, libsqlite3-dev, libtiff-dev",
+          "Filename": "pool/main/p/proj/libproj-dev_9.8.1-1.pgdg13+1_amd64.deb",
+          "Size": "141988",
+          "SHA256": "9e0ca5a54fd3ec95ce5e47c8623334138880f6070b886967d1a0ebd0e3ed301d"
+        },
+        {
+          "Package": "libproj25",
+          "Version": "9.8.1-1.pgdg13+1",
+          "Architecture": "amd64",
+          "Source": "proj",
+          "Depends": "proj-data (>= 9.8.1-1.pgdg13+1), libc6 (>= 2.38), libcurl3t64-gnutls (>= 7.16.2), libgcc-s1 (>= 4.0), libsqlite3-0 (>= 3.7.5), libstdc++6 (>= 14), libtiff6 (>= 4.0.3)",
+          "Filename": "pool/main/p/proj/libproj25_9.8.1-1.pgdg13+1_amd64.deb",
+          "Size": "1522216",
+          "SHA256": "da7aa20a6fe4a3b4cbd783fdcd363b6602e3cccb93544f5338e8224ac030819a"
+        },
+        {
+          "Package": "postgresql-17",
+          "Version": "17.11-1.pgdg13+2",
+          "Architecture": "amd64",
+          "Depends": "locales | locales-all, postgresql-client-17, postgresql-common (>= 252~), ssl-cert, tzdata, debconf (>= 0.5) | debconf-2.0, libc6 (>= 2.38), libgcc-s1 (>= 3.0), libgssapi-krb5-2 (>= 1.14+dfsg), libicu76 (>= 76.1-1~), libldap2 (>= 2.6.2), libllvm19 (>= 1:19.1.0), liblz4-1 (>= 0.0~r130), libpam0g (>= 0.99.7.1), libpq5 (>= 17~~), libselinux1 (>= 3.1~), libssl3t64 (>= 3.4.0), libstdc++6 (>= 5.2), libsystemd0, libuuid1 (>= 2.16), libxml2 (>= 2.7.4), libxslt1.1 (>= 1.1.25), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4)",
+          "Breaks": "dbconfig-common (<< 2.0.22~)",
+          "Provides": "postgresql-17-jit-llvm (= 19), postgresql-contrib-17",
+          "Filename": "pool/main/p/postgresql-17/postgresql-17_17.11-1.pgdg13+2_amd64.deb",
+          "Size": "16667232",
+          "SHA256": "4f8b42bd3202d24953996743afbc90b609d3337c90bb740568b52d06ebfdcb15"
+        },
+        {
+          "Package": "postgresql-17",
+          "Version": "17.10-1.pgdg13+1",
+          "Architecture": "amd64",
+          "Depends": "locales | locales-all, postgresql-client-17, postgresql-common (>= 252~), ssl-cert, tzdata, debconf (>= 0.5) | debconf-2.0, libc6 (>= 2.38), libgcc-s1 (>= 3.0), libgssapi-krb5-2 (>= 1.14+dfsg), libicu76 (>= 76.1-1~), libldap2 (>= 2.6.2), libllvm19 (>= 1:19.1.0), liblz4-1 (>= 0.0~r130), libpam0g (>= 0.99.7.1), libpq5 (>= 17~~), libselinux1 (>= 3.1~), libssl3t64 (>= 3.4.0), libstdc++6 (>= 5.2), libsystemd0, libuuid1 (>= 2.16), libxml2 (>= 2.7.4), libxslt1.1 (>= 1.1.25), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4)",
+          "Breaks": "dbconfig-common (<< 2.0.22~)",
+          "Provides": "postgresql-17-jit-llvm (= 19), postgresql-contrib-17",
+          "Filename": "pool/main/p/postgresql-17/postgresql-17_17.10-1.pgdg13+1_amd64.deb",
+          "Size": "16605972",
+          "SHA256": "e57e5f03cb819fac653580e702e55de4932fac93d6496c6f964bfbd0da304e1c"
+        },
+        {
+          "Package": "postgresql-17",
+          "Version": "17.9-1.pgdg13+1",
+          "Architecture": "amd64",
+          "Depends": "locales | locales-all, postgresql-client-17, postgresql-common (>= 252~), ssl-cert, tzdata, debconf (>= 0.5) | debconf-2.0, libc6 (>= 2.38), libgcc-s1 (>= 3.0), libgssapi-krb5-2 (>= 1.14+dfsg), libicu76 (>= 76.1-1~), libldap2 (>= 2.6.2), libllvm19 (>= 1:19.1.0), liblz4-1 (>= 0.0~r130), libpam0g (>= 0.99.7.1), libpq5 (>= 17~~), libselinux1 (>= 3.1~), libssl3t64 (>= 3.4.0), libstdc++6 (>= 5.2), libsystemd0, libuuid1 (>= 2.16), libxml2 (>= 2.7.4), libxslt1.1 (>= 1.1.25), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4)",
+          "Breaks": "dbconfig-common (<< 2.0.22~)",
+          "Provides": "postgresql-17-jit-llvm (= 19), postgresql-contrib-17",
+          "Filename": "pool/main/p/postgresql-17/postgresql-17_17.9-1.pgdg13+1_amd64.deb",
+          "Size": "16584852",
+          "SHA256": "ae69c15328be5ce57fdbb2bfc3e9a101c1b810fced5dee39ee3d5e65d53087d1"
+        },
+        {
+          "Package": "postgresql-server-dev-17",
+          "Version": "17.11-1.pgdg13+2",
+          "Architecture": "amd64",
+          "Source": "postgresql-17",
+          "Depends": "clang-19, libpq-dev (>= 17~~), llvm-19-dev, postgresql-client-17, postgresql-common (>= 142~), libc6 (>= 2.38)",
+          "Filename": "pool/main/p/postgresql-17/postgresql-server-dev-17_17.11-1.pgdg13+2_amd64.deb",
+          "Size": "1344968",
+          "SHA256": "a802fd5ec363597ea39b342451803797ef972c684cc2f6a5ffbfab786a75b9f1"
+        },
+        {
+          "Package": "postgresql-server-dev-17",
+          "Version": "17.10-1.pgdg13+1",
+          "Architecture": "amd64",
+          "Source": "postgresql-17",
+          "Depends": "clang-19, libpq-dev (>= 17~~), llvm-19-dev, postgresql-client-17, postgresql-common (>= 142~), libc6 (>= 2.38)",
+          "Filename": "pool/main/p/postgresql-17/postgresql-server-dev-17_17.10-1.pgdg13+1_amd64.deb",
+          "Size": "1338208",
+          "SHA256": "adc91a999ec840f8db8c8df5ac2473fe1deeaed0e76bd5a6391afa7c74bceac3"
+        },
+        {
+          "Package": "postgresql-server-dev-17",
+          "Version": "17.9-1.pgdg13+1",
+          "Architecture": "amd64",
+          "Source": "postgresql-17",
+          "Depends": "clang-19, libpq-dev (>= 17~~), llvm-19-dev, postgresql-client-17, postgresql-common (>= 142~), libc6 (>= 2.38)",
+          "Filename": "pool/main/p/postgresql-17/postgresql-server-dev-17_17.9-1.pgdg13+1_amd64.deb",
+          "Size": "1333708",
+          "SHA256": "f7b44f12247ffea0cbe4c14677ef8fe776988e48f57e540f83d72c1cbd042122"
+        }
+      ],
+      "release_file": {
+        "url": "https://apt.postgresql.org/pub/repos/apt/dists/trixie-pgdg/Release",
+        "index_sha256_and_size_match": true,
+        "signature_not_verified_in_this_readonly_review": true,
+        "metadata": {
+          "Origin": "apt.postgresql.org",
+          "Label": "PostgreSQL for Debian/Ubuntu repository",
+          "Suite": "trixie-pgdg",
+          "Codename": "trixie-pgdg",
+          "Date": "Fri, 04 Sep 2026 12:38:56 UTC"
+        }
+      },
+      "review_input_json_sha256": "a710037e866c33b198eb2cbbd23235e57a63e3df8c20b7f933dd6788d0fb55ca"
+    },
+    "debian-main": {
+      "url": "https://deb.debian.org/debian/dists/trixie/main/binary-amd64/Packages.gz",
+      "last_modified": "Sat, 11 Jul 2026 08:38:13 GMT",
+      "retrieved_utc": "2026-09-07T08:06:45.549923+00:00",
+      "compressed_sha256": "d33ff28e9f9551b3039c07b314d62606f19af62c015eca55c86f4a9adcc896db",
+      "compressed_bytes": 13323935,
+      "selected_packages": [
+        {
+          "Package": "libgdal-dev",
+          "Version": "3.10.3+dfsg-1",
+          "Architecture": "amd64",
+          "Source": "gdal",
+          "Depends": "libgdal36 (= 3.10.3+dfsg-1), libarmadillo-dev, libavif-dev, libblosc-dev, libc6-dev, libcfitsio-dev, libcurl4-gnutls-dev | libcurl-ssl-dev, libdeflate-dev, libexpat1-dev, libfreexl-dev, libfyba-dev, libgeos-dev, libgeotiff-dev (>= 1.5.0), libgif-dev, libhdf4-alt-dev, libhdf5-dev, libheif-dev, libjpeg-dev, libjson-c-dev, libkml-dev, libltdl-dev, liblz4-dev, liblzma-dev, default-libmysqlclient-dev, libnetcdf-dev, libogdi-dev, libopenjp2-7-dev, libpcre2-dev, libpng-dev, libpoppler-private-dev, libpq-dev, libproj-dev (>= 6.0.0), libqhull-dev, libspatialite-dev, libsqlite3-dev, libtiff-dev, liburiparser-dev, libwebp-dev, libxerces-c-dev, libxml2-dev, libzstd-dev, unixodbc-dev",
+          "Filename": "pool/main/g/gdal/libgdal-dev_3.10.3+dfsg-1_amd64.deb",
+          "Size": "379156",
+          "SHA256": "63aff4caeb46f7064c36abc2bd8fbcfb19f060b37838fb7c1bfdf31062b0637e"
+        },
+        {
+          "Package": "libgeos-c1t64",
+          "Version": "3.13.1-1",
+          "Architecture": "amd64",
+          "Source": "geos",
+          "Depends": "libc6 (>= 2.14), libgcc-s1 (>= 3.0), libgeos3.13.1 (>= 3.13.1), libstdc++6 (>= 13.1)",
+          "Breaks": "libgeos-c1v5 (<< 3.13.1-1)",
+          "Replaces": "libgeos-c1v5",
+          "Provides": "libgeos-c1v5 (= 3.13.1-1)",
+          "Filename": "pool/main/g/geos/libgeos-c1t64_3.13.1-1_amd64.deb",
+          "Size": "102396",
+          "SHA256": "a57f23882d8c3f28e3c7b757244a496264c2afde5a0e23a8196fe616b5667def"
+        },
+        {
+          "Package": "libgeos-dev",
+          "Version": "3.13.1-1",
+          "Architecture": "amd64",
+          "Source": "geos",
+          "Depends": "libgeos-c1t64 (= 3.13.1-1)",
+          "Filename": "pool/main/g/geos/libgeos-dev_3.13.1-1_amd64.deb",
+          "Size": "58568",
+          "SHA256": "2f6c0148678d67b3789a4b9357bd3427290763f4024c5a26028842f80b3e8c62"
+        },
+        {
+          "Package": "libc6",
+          "Version": "2.41-12+deb13u3",
+          "Architecture": "amd64",
+          "Source": "glibc",
+          "Depends": "libgcc-s1",
+          "Breaks": "base-files (<< 13.3~), chrony (<< 4.2-3~), dhcpcd (<< 1:10.1.0-7~), fakechroot (<< 2.19-3.5), firefox (<< 91~), firefox-esr (<< 91~), gnumach-image-1.8-486 (<< 2:1.8+git20210923~), gnumach-image-1.8-486-dbg (<< 2:1.8+git20210923~), gnumach-image-1.8-xen-486 (<< 2:1.8+git20210923~), gnumach-image-1.8-xen-486-dbg (<< 2:1.8+git20210923~), hurd (<< 1:0.9.git20220301-2), libamdhip64-5 (<< 5.7.1-5+b1), libhiprtc-builtins5 (<< 5.7.1-5+b1), librccl1 (<< 5.4.3-3+b1), libswupdate0.1 (<< 2024.12.1+dfsg-1+b3), locales (<< 2.41), locales-all (<< 2.41), lua-swupdate (<< 2024.12.1+dfsg-1+b3), nscd (<< 2.41), pd-scaf (<< 1:0.14.1+darcs20180201-6+b4), postgresql-15-pllua (<< 1:2.0.12-4), postgresql-17-pllua (<< 1:2.0.12-3+b2), python3-iptables (<< 1.0.0-2), python3-mrgingham (<< 1.25-1), python3-onnxruntime (<< 1.20.1+dfsg-2~), sysvinit (<< 3.09-2~), sysvinit-core (<< 3.09-2~), tinydns (<< 1:1.05-14), uwsgi-plugin-pypy3 (<< 0.0.2+b1), valgrind (<< 1:3.19.0-1~)",
+          "Replaces": "libc6-amd64",
+          "Filename": "pool/main/g/glibc/libc6_2.41-12+deb13u3_amd64.deb",
+          "Size": "2849576",
+          "SHA256": "8ffd13165b9ee3f067e2ee670df718e48c1bdaa18676ac93d1de761dbbb3913c"
+        },
+        {
+          "Package": "locales",
+          "Version": "2.41-12+deb13u3",
+          "Architecture": "all",
+          "Source": "glibc",
+          "Depends": "libc-bin (>> 2.41), libc-l10n (>> 2.41), debconf (>= 0.5) | debconf-2.0",
+          "Filename": "pool/main/g/glibc/locales_2.41-12+deb13u3_all.deb",
+          "Size": "3925180",
+          "SHA256": "3d22cf6f84e762b3efbb0ffb1f24123e92ad83dd2e1268320dd246688e535a5f"
+        },
+        {
+          "Package": "libjson-c-dev",
+          "Version": "0.18+ds-1",
+          "Architecture": "amd64",
+          "Source": "json-c",
+          "Depends": "libjson-c5 (= 0.18+ds-1)",
+          "Filename": "pool/main/j/json-c/libjson-c-dev_0.18+ds-1_amd64.deb",
+          "Size": "74804",
+          "SHA256": "8e0c93929bdaf7a5e5f9f25848f1533fc34f916d7f2ba44bda782f7f32415db6"
+        },
+        {
+          "Package": "libjson-c5",
+          "Version": "0.18+ds-1",
+          "Architecture": "amd64",
+          "Source": "json-c",
+          "Depends": "libc6 (>= 2.38)",
+          "Filename": "pool/main/j/json-c/libjson-c5_0.18+ds-1_amd64.deb",
+          "Size": "45956",
+          "SHA256": "4fbd5fb4d54c626f05d68abf38a31533fbf1bf4a87068696abe041ee9c974fe0"
+        },
+        {
+          "Package": "libxml2",
+          "Version": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+          "Architecture": "amd64",
+          "Depends": "libc6 (>= 2.38), liblzma5 (>= 5.1.1alpha+20120614), zlib1g (>= 1:1.2.3.4)",
+          "Conflicts": "w3c-dtd-xhtml",
+          "Filename": "pool/main/libx/libxml2/libxml2_2.12.7+dfsg+really2.9.14-2.1+deb13u3_amd64.deb",
+          "Size": "699724",
+          "SHA256": "e0c6b63ce4602a036a526f60fe5e6c1586710688058d98fc1001b9b3147b7efd"
+        },
+        {
+          "Package": "libxml2-dev",
+          "Version": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+          "Architecture": "amd64",
+          "Source": "libxml2",
+          "Depends": "libxml2 (= 2.12.7+dfsg+really2.9.14-2.1+deb13u3)",
+          "Filename": "pool/main/libx/libxml2/libxml2-dev_2.12.7+dfsg+really2.9.14-2.1+deb13u3_amd64.deb",
+          "Size": "794724",
+          "SHA256": "2d1a5825cabb43cf4be6848a4acc4a73c50d9c3740ab0c76e2fed80a3e5c6398"
+        },
+        {
+          "Package": "libpcre2-8-0",
+          "Version": "10.46-1~deb13u1",
+          "Architecture": "amd64",
+          "Source": "pcre2",
+          "Depends": "libc6 (>= 2.34)",
+          "Filename": "pool/main/p/pcre2/libpcre2-8-0_10.46-1~deb13u1_amd64.deb",
+          "Size": "298536",
+          "SHA256": "6aa452af6a07e34498bf8e734e8789c9dd602fb34f12572e62dc1bba4889a60e"
+        },
+        {
+          "Package": "libpcre2-dev",
+          "Version": "10.46-1~deb13u1",
+          "Architecture": "amd64",
+          "Source": "pcre2",
+          "Depends": "libc-dev, libpcre2-8-0 (= 10.46-1~deb13u1), libpcre2-16-0 (= 10.46-1~deb13u1), libpcre2-32-0 (= 10.46-1~deb13u1), libpcre2-posix3 (= 10.46-1~deb13u1)",
+          "Conflicts": "libpcre3-dev (<< 2:8.35-8)",
+          "Filename": "pool/main/p/pcre2/libpcre2-dev_10.46-1~deb13u1_amd64.deb",
+          "Size": "852668",
+          "SHA256": "b5cb023bfaad356053583af384f7b75caec3ac127a197f889164ef4d96397cef"
+        },
+        {
+          "Package": "postgresql-17",
+          "Version": "17.10-0+deb13u1",
+          "Architecture": "amd64",
+          "Depends": "locales | locales-all, postgresql-client-17, postgresql-common (>= 252~), ssl-cert, tzdata, debconf (>= 0.5) | debconf-2.0, libc6 (>= 2.38), libgcc-s1 (>= 3.0), libgssapi-krb5-2 (>= 1.14+dfsg), libicu76 (>= 76.1-1~), libldap2 (>= 2.6.2), libllvm19 (>= 1:19.1.0), liblz4-1 (>= 0.0~r130), libpam0g (>= 0.99.7.1), libpq5 (>= 17~~), libselinux1 (>= 3.1~), libssl3t64 (>= 3.4.0), libstdc++6 (>= 5.2), libsystemd0, libuuid1 (>= 2.16), libxml2 (>= 2.7.4), libxslt1.1 (>= 1.1.25), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4)",
+          "Breaks": "dbconfig-common (<< 2.0.22~)",
+          "Provides": "postgresql-17-jit-llvm (= 19), postgresql-contrib-17",
+          "Filename": "pool/main/p/postgresql-17/postgresql-17_17.10-0+deb13u1_amd64.deb",
+          "Size": "16609800",
+          "SHA256": "3b7d9dbfd2f618d767fc091ffb7432faa6284a20f7095b430dd57644602f40dd"
+        },
+        {
+          "Package": "postgresql-server-dev-17",
+          "Version": "17.10-0+deb13u1",
+          "Architecture": "amd64",
+          "Source": "postgresql-17",
+          "Depends": "clang-19, libpq-dev (>= 17~~), llvm-19-dev, postgresql-client-17, postgresql-common (>= 142~), libc6 (>= 2.38)",
+          "Filename": "pool/main/p/postgresql-17/postgresql-server-dev-17_17.10-0+deb13u1_amd64.deb",
+          "Size": "1326568",
+          "SHA256": "7e8b5864e0735bd05ef00f205dd859aa472d25006e3e857f8fe585db57387e7e"
+        },
+        {
+          "Package": "libproj-dev",
+          "Version": "9.6.0-1",
+          "Architecture": "amd64",
+          "Source": "proj",
+          "Depends": "libproj25 (= 9.6.0-1), libcurl4-gnutls-dev | libcurl-ssl-dev, libsqlite3-dev, libtiff-dev",
+          "Filename": "pool/main/p/proj/libproj-dev_9.6.0-1_amd64.deb",
+          "Size": "137404",
+          "SHA256": "3637b5174d483cc670ce8b96eedadf1d6c4fe65fc00c45e1746c8a131fc7ecfd"
+        },
+        {
+          "Package": "libproj25",
+          "Version": "9.6.0-1",
+          "Architecture": "amd64",
+          "Source": "proj",
+          "Depends": "proj-data (>= 9.6.0-1), libc6 (>= 2.38), libcurl3t64-gnutls (>= 7.16.2), libgcc-s1 (>= 4.0), libsqlite3-0 (>= 3.7.5), libstdc++6 (>= 14), libtiff6 (>= 4.0.3)",
+          "Filename": "pool/main/p/proj/libproj25_9.6.0-1_amd64.deb",
+          "Size": "1452508",
+          "SHA256": "c6fafb82c6f55c091b54c19ef652eb695fbdd2bfac508e291d132276eefac143"
+        },
+        {
+          "Package": "libprotobuf-c-dev",
+          "Version": "1.5.1-1",
+          "Architecture": "amd64",
+          "Source": "protobuf-c",
+          "Depends": "libprotobuf-c1 (= 1.5.1-1)",
+          "Breaks": "protobuf-c-compiler (<< 1.0.0~)",
+          "Filename": "pool/main/p/protobuf-c/libprotobuf-c-dev_1.5.1-1_amd64.deb",
+          "Size": "28528",
+          "SHA256": "70e50f7f98154719a8be9925431fafce153145369819995b62258c88cb63e392"
+        },
+        {
+          "Package": "libprotobuf-c1",
+          "Version": "1.5.1-1",
+          "Architecture": "amd64",
+          "Source": "protobuf-c",
+          "Depends": "libc6 (>= 2.14)",
+          "Filename": "pool/main/p/protobuf-c/libprotobuf-c1_1.5.1-1_amd64.deb",
+          "Size": "20536",
+          "SHA256": "9fa7e6932f620c7155aab365ed277f04cae3e04ac80ee048fb09d1e838738d14"
+        },
+        {
+          "Package": "libsfcgal-dev",
+          "Version": "2.0.0-1",
+          "Architecture": "amd64",
+          "Source": "sfcgal",
+          "Depends": "libsfcgal2 (= 2.0.0-1), libcgal-dev (>= 4.10.1), libgmp-dev",
+          "Filename": "pool/main/s/sfcgal/libsfcgal-dev_2.0.0-1_amd64.deb",
+          "Size": "72936",
+          "SHA256": "90b630fbafb207dba8a0666c447658c8b28e25909067e70cef4f0db7f7d2f769"
+        },
+        {
+          "Package": "libsfcgal2",
+          "Version": "2.0.0-1",
+          "Architecture": "amd64",
+          "Source": "sfcgal",
+          "Depends": "libboost-serialization1.83.0 (>= 1.83.0), libc6 (>= 2.38), libgcc-s1 (>= 3.4), libgmp10 (>= 2:6.3.0+dfsg), libgmpxx4ldbl (>= 2:6.3.0+dfsg), libmpfr6 (>= 3.1.3), libstdc++6 (>= 13.1)",
+          "Filename": "pool/main/s/sfcgal/libsfcgal2_2.0.0-1_amd64.deb",
+          "Size": "2999900",
+          "SHA256": "0b1a8a6da16cda8988a242c8704f7faf54a1516307dd336938781452baeace89"
+        }
+      ],
+      "release_file": {
+        "url": "https://deb.debian.org/debian/dists/trixie/Release",
+        "index_sha256_and_size_match": true,
+        "signature_not_verified_in_this_readonly_review": true,
+        "metadata": {
+          "Origin": "Debian",
+          "Label": "Debian",
+          "Suite": "stable",
+          "Codename": "trixie",
+          "Date": "Sat, 11 Jul 2026 09:02:23 UTC"
+        }
+      },
+      "review_input_json_sha256": "eb799775f63fa5cd4449a7ace46e0a6075a8721148637a7e90d5aeff9a63bbd7"
+    },
+    "debian-security": {
+      "url": "https://security.debian.org/debian-security/dists/trixie-security/main/binary-amd64/Packages.xz",
+      "last_modified": "Sun, 06 Sep 2026 18:29:42 GMT",
+      "retrieved_utc": "2026-09-07T08:08:06.011633+00:00",
+      "compressed_sha256": "c177555e5c754ab70e43ddc4ebc1f305599f65483a0b2717af0319f1f8ac05b8",
+      "compressed_bytes": 251332,
+      "selected_packages": [
+        {
+          "Package": "libxml2",
+          "Version": "2.12.7+dfsg+really2.9.14-2.1+deb13u1",
+          "Architecture": "amd64",
+          "Depends": "libc6 (>= 2.38), liblzma5 (>= 5.1.1alpha+20120614), zlib1g (>= 1:1.2.3.3)",
+          "Conflicts": "w3c-dtd-xhtml",
+          "Filename": "pool/updates/main/libx/libxml2/libxml2_2.12.7+dfsg+really2.9.14-2.1+deb13u1_amd64.deb",
+          "Size": "698060",
+          "SHA256": "b4743a0fd8e86379ec2bdfb6b97b99fb1c92a925e538920052316814470e99f8"
+        },
+        {
+          "Package": "libxml2-dev",
+          "Version": "2.12.7+dfsg+really2.9.14-2.1+deb13u1",
+          "Architecture": "amd64",
+          "Source": "libxml2",
+          "Depends": "libxml2 (= 2.12.7+dfsg+really2.9.14-2.1+deb13u1)",
+          "Filename": "pool/updates/main/libx/libxml2/libxml2-dev_2.12.7+dfsg+really2.9.14-2.1+deb13u1_amd64.deb",
+          "Size": "793272",
+          "SHA256": "842e07476d0093b9c1ebdc16d1efa093cf9934c9f88cda26a2e33b982deb48df"
+        },
+        {
+          "Package": "postgresql-17",
+          "Version": "17.11-0+deb13u1",
+          "Architecture": "amd64",
+          "Depends": "locales | locales-all, postgresql-client-17, postgresql-common (>= 252~), ssl-cert, tzdata, debconf (>= 0.5) | debconf-2.0, libc6 (>= 2.38), libgcc-s1 (>= 3.0), libgssapi-krb5-2 (>= 1.14+dfsg), libicu76 (>= 76.1-1~), libldap2 (>= 2.6.2), libllvm19 (>= 1:19.1.0), liblz4-1 (>= 0.0~r130), libpam0g (>= 0.99.7.1), libpq5 (>= 17~~), libselinux1 (>= 3.1~), libssl3t64 (>= 3.4.0), libstdc++6 (>= 5.2), libsystemd0, libuuid1 (>= 2.16), libxml2 (>= 2.7.4), libxslt1.1 (>= 1.1.25), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4)",
+          "Breaks": "dbconfig-common (<< 2.0.22~)",
+          "Provides": "postgresql-17-jit-llvm (= 19), postgresql-contrib-17",
+          "Filename": "pool/updates/main/p/postgresql-17/postgresql-17_17.11-0+deb13u1_amd64.deb",
+          "Size": "16678028",
+          "SHA256": "d2ce1ddffafa783f9acda4c92c86fc21e8288bff3782d739294f14fa797d7886"
+        },
+        {
+          "Package": "postgresql-server-dev-17",
+          "Version": "17.11-0+deb13u1",
+          "Architecture": "amd64",
+          "Source": "postgresql-17",
+          "Depends": "clang-19, libpq-dev (>= 17~~), llvm-19-dev, postgresql-client-17, postgresql-common (>= 142~), libc6 (>= 2.38)",
+          "Filename": "pool/updates/main/p/postgresql-17/postgresql-server-dev-17_17.11-0+deb13u1_amd64.deb",
+          "Size": "1332720",
+          "SHA256": "59cb25f0a1def045aa334a9c025befc4a72dfc72d4a370f97d7d3f7342803d7e"
+        }
+      ],
+      "release_file": {
+        "url": "https://security.debian.org/debian-security/dists/trixie-security/Release",
+        "sha256": "8e77936316871305a31de47fdfbbdaf327ced9073e7a428b266645145f21397f",
+        "package_entry": [
+          "c177555e5c754ab70e43ddc4ebc1f305599f65483a0b2717af0319f1f8ac05b8",
+          "251332",
+          "main/binary-amd64/Packages.xz"
+        ],
+        "package_hash_and_size_match": true,
+        "signature_not_verified_in_this_readonly_review": true
+      },
+      "review_input_json_sha256": "5722a7c1c21012d4dff6d9614585ac5ca35a6a18bd20fc3f034fca84643d7ae8"
+    },
+    "debian-updates": {
+      "url": "https://deb.debian.org/debian/dists/trixie-updates/main/binary-amd64/Packages.xz",
+      "last_modified": "Sat, 18 Jul 2026 07:57:17 GMT",
+      "retrieved_utc": "2026-09-07T08:08:06.797208+00:00",
+      "compressed_sha256": "10012cb384dc2613586d7b3d391d92a5637c9faa36017239739f2a6109a0d45f",
+      "compressed_bytes": 4412,
+      "selected_packages": [],
+      "release_file": {
+        "url": "https://deb.debian.org/debian/dists/trixie-updates/Release",
+        "sha256": "215a91fcce4e8bf9b1e654f24fb74f00eb88ef787efe693e45fa8d51f757f6b0",
+        "package_entry": [
+          "10012cb384dc2613586d7b3d391d92a5637c9faa36017239739f2a6109a0d45f",
+          "4412",
+          "main/binary-amd64/Packages.xz"
+        ],
+        "package_hash_and_size_match": true,
+        "signature_not_verified_in_this_readonly_review": true
+      },
+      "review_input_json_sha256": "78e7c7ced05954795192b68d893e3f062399558ea70ca04067b841a5f3d69bef"
+    }
+  },
+  "effective_direct_runtime_names": [
+    "libgdal39",
+    "libgeos-c1t64",
+    "libjson-c5",
+    "libpcre2-8-0",
+    "libproj25",
+    "libprotobuf-c1",
+    "libsfcgal2",
+    "libxml2"
+  ],
+  "actual_solver_build_fixture_scan_executed": false
+}

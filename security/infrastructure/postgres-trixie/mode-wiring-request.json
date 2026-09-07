@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "status": "PROPOSED_INTERFACE_ONLY_NOT_APPLIED",
+  "alternative_only": true,
+  "preserve_current_tested_bookworm_candidate": true,
+  "integrated_source_dependency": "11e4c140c291536dd24cd6860e753c3165120422",
+  "candidate_recipe": "security/infrastructure/Dockerfile.postgres-trixie",
+  "build_context": "security/infrastructure",
+  "existing_required_recipe_directory": "security/infrastructure/gosu-security",
+  "proposed_manifest_postgres_fields_for_separate_comparison": {
+    "build": "postgres-trixie",
+    "candidate_selector": "postgres@sha256:d13db94ae661d517c5ed57c509a578d5ea64aae639871ba25294f4f42d83de28"
+  },
+  "required_unchanged_current_image": "postgis/postgis@sha256:01a6a70e41e6c4467c8f55f6063555ed72db2d6662cd0d571040d42eadaeb6f6",
+  "root_scanner_interface": {
+    "load_spec": "Add postgres-trixie to build modes and require service postgres, exact existing current image, and the exact Trixie amd64 manifest; preserve all existing mode-specific restrictions.",
+    "build_candidate": "Existing Dockerfile.<mode> naming resolves the new file; add postgres-trixie:2400 to the per-mode timeout map.",
+    "export_build_evidence": "Add postgres-trixie:/usr/share/map-candidate to the existing allowed evidence paths; preserve owned-label/image/unstarted guards, tar restrictions and all SHA bindings.",
+    "strict_scan": "Keep the current HIGH/CRITICAL zero gate, package types, unfixed findings, immutable OCI identity and scanner DB/tool provenance unchanged.",
+    "fixture": "Run the complete existing postgres synthetic fixture for the alternative digest; keep old/new source boundaries, locale/collation/index, permissions, restart and both logical rollback checks. Add SFCGAL behavior coverage as needed. Do not reuse Bookworm PASS."
+  },
+  "build_executed": false,
+  "scan_executed": false,
+  "fixture_executed": false,
+  "gcp_changes": 0,
+  "candidate_security_approved": false
+}

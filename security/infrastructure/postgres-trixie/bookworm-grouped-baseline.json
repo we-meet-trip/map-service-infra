@@ -1,0 +1,325 @@
+{
+  "source_sha": "11e4c140c291536dd24cd6860e753c3165120422",
+  "counts": {
+    "CRITICAL": 16,
+    "HIGH": 108
+  },
+  "all_fixed_version_null": true,
+  "grouped_packages": {
+    "bsdutils": {
+      "version": "1:2.38.1-5+deb12u3",
+      "HIGH": 5,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "gdal-data": {
+      "version": "3.13.2+dfsg-1.pgdg12+1",
+      "HIGH": 3,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "gdal-plugins": {
+      "version": "3.13.2+dfsg-1.pgdg12+1",
+      "HIGH": 3,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "gzip": {
+      "version": "1.12-1",
+      "HIGH": 1,
+      "CRITICAL": 0,
+      "statuses": [
+        "fix_deferred"
+      ]
+    },
+    "libacl1": {
+      "version": "2.3.1-3",
+      "HIGH": 1,
+      "CRITICAL": 0,
+      "statuses": [
+        "fix_deferred"
+      ]
+    },
+    "libaom3": {
+      "version": "3.6.0-1+deb12u3",
+      "HIGH": 1,
+      "CRITICAL": 1,
+      "statuses": [
+        "affected",
+        "will_not_fix"
+      ]
+    },
+    "libblkid1": {
+      "version": "2.38.1-5+deb12u3",
+      "HIGH": 5,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "libcurl3-gnutls": {
+      "version": "7.88.1-10+deb12u15",
+      "HIGH": 5,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected",
+        "fix_deferred"
+      ]
+    },
+    "libcurl4": {
+      "version": "7.88.1-10+deb12u15",
+      "HIGH": 5,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected",
+        "fix_deferred"
+      ]
+    },
+    "libde265-0": {
+      "version": "1.0.11-1+deb12u2",
+      "HIGH": 1,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "libexpat1": {
+      "version": "2.5.0-1+deb12u3",
+      "HIGH": 3,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected",
+        "will_not_fix"
+      ]
+    },
+    "libgdal39": {
+      "version": "3.13.2+dfsg-1.pgdg12+1",
+      "HIGH": 3,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "libhdf5-103-1": {
+      "version": "1.10.8+repack1-1",
+      "HIGH": 1,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "libhdf5-hl-100": {
+      "version": "1.10.8+repack1-1",
+      "HIGH": 1,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "libheif1": {
+      "version": "1.15.1-1+deb12u1",
+      "HIGH": 6,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "libjxl0.7": {
+      "version": "0.7.0-10+deb12u1",
+      "HIGH": 1,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "libldap-2.5-0": {
+      "version": "2.5.13+dfsg-5",
+      "HIGH": 1,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "libmount1": {
+      "version": "2.38.1-5+deb12u3",
+      "HIGH": 5,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "libncursesw6": {
+      "version": "6.4-4",
+      "HIGH": 1,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "libperl5.36": {
+      "version": "5.36.0-7+deb12u3",
+      "HIGH": 5,
+      "CRITICAL": 3,
+      "statuses": [
+        "affected",
+        "fix_deferred"
+      ]
+    },
+    "libsmartcols1": {
+      "version": "2.38.1-5+deb12u3",
+      "HIGH": 5,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "libsqlite3-0": {
+      "version": "3.40.1-2+deb12u2",
+      "HIGH": 2,
+      "CRITICAL": 1,
+      "statuses": [
+        "affected",
+        "fix_deferred"
+      ]
+    },
+    "libsystemd0": {
+      "version": "252.39-1~deb12u2",
+      "HIGH": 1,
+      "CRITICAL": 0,
+      "statuses": [
+        "fix_deferred"
+      ]
+    },
+    "libtiff6": {
+      "version": "4.5.0-6+deb12u4",
+      "HIGH": 4,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected",
+        "will_not_fix"
+      ]
+    },
+    "libtinfo6": {
+      "version": "6.4-4",
+      "HIGH": 1,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "libudev1": {
+      "version": "252.39-1~deb12u2",
+      "HIGH": 1,
+      "CRITICAL": 0,
+      "statuses": [
+        "fix_deferred"
+      ]
+    },
+    "libuuid1": {
+      "version": "2.38.1-5+deb12u3",
+      "HIGH": 5,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "libxml2": {
+      "version": "2.9.14+dfsg-1.3~deb12u6",
+      "HIGH": 0,
+      "CRITICAL": 1,
+      "statuses": [
+        "fix_deferred"
+      ]
+    },
+    "mount": {
+      "version": "2.38.1-5+deb12u3",
+      "HIGH": 5,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "ncurses-base": {
+      "version": "6.4-4",
+      "HIGH": 1,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "ncurses-bin": {
+      "version": "6.4-4",
+      "HIGH": 1,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "perl": {
+      "version": "5.36.0-7+deb12u3",
+      "HIGH": 5,
+      "CRITICAL": 3,
+      "statuses": [
+        "affected",
+        "fix_deferred"
+      ]
+    },
+    "perl-base": {
+      "version": "5.36.0-7+deb12u3",
+      "HIGH": 5,
+      "CRITICAL": 3,
+      "statuses": [
+        "affected",
+        "fix_deferred"
+      ]
+    },
+    "perl-modules-5.36": {
+      "version": "5.36.0-7+deb12u3",
+      "HIGH": 5,
+      "CRITICAL": 3,
+      "statuses": [
+        "affected",
+        "fix_deferred"
+      ]
+    },
+    "util-linux": {
+      "version": "2.38.1-5+deb12u3",
+      "HIGH": 5,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "util-linux-extra": {
+      "version": "2.38.1-5+deb12u3",
+      "HIGH": 5,
+      "CRITICAL": 0,
+      "statuses": [
+        "affected"
+      ]
+    },
+    "zlib1g": {
+      "version": "1:1.2.13.dfsg-1",
+      "HIGH": 0,
+      "CRITICAL": 1,
+      "statuses": [
+        "will_not_fix"
+      ]
+    }
+  },
+  "critical_cves": [
+    "CVE-2023-45853",
+    "CVE-2023-6879",
+    "CVE-2025-7458",
+    "CVE-2026-13221",
+    "CVE-2026-42496",
+    "CVE-2026-6653",
+    "CVE-2026-8376"
+  ]
+}

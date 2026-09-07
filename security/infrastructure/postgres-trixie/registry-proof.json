@@ -1,0 +1,191 @@
+{
+  "observed_utc": "2026-09-07T08:06:30.487026+00:00",
+  "tag": "postgres:17.11-trixie",
+  "registry": "https://registry-1.docker.io/v2/library/postgres",
+  "index_digest": "sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675",
+  "manifest_digest": "sha256:d13db94ae661d517c5ed57c509a578d5ea64aae639871ba25294f4f42d83de28",
+  "config_digest": "sha256:7296f210ae81031ec955dbad9a67a84fe958572a2153b8d0826a647522904dc1",
+  "index_descriptor": {
+    "annotations": {
+      "com.docker.official-images.bashbrew.arch": "amd64",
+      "org.opencontainers.image.base.digest": "sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f",
+      "org.opencontainers.image.base.name": "debian:trixie-slim",
+      "org.opencontainers.image.created": "2026-08-25T00:41:21Z",
+      "org.opencontainers.image.revision": "2603e26e245e558218728ee14e0a42dcb020dc7f",
+      "org.opencontainers.image.source": "https://github.com/docker-library/postgres.git#2603e26e245e558218728ee14e0a42dcb020dc7f:17/trixie",
+      "org.opencontainers.image.url": "https://hub.docker.com/_/postgres",
+      "org.opencontainers.image.version": "17.11"
+    },
+    "digest": "sha256:d13db94ae661d517c5ed57c509a578d5ea64aae639871ba25294f4f42d83de28",
+    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    "platform": {
+      "architecture": "amd64",
+      "os": "linux"
+    },
+    "size": 3628
+  },
+  "config": {
+    "architecture": "amd64",
+    "os": "linux",
+    "created": "2026-08-25T00:41:57.916686795Z"
+  },
+  "runtime_config": {
+    "ExposedPorts": {
+      "5432/tcp": {}
+    },
+    "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/postgresql/17/bin",
+      "GOSU_VERSION=1.19",
+      "LANG=en_US.utf8",
+      "PG_MAJOR=17",
+      "PG_VERSION=17.11-1.pgdg13+2",
+      "PGDATA=/var/lib/postgresql/data"
+    ],
+    "Entrypoint": [
+      "docker-entrypoint.sh"
+    ],
+    "Cmd": [
+      "postgres"
+    ],
+    "Volumes": {
+      "/var/lib/postgresql/data": {}
+    },
+    "StopSignal": "SIGINT"
+  },
+  "layer_sizes": [
+    29792658,
+    1169,
+    6442949,
+    1256725,
+    8203903,
+    1311669,
+    116,
+    3143,
+    114255804,
+    10452,
+    127,
+    168,
+    6110,
+    185
+  ],
+  "identity_bytes_verified": true,
+  "image_or_binary_execution": false,
+  "source_history_relevant": [
+    "RUN /bin/sh -c set -eux; \tgroupadd -r postgres --gid=999; \tuseradd -r -g postgres --uid=999 --home-dir=/var/lib/postgresql --shell=/bin/bash postgres; \tinstall --verbose --directory --owner postgres --group postgres --mode 1777 /var/lib/postgresql # buildkit",
+    "ENV PG_VERSION=17.11-1.pgdg13+2",
+    "RUN /bin/sh -c install --verbose --directory --owner postgres --group postgres --mode 1777 \"$PGDATA\" # buildkit"
+  ],
+  "upstream_dockerfile": {
+    "url": "https://raw.githubusercontent.com/docker-library/postgres/2603e26e245e558218728ee14e0a42dcb020dc7f/17/trixie/Dockerfile",
+    "sha256": "e20926ed861c597360c45b11b5c06a098fd31db26f9e39c18dbc0feeb46036a5"
+  },
+  "bounded_layer_reads": [
+    {
+      "digest": "sha256:fe2da2a59a9b0e3ffea1a19b19497008edad84b067984ca47f5e514d3b65183a",
+      "bytes": 1169,
+      "sha256_verified": true
+    },
+    {
+      "digest": "sha256:817ead34cefaee030e7e8d205c4f01189f5dddca1a617755eca1eec5dbd656c9",
+      "bytes": 1256725,
+      "sha256_verified": true
+    },
+    {
+      "digest": "sha256:0f14f3be7f090986d3a2eb7819324a730efd9138ae19ae2227cde34f21418942",
+      "bytes": 116,
+      "sha256_verified": true
+    },
+    {
+      "digest": "sha256:238c3936b37c723f2b0ee3606bc8654b996fbe006dc221d2ac026a86a8a204e3",
+      "bytes": 3143,
+      "sha256_verified": true
+    },
+    {
+      "digest": "sha256:499f168a6c102daaf4df9274a2fbd150742bfeec7b68ce643cc594db12954278",
+      "bytes": 10452,
+      "sha256_verified": true
+    },
+    {
+      "digest": "sha256:937fed8f5fd1bf1e9cbf7ccfd8122f6a16c3844a016dd282875b5868a6ee2eda",
+      "bytes": 127,
+      "sha256_verified": true
+    },
+    {
+      "digest": "sha256:de0bd328703b344e5a5be99bd8b37c44d25a2851c091e7cdea9af8ad851f82cd",
+      "bytes": 168,
+      "sha256_verified": true
+    },
+    {
+      "digest": "sha256:a06335df3cea6e8458f1e970d73a3c6faf744f15099f371beb20b5869f1a2e76",
+      "bytes": 6110,
+      "sha256_verified": true
+    },
+    {
+      "digest": "sha256:7bae2b43bca32a8bd54dec4f73af399d5ea47f293609e9a1b30a67f6eb829dd2",
+      "bytes": 185,
+      "sha256_verified": true
+    }
+  ],
+  "bounded_layer_observations": [
+    {
+      "path": "etc/group",
+      "layer": "sha256:fe2da2a59a9b0e3ffea1a19b19497008edad84b067984ca47f5e514d3b65183a",
+      "uid": 0,
+      "gid": 0,
+      "mode": "0o644",
+      "is_regular_file": true,
+      "is_directory": false,
+      "sha256": "787eeb287d90749e8b65b817de38da7796806bef72ed767181ddd7760845e7fd",
+      "postgres_rows": [
+        "postgres:x:999:"
+      ]
+    },
+    {
+      "path": "etc/passwd",
+      "layer": "sha256:fe2da2a59a9b0e3ffea1a19b19497008edad84b067984ca47f5e514d3b65183a",
+      "uid": 0,
+      "gid": 0,
+      "mode": "0o644",
+      "is_regular_file": true,
+      "is_directory": false,
+      "sha256": "99d10fe0d1cadf0cbb484a1becf3b0c22718e4b726c0716b4579b6faefa53d43",
+      "postgres_rows": [
+        "postgres:x:999:999::/var/lib/postgresql:/bin/bash"
+      ]
+    },
+    {
+      "path": "usr/local/bin/gosu",
+      "layer": "sha256:817ead34cefaee030e7e8d205c4f01189f5dddca1a617755eca1eec5dbd656c9",
+      "uid": 0,
+      "gid": 0,
+      "mode": "0o755",
+      "is_regular_file": true,
+      "is_directory": false,
+      "sha256": "52c8749d0142edd234e9d6bd5237dff2d81e71f43537e2f4f66f75dd4b243dd0"
+    },
+    {
+      "path": "var/lib/postgresql/data",
+      "layer": "sha256:de0bd328703b344e5a5be99bd8b37c44d25a2851c091e7cdea9af8ad851f82cd",
+      "uid": 999,
+      "gid": 999,
+      "mode": "0o1777",
+      "is_regular_file": false,
+      "is_directory": true
+    },
+    {
+      "path": "usr/local/bin/docker-entrypoint.sh",
+      "layer": "sha256:a06335df3cea6e8458f1e970d73a3c6faf744f15099f371beb20b5869f1a2e76",
+      "uid": 0,
+      "gid": 0,
+      "mode": "0o755",
+      "is_regular_file": true,
+      "is_directory": false,
+      "sha256": "9c440299ae04a0a79d55b8bf03307036d890a40979d2fb698073c9050d4b20a5"
+    }
+  ],
+  "complete_rootfs_reconstructed": false,
+  "copied_from_candidate_source_sha": "11e4c140c291536dd24cd6860e753c3165120422",
+  "copied_bookworm_dockerfile_sha256": "cd2cf0fe2d5a4c3f0d0004c1d425698662da1d9ded5156016fcb3d1d0cdc9588",
+  "preserved_gosu_builder_stage_sha256": "5e10407bd3325feb82176a8f951ad2fc131426321b6c0bc0743d270a286f6cd6",
+  "candidate_status": "UNTESTED_SEPARATE_ALTERNATIVE_NOT_A_SUCCESSOR"
+}
