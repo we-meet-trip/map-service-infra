@@ -125,6 +125,10 @@
     "trixie": {
       "build": "postgres-trixie",
       "candidate_selector": "postgres@sha256:d13db94ae661d517c5ed57c509a578d5ea64aae639871ba25294f4f42d83de28"
+    },
+    "trixie-no-mysql": {
+      "build": "postgres-trixie-no-mysql",
+      "candidate_selector": "postgres@sha256:d13db94ae661d517c5ed57c509a578d5ea64aae639871ba25294f4f42d83de28"
     }
   }
 }

@@ -10,11 +10,11 @@ on:
         default: all
         type: string
       postgres_variant:
-        description: 'bookworm default or separate postgres-only trixie comparison'
+        description: 'bookworm default or separate postgres-only trixie / no-MySQL comparison'
         required: true
         default: bookworm
         type: choice
-        options: [bookworm, trixie]
+        options: [bookworm, trixie, trixie-no-mysql]
 permissions:
   contents: read
 concurrency:

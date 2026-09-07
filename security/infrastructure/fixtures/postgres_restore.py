@@ -85,6 +85,50 @@ SFCGAL_ANSWERS = {'intersection_length': 1, 'intersection_dimension': 3,
                   'intersection_min_z': 0, 'intersection_max_z': 0,
                   'solid_volume': 2}
 
+# Exercise the GDAL runtime through PostGIS itself. Enable only the three fixed
+# synthetic formats in this rolled-back fixture transaction; no live setting or
+# out-of-database raster is touched. Constant pixels keep JPEG tolerance explicit.
+RASTER_PROBE = """BEGIN; SET LOCAL statement_timeout='15s';
+CREATE EXTENSION postgis_raster;
+SET LOCAL postgis.gdal_enabled_drivers='GTiff PNG JPEG';
+SET LOCAL postgis.enable_outdb_rasters=off;
+WITH src AS (SELECT ST_AddBand(
+ ST_MakeEmptyRaster(2,2,0,0,0.5,-0.5,0,0,4326),1,'8BUI'::text,128,0) AS rast),
+encoded AS (SELECT fmt,ST_AsGDALRaster(src.rast,fmt) AS bytes
+ FROM src CROSS JOIN unnest(ARRAY['GTiff','PNG','JPEG']) AS fmt),
+decoded AS (SELECT fmt,octet_length(bytes) AS encoded_bytes,ST_FromGDALRaster(bytes) AS rast FROM encoded)
+SELECT json_build_object('gdal_version',postgis_gdal_version(),
+ 'formats',(SELECT json_agg(json_build_object('format',fmt,'encoded_bytes',encoded_bytes,
+ 'width',ST_Width(rast),'height',ST_Height(rast),'bands',ST_NumBands(rast),
+ 'count',ST_Count(rast,1,true),'pixel_min',(ST_SummaryStats(rast,1,true)).min,
+ 'pixel_max',(ST_SummaryStats(rast,1,true)).max,'srid',ST_SRID(rast),
+ 'upper_left_x',ST_UpperLeftX(rast),'upper_left_y',ST_UpperLeftY(rast),
+ 'scale_x',ST_ScaleX(rast),'scale_y',ST_ScaleY(rast)) ORDER BY fmt) FROM decoded));
+ROLLBACK;"""
+
+
+def validate_raster(observed):
+    require(set(observed) == {'gdal_version', 'formats'}
+            and isinstance(observed['gdal_version'], str) and observed['gdal_version'].startswith('GDAL '),
+            'raster_probe_fields')
+    rows = observed['formats']
+    require(isinstance(rows, list) and len(rows) == 3
+            and {r['format'] for r in rows} == {'GTiff', 'PNG', 'JPEG'}, 'raster_formats_required')
+    for row in rows:
+        require(type(row['encoded_bytes']) is int and row['encoded_bytes'] > 0, 'raster_empty_encoding')
+        for key, value in {'width': 2, 'height': 2, 'bands': 1, 'count': 4}.items():
+            require(type(row[key]) is int and row[key] == value, 'raster_' + key + '_mismatch')
+        for key in ('pixel_min', 'pixel_max'):
+            value = row[key]
+            require(type(value) in (int, float) and math.isfinite(value)
+                    and abs(value - 128) <= (1 if row['format'] == 'JPEG' else 0), 'raster_pixel_mismatch')
+        if row['format'] == 'GTiff':
+            for key, expected in {'srid': 4326, 'upper_left_x': 0, 'upper_left_y': 0,
+                                  'scale_x': 0.5, 'scale_y': -0.5}.items():
+                value = row[key]
+                require(type(value) in (int, float) and math.isfinite(value)
+                        and abs(value - expected) <= 1e-9, 'raster_georeference_mismatch')
+
 
 def validate_sfcgal(observed):
     require(set(observed) == {'sfcgal_version', *SFCGAL_ANSWERS}, 'sfcgal_probe_fields')
@@ -239,6 +283,11 @@ class Fixture:
         validate_sfcgal(observed)
         return observed
 
+    def raster(self, name):
+        observed = json.loads(self.sql(name, RASTER_PROBE).stdout)
+        validate_raster(observed)
+        return observed
+
     def collation(self, name):
         report = {'queries': {}, 'index_vs_sequential_verified': False}
         for key, where in QUERY_FILTERS.items():
@@ -262,7 +311,8 @@ class Fixture:
 
     def probe(self, name, stage, label, result):
         names = ['metadata', 'runtime_acl', 'runtime_ddl_denial', 'hub_denial', 'admin_denial',
-                 'unique_constraint', 'negative_probes_preserve_rows', 'btree_sequential_queries', 'sfcgal_geometry_behavior']
+                 'unique_constraint', 'negative_probes_preserve_rows', 'btree_sequential_queries', 'sfcgal_geometry_behavior',
+                 'raster_gdal_roundtrip']
         observation = {'checks': {check: 'NOT_RUN' for check in names}}
         result.setdefault('observations', {})[label] = observation
 
@@ -283,6 +333,8 @@ class Fixture:
         meta = observe('metadata', metadata)
         observation['sfcgal'] = observe('sfcgal_geometry_behavior', lambda: self.sfcgal(name))
         require(self.metadata(name)['extensions'] == meta['extensions'], 'sfcgal_transaction_changed_extension_inventory')
+        observation['raster'] = observe('raster_gdal_roundtrip', lambda: self.raster(name))
+        require(self.metadata(name)['extensions'] == meta['extensions'], 'raster_transaction_changed_extension_inventory')
         snapshot = self.snapshot(name)
         observation.update(snapshot_sha256=digest(snapshot), rows=len(snapshot['rows']), text_rows=len(snapshot['text']))
         observe('runtime_acl', lambda: require(snapshot['runtime'] == EXPECTED_ACL, 'runtime_privilege_contract'))

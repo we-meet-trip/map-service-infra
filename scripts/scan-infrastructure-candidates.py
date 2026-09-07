@@ -23,7 +23,8 @@ POSTGRES_CURRENT = 'postgis/postgis@sha256:01a6a70e41e6c4467c8f55f6063555ed72db2
 POSTGRES_DEBIAN_BASE = 'postgres@sha256:7bade6d532592ca8ce7ee32def7399dad2607c4ea5583839fc4352a095a11ea6'
 POSTGRES_TRIXIE_BASE = 'postgres@sha256:d13db94ae661d517c5ed57c509a578d5ea64aae639871ba25294f4f42d83de28'
 POSTGRES_VARIANTS = {'bookworm': ('postgres-debian', POSTGRES_DEBIAN_BASE),
-                     'trixie': ('postgres-trixie', POSTGRES_TRIXIE_BASE)}
+                     'trixie': ('postgres-trixie', POSTGRES_TRIXIE_BASE),
+                     'trixie-no-mysql': ('postgres-trixie-no-mysql', POSTGRES_TRIXIE_BASE)}
 
 
 def require(value, message):
@@ -56,19 +57,20 @@ def load_spec(postgres_variant='bookworm'):
     require(default_pg['build'] == 'postgres-debian' and default_pg['current'] == POSTGRES_CURRENT
             and default_pg['candidate_selector'] == POSTGRES_DEBIAN_BASE, 'pinned_postgres_debian_contract')
     alternatives = spec.get('postgres_alternatives', {})
-    require(alternatives == {'trixie': {'build': 'postgres-trixie', 'candidate_selector': POSTGRES_TRIXIE_BASE}},
+    require(alternatives == {key: {'build': mode, 'candidate_selector': base}
+                             for key, (mode, base) in POSTGRES_VARIANTS.items() if key != 'bookworm'},
             'pinned_postgres_alternatives_contract')
-    if postgres_variant == 'trixie':
-        default_pg.update(alternatives['trixie'])
+    if postgres_variant != 'bookworm':
+        default_pg.update(alternatives[postgres_variant])
     spec['selected_postgres_variant'] = postgres_variant
     for row in spec['services']:
         require(re.fullmatch(r'[a-z0-9/_-]+@sha256:[a-f0-9]{64}', row['current']), 'immutable_current_required')
-        require(row['build'] in ('postgres','postgres-debian','postgres-trixie','preserve','upstream','os-update','go-security','grafana-security'), 'build_mode')
+        require(row['build'] in ('postgres','postgres-debian','postgres-trixie','postgres-trixie-no-mysql','preserve','upstream','os-update','go-security','grafana-security'), 'build_mode')
         if row['build']=='postgres-debian':
             require(row['service']=='postgres' and row['current']==POSTGRES_CURRENT
                     and row['candidate_selector']==POSTGRES_DEBIAN_BASE,'pinned_postgres_debian_contract')
-        elif row['build']=='postgres-trixie':
-            require(postgres_variant == 'trixie' and row['service']=='postgres'
+        elif row['build'] in ('postgres-trixie', 'postgres-trixie-no-mysql'):
+            require(POSTGRES_VARIANTS[postgres_variant][0] == row['build'] and row['service']=='postgres'
                     and row['current']==POSTGRES_CURRENT and row['candidate_selector']==POSTGRES_TRIXIE_BASE,
                     'pinned_postgres_trixie_contract')
         elif row['build']=='go-security':
@@ -125,6 +127,7 @@ def oci_identity(path):
 def export_build_evidence(row, image, identity, output):
     paths={'postgres-debian':'/usr/share/map-candidate',
            'postgres-trixie':'/usr/share/map-candidate',
+           'postgres-trixie-no-mysql':'/usr/share/map-candidate',
            'go-security':'/usr/share/map-security/go',
            'grafana-security':'/usr/share/map-security/grafana-core'}
     path=paths.get(row['build'])
@@ -184,7 +187,7 @@ def build_candidate(row, base, output, source_sha):
     args=['docker','buildx','build','--platform','linux/amd64','--provenance=false','--file',str(ROOT/'security/infrastructure'/('Dockerfile.'+row['build'])),'--build-arg','BASE='+base,'--build-arg','SOURCE_SHA='+source_sha,'--build-arg','RUNTIME_USER='+user]
     if row['build']=='go-security':args+=['--build-arg','SERVICE='+row['service']]
     args+=['--tag',tag,'--output','type=oci,dest='+str(oci),'--output','type=docker,dest='+str(docker),str(ROOT/'security/infrastructure')]
-    timeout={'postgres-debian':2400,'postgres-trixie':2400,'go-security':2700,'grafana-security':4200}.get(row['build'],1200)
+    timeout={'postgres-debian':2400,'postgres-trixie':2400,'postgres-trixie-no-mysql':5400,'go-security':2700,'grafana-security':4200}.get(row['build'],1200)
     try:
         build_process=run(args,accepted=(0,1),timeout=timeout)
     except subprocess.TimeoutExpired as error:

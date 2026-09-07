@@ -180,6 +180,7 @@ class FailureSafetyTest(unittest.TestCase):
             with patch.object(fixture, 'metadata', return_value=metadata()), patch.object(fixture, 'snapshot', return_value=snap), \
                  patch.object(fixture, 'denied', side_effect=ValueError('expected_sqlstate_42501_missing')), \
                  patch.object(fixture, 'sfcgal', return_value={'sfcgal_version': '1.4.1', **pg.SFCGAL_ANSWERS}), \
+                 patch.object(fixture, 'raster', return_value={'synthetic_test_double': True}), \
                  patch.object(fixture, 'run', side_effect=AssertionError('unit fixture must not execute subprocess')):
                 with self.assertRaises(ValueError):
                     fixture.probe('synthetic', 'old', 'baseline', result)
