@@ -1,5 +1,9 @@
 name: GCP supervisor forced SSH check
 on:
+  # Register the workflow on the reviewed work branch; only manual runs execute.
+  push:
+    branches: [integrate/gcp-mobile-final-20260907]
+    paths: [.github/workflows/cutover-supervisor-check.yml]
   workflow_dispatch:
 permissions:
   contents: read
