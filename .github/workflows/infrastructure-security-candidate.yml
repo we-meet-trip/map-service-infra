@@ -1,0 +1,44 @@
+name: infrastructure-security-candidate
+on:
+  push:
+    branches: ["fix/infrastructure-security-integration-20260907-01"]
+  workflow_dispatch:
+    inputs:
+      services:
+        description: 'all or comma-separated manifest service names; candidate only'
+        required: true
+        default: all
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: infrastructure-security-candidate
+  cancel-in-progress: false
+jobs:
+  candidate:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: docker/setup-buildx-action@v3
+      - name: Offline contract tests
+        run: python3 -m unittest discover -s security/infrastructure/tests -v
+      - name: Exact scans, candidate builds and isolated restoration
+        env:
+          SELECTED_SERVICES: ${{ inputs.services }}
+        run: python3 scripts/scan-infrastructure-candidates.py --run --services "$SELECTED_SERVICES" --output "$RUNNER_TEMP/map-infrastructure-candidate"
+      - name: Preserve actual reports and exact candidate OCI archives
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: infrastructure-candidates-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/map-infrastructure-candidate/**
+            !${{ runner.temp }}/map-infrastructure-candidate/scanner-cache/**
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 1
