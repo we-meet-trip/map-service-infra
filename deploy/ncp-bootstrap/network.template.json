@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "status": "review_only_no_cloud_mutation",
+  "role_vm_boundary": ["test:gcp-existing", "prod:ncp-new", "admin:ncp-new", "learning:independent-cpu-hold"],
+  "required_inputs": ["nonoverlapping VPC/Docker/operator CIDRs", "exact zone", "authenticated cross-cloud management path", "certificate names", "external API host allowlist", "DNS/NTP resolver identities", "egress/NAT/VPN cost quote"],
+  "prod": {"public_ingress_tcp": [80,443], "ssh": "operator CIDRs only", "management": "loopback listeners plus reviewed authenticated private gateway", "deny_public": [5432,6379,8000,8080,9090,3000,9100]},
+  "admin": {"public_application_ingress": [], "ssh": "operator CIDRs only", "ui_db_metrics": "loopback only; authenticated operator path required", "outbound": "target management HTTPS and metrics HTTPS with distinct per-target credentials"},
+  "learning": {"public_application_ingress": [], "serving_db_redis_access": false, "production_ssh": false, "worker_network": "none for synthetic job", "host_transfers": "approved dataset read and candidate write only; per-prefix IAM", "capture_export": "HOLD"},
+  "common": {"ACG":"stateful", "NACL":"stateless; explicit response ephemeral ports required", "DNS":"UDP/TCP53 to reviewed resolvers", "time_sync":"reviewed NTP path", "registry_backup_provider_api":"HTTPS443", "docker_firewall":"verify published ports and DOCKER-USER behavior; UFW alone is insufficient", "cloud_changes":0, "dns_changes":0}
+}
