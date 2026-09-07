@@ -71,9 +71,14 @@ def approved_tuple(d, latch, phase):
     choices = [latch["candidate"]] if phase == "complete" else policy["rollback_verified"]
     actual = containers(d, d.release.SERVICES)
     for candidate in choices:
-        if all(run(d, ["docker", "image", "inspect", "--format", "{{.Id}}", candidate[s]]) == actual[s]["image"]
-               for s in d.release.SERVICES):
-            return candidate
+        try:
+            if all(run(d, ["docker", "image", "inspect", "--format", "{{.Id}}", candidate[s]]) == actual[s]["image"]
+                   for s in d.release.SERVICES):
+                return candidate
+        except d.DeployError:
+            # An absent earlier approved tuple must not conceal a later exact
+            # locally present one. Never pull an image to make this check pass.
+            continue
     raise d.DeployError("ready receipt requires exact approved six-image identity")
 
 

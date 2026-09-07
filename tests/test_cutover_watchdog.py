@@ -203,6 +203,19 @@ class WatchdogTests(unittest.TestCase):
         guard.recover_once(self.d)
         self.assertEqual(self.mutations(), [])
 
+    def test_missing_earlier_approved_image_does_not_hide_later_exact_rollback(self):
+        missing = {s: value[:-64] + "f" * 64 for s, value in self.approved.items()}
+        self.policy["rollback_verified"] = [missing, self.approved]
+        self.write("rollback-policy.json", self.policy)
+        original = self.command
+        def absent(args, **kwargs):
+            if args[:3] == ["docker", "image", "inspect"] and args[-1].endswith("f" * 64):
+                raise self.d.DeployError("absent local image")
+            return original(args, **kwargs)
+        with patch.object(self.d, "command", side_effect=absent):
+            self.assertEqual(guard.approved_tuple(self.d, self.latch, "rolled_back"), self.approved)
+        self.assertFalse(any(x[:2] == ("docker", "pull") for x in self.calls))
+
     def test_enrollment_checks_actual_readiness_before_changing_restart_policy(self):
         for item in self.items.values():
             item["restart"] = "unless-stopped"

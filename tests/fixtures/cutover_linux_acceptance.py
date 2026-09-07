@@ -165,7 +165,12 @@ time.sleep(60)
             call(["systemctl", "reset-failed", guard.RECEIVER_UNIT], check=False)
         if outer_created:
             call(["docker", "rm", "-fv", outer], check=False)
-        (ROOT / "cutover-linux-acceptance.json").write_text(json.dumps(report, indent=2) + "\n")
+        evidence = ROOT / "cutover-linux-acceptance.json"
+        evidence.write_text(json.dumps(report, indent=2) + "\n")
+        # Only fixed outcome fields and elapsed seconds; no private fixture state.
+        # The unprivileged artifact action must be able to read this report.
+        evidence.chmod(0o644)
+        print(json.dumps(report, sort_keys=True))
 
 
 if __name__ == "__main__":
