@@ -1,0 +1,11 @@
+[Unit]
+Description=Back up MAP GCP test Redis every 30 minutes, offset from PostgreSQL
+
+[Timer]
+OnCalendar=*-*-* *:15,45:00
+Persistent=true
+RandomizedDelaySec=30
+Unit=map-test-redis-backup.service
+
+[Install]
+WantedBy=timers.target
