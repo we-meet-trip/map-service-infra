@@ -3,6 +3,9 @@ on:
   workflow_dispatch:
   push:
     paths:
+      - scripts/deploy-gcp.py
+      - scripts/cloud-up.sh
+      - scripts/release_manifest.py
       - scripts/cutover_watchdog.py
       - scripts/receive-supervised.sh
       - deploy/map-cutover-watchdog.service
