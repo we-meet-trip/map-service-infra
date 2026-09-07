@@ -68,6 +68,7 @@ x-app-env: &app-env
     STREAM_GROUP: ${STREAM_GROUP:-bff-result}
     REDIS_TIMEOUT_SEC: ${REDIS_TIMEOUT_SEC:-2.0}
     INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-}
+    USER_ADMIN_INTERNAL_TOKEN: ${USER_ADMIN_INTERNAL_TOKEN:-}
     INTERNAL_TIMEOUT_SEC: ${INTERNAL_TIMEOUT_SEC:-5.0}
     GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     GEMINI_MODELS_URL: ${GEMINI_MODELS_URL:-https://generativelanguage.googleapis.com/v1beta/models}
@@ -105,6 +106,8 @@ services:
   # 인증은 admin_accounts(bcrypt)+세션쿠키(단일 공유 Basic 폐지).
   # ports: 호스트 8002 → 컨테이너 8000 (loopback).
   admin:
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     <<: [*default-logging, *app-env]
     build:
       context: ../map-service-admin
@@ -135,6 +138,8 @@ services:
   # ports: 호스트 8003 → 컨테이너 80 (loopback). node/nginx alpine 은 멀티아치
   # 이미지라 amd64·arm64 호스트 어디서든 빌드된다.
   admin-web:
+    # Stock nginx master switches worker uid/gid; retain its startup caps for this image.
+    security_opt: [no-new-privileges:true]
     <<: *default-logging
     build:
       context: ../map-service-admin/web

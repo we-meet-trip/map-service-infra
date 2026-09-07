@@ -68,7 +68,10 @@ def validate(manifest, config, *, host_identity, deploy_account):
         for target in targets.values():
             require(not target.get("ADMIN_DATABASE_URL") and not target.get("ADMIN_REDIS_URL"), "central role uses target management APIs only")
             for name in ("USER_BASE_URL", "HUB_BASE_URL", "AGENT_BASE_URL"): remote_https(target.get(name, ""))
-            require(target.get("INTERNAL_SERVICE_TOKEN"), "target API credential required")
+            ordinary = target.get("INTERNAL_SERVICE_TOKEN", "")
+            dedicated = target.get("USER_ADMIN_INTERNAL_TOKEN", "")
+            require(ordinary, "target API credential required")
+            require(isinstance(dedicated, str) and dedicated.strip() and dedicated != ordinary, "distinct target User admin credential required")
         migration = services["admin-migrate"].get("environment", {})
         require(set(migration) == {"ADMIN_CONTROL_MIGRATION_DATABASE_URL"}, "migration receives only its own credential")
         require(migration.get("ADMIN_CONTROL_MIGRATION_DATABASE_URL"), "separate migration credential required")

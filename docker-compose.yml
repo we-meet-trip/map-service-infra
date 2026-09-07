@@ -206,6 +206,8 @@ services:
   # postgres / redis 의 healthcheck 통과를 기다린 후 기동된다.
   # ports: 호스트 8080 → 컨테이너 8080 (actuator/health 헬스체크)
   user:
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     build:
       context: ../map-service-user
     container_name: map-service-user
@@ -246,8 +248,10 @@ services:
       CHAT_WS_ENDPOINT:
       CORS_ALLOWED_ORIGINS:
       HUB_BASE_URL:
-      HUB_TIMEOUT_SECONDS:
+      HUB_TIMEOUT_SECONDS: ${USER_HUB_TIMEOUT_SECONDS:-5}
+      HUB_DIRECTIONS_TIMEOUT_SECONDS: ${HUB_DIRECTIONS_TIMEOUT_SECONDS:-20}
       INTERNAL_SERVICE_TOKEN:
+      USER_ADMIN_INTERNAL_TOKEN: ${USER_ADMIN_INTERNAL_TOKEN:-}
       JWT_ACCESS_TTL:
       JWT_PRIVATE_KEY:
       JWT_PUBLIC_KEY:
@@ -349,6 +353,8 @@ services:
   # hub 는 service_started 만 보장(자체 health 의존성 없음).
   # ports: 호스트 8000 → 컨테이너 8000 (FastAPI /health)
   agent:
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     build:
       context: ../map-service-agent
     container_name: map-service-agent
@@ -446,6 +452,8 @@ services:
   # 컨테이너 내부의 8000 포트를 호스트 8001 로 노출하여
   # agent / user 의 8000 / 8080 과 충돌하지 않게 한다.
   hub:
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     build:
       context: ../map-service-hub
     container_name: map-service-hub
@@ -579,6 +587,8 @@ services:
   # ports: 호스트 8004 → 컨테이너 8000. 루프백 직결은 점검용이고,
   #        클라이언트가 실제로 쓰는 공개 경로는 proxy(8090)의 /ws/vision 이다.
   yolo:
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     build:
       context: ../map-service-yolo
     container_name: map-service-yolo

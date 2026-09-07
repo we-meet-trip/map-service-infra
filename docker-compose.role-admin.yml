@@ -51,6 +51,8 @@ services:
     depends_on:
       control-postgres: {condition: service_healthy}
   admin-web:
+    # Stock nginx master needs setuid/setgid/chown until a nonroot web image is validated.
+    security_opt: [no-new-privileges:true]
     image: ${ADMIN_WEB_IMAGE:?digest-pinned Admin Web image required}
     restart: unless-stopped
     ports: ['127.0.0.1:5174:80']

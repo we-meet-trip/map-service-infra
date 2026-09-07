@@ -24,7 +24,7 @@ class RenderedRoleComposeTests(unittest.TestCase):
             secret = temporary / "bootstrap.txt"
             secret.write_text("synthetic-config-only")
             target = {"USER_BASE_URL":"https://test-management.private.example/user", "HUB_BASE_URL":"https://test-management.private.example/hub",
-                      "AGENT_BASE_URL":"https://test-management.private.example/agent", "INTERNAL_SERVICE_TOKEN":"synthetic-only"}
+                      "AGENT_BASE_URL":"https://test-management.private.example/agent", "INTERNAL_SERVICE_TOKEN":"synthetic-only", "USER_ADMIN_INTERNAL_TOKEN":"synthetic-admin-only"}
             runtime.write_text("ADMIN_CONTROL_DATABASE_URL=postgresql+psycopg://map_admin_runtime:synthetic@control-postgres/admin_control\nADMIN_ENVIRONMENT=test\nADMIN_TARGETS=" + json.dumps({"test":target}) + "\n")
             migration.write_text("ADMIN_CONTROL_MIGRATION_DATABASE_URL=postgresql+psycopg://map_admin_migrator:synthetic@control-postgres/admin_control\n")
             images = {name:"synthetic/image@sha256:"+"a"*64 for name in ("ADMIN_CONTROL_POSTGRES_IMAGE","ADMIN_API_IMAGE","ADMIN_WEB_IMAGE","ADMIN_PROMETHEUS_IMAGE","ADMIN_GRAFANA_IMAGE","TRAINING_WORKER_IMAGE")}
@@ -45,3 +45,10 @@ class RenderedRoleComposeTests(unittest.TestCase):
                             "compose_sha256":hashlib.sha256(compose.read_bytes()).hexdigest()}
                 result = validator.validate(manifest,json.loads(run.stdout),host_identity=manifest["host_identity"],deploy_account=manifest["deploy_account"])
                 self.assertTrue(result["valid"])
+                if role == "admin":
+                    rendered = json.loads(run.stdout)
+                    for invalid in ("", " ", "synthetic-only"):
+                        bad_target = {**target, "USER_ADMIN_INTERNAL_TOKEN":invalid}
+                        rendered["services"]["admin-api"]["environment"]["ADMIN_TARGETS"] = json.dumps({"test":bad_target})
+                        with self.assertRaisesRegex(ValueError, "distinct target User admin credential required"):
+                            validator.validate(manifest,rendered,host_identity=manifest["host_identity"],deploy_account=manifest["deploy_account"])
