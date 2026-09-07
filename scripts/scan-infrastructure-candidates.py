@@ -78,14 +78,15 @@ def oci_identity(path):
             raw=read('blobs/sha256/'+digest.split(':')[1])
             require('sha256:'+hashlib.sha256(raw).hexdigest()==digest,'oci_blob_checksum')
             return json.loads(raw)
-        index=json.loads(read('index.json'))
+        index_raw=read('index.json');index_digest='sha256:'+hashlib.sha256(index_raw).hexdigest()
+        index=json.loads(index_raw)
         while 'manifests' in index:
             candidates=[x for x in index['manifests'] if x.get('platform',{}).get('architecture') not in ('unknown','arm64')]
             require(len(candidates)==1,'single_platform_candidate_required')
             descriptor=candidates[0];index=blob(descriptor['digest'])
         config=blob(index['config']['digest'])
         require(config['architecture']=='amd64' and config['os']=='linux','oci_platform')
-        return {'manifest_digest':descriptor['digest'],'config_digest':index['config']['digest'],'archive_sha256':sha(path),'source_sha':config.get('config',{}).get('Labels',{}).get('org.opencontainers.image.revision')}
+        return {'index_digest':index_digest,'manifest_digest':descriptor['digest'],'config_digest':index['config']['digest'],'archive_sha256':sha(path),'source_sha':config.get('config',{}).get('Labels',{}).get('org.opencontainers.image.revision'),'runtime_config':config.get('config',{}),'rootfs':config.get('rootfs',{})}
 
 
 def build_candidate(row, base, output, source_sha):
@@ -100,10 +101,21 @@ def build_candidate(row, base, output, source_sha):
     require(identity['source_sha']==source_sha,'candidate_source_sha')
     run(['docker','load','--input',str(docker)],timeout=600)
     current=json.loads(run(['docker','image','inspect',tag]).stdout)[0]
-    require(current['Id']==identity['config_digest'],'fixture_and_scan_image_config_mismatch')
-    docker.unlink()  # Only the duplicate archive just created by this run.
+    # Docker containerd stores can expose an OCI index as Image ID. Re-export the
+    # loaded tag and verify its exact config bytes instead of conflating digest kinds.
+    loaded=output/'loaded-runtime.docker.tar'
+    run(['docker','image','save','--output',str(loaded),tag],timeout=600)
+    with tarfile.open(loaded,'r:*') as archive:
+        entry=archive.getmember('manifest.json');require(entry.isfile() and entry.size<1024*1024,'docker_export_metadata')
+        manifests=json.loads(archive.extractfile(entry).read());require(len(manifests)==1,'single_loaded_image_required')
+        config_entry=archive.getmember(manifests[0]['Config']);require(config_entry.isfile() and config_entry.size<8*1024*1024,'bounded_loaded_config')
+        config_bytes=archive.extractfile(config_entry).read()
+        require('sha256:'+hashlib.sha256(config_bytes).hexdigest()==identity['config_digest'],'fixture_and_scan_image_config_mismatch')
+    require(DIGEST.fullmatch(current['Id']),'loaded_runtime_image_identifier')
+    identity['runtime_image_id']=current['Id'];identity['loaded_config_bytes_verified']=True
+    loaded.unlink();docker.unlink()  # Only duplicate archives created by this run.
     write(output/'candidate-identity.json',identity)
-    return identity['config_digest'],identity
+    return current['Id'],identity
 
 
 def findings(report):
@@ -129,7 +141,12 @@ def scan(spec, output, cache, name, *, ref=None, archive=None, identity=None):
     require(cfg.get('architecture')=='amd64' and cfg.get('os')=='linux','scan_platform')
     require(report.get('Results'),'scan_results_missing')
     if archive: require(not report.get('Metadata',{}).get('OS',{}).get('EOSL',False),'candidate_distribution_eosl')
-    if archive:require(report['Metadata']['ImageID']==identity['config_digest'],'archive_scan_identity')
+    if archive:
+        require(report['Metadata']['ImageID'] in {identity['index_digest'],identity['manifest_digest'],identity['config_digest']},'archive_scan_identity')
+        require(cfg.get('rootfs')==identity['rootfs'],'archive_scan_rootfs_identity')
+        actual=cfg.get('config',{});expected=identity['runtime_config']
+        fields=['User','Env','Entrypoint','Cmd','WorkingDir','Labels','ExposedPorts','Volumes','StopSignal','Healthcheck','Shell']
+        require(all((actual.get(k) or None)==(expected.get(k) or None) for k in fields),'archive_scan_runtime_config_identity')
     else:require(report.get('ArtifactName')==ref and ref in report.get('Metadata',{}).get('RepoDigests',[]),'registry_scan_identity')
     data=findings(report)
     require(rc==(1 if sum(data['counts'].values()) else 0),'strict_exit_count_mismatch')
