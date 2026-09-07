@@ -1,0 +1,117 @@
+# Candidate only. See POSTGRES_DEBIAN_BUILD_CONTRACT.md before integration.
+# The default is the independently hashed official linux/amd64 child manifest,
+# not the mutable tag or multi-architecture index. No live data is a build input.
+ARG BASE=postgres@sha256:7bade6d532592ca8ce7ee32def7399dad2607c4ea5583839fc4352a095a11ea6
+FROM ${BASE} AS common
+ARG BASE
+USER 0
+ENV LANG=en_US.utf8
+# Preserve the selected PG server/client while applying normal bookworm security
+# updates. Do not install PGDG postgis packages: they currently select 3.6.x.
+RUN set -eu; \
+    test "$BASE" = 'postgres@sha256:7bade6d532592ca8ce7ee32def7399dad2607c4ea5583839fc4352a095a11ea6'; \
+    . /etc/os-release; test "$ID" = debian; test "$VERSION_CODENAME" = bookworm; \
+    test "$(dpkg --print-architecture)" = amd64; \
+    test "$PG_MAJOR" = 17; test "$PG_VERSION" = '17.11-1.pgdg12+2'; \
+    test "$(dpkg-query -W -f='${Version}' postgresql-17)" = "$PG_VERSION"; \
+    test "$(id -u postgres)" = 999; test "$(id -g postgres)" = 999; \
+    locale -a | grep -Fx en_US.utf8; \
+    getconf GNU_LIBC_VERSION; \
+    apt-mark hold postgresql-17 postgresql-client-17; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates libgdal32 libgeos-c1v5 libjson-c5 libpcre2-8-0 \
+        libproj25 libprotobuf-c1 libsfcgal1 libxml2; \
+    test "$(dpkg-query -W -f='${Version}' postgresql-17)" = "$PG_VERSION"; \
+    locale -a | grep -Fx en_US.utf8; \
+    install -d -m 0755 /usr/share/map-candidate; \
+    dpkg-query -W > /usr/share/map-candidate/base-packages.tsv; \
+    apt-cache policy > /usr/share/map-candidate/apt-policy.txt; \
+    getconf GNU_LIBC_VERSION > /usr/share/map-candidate/glibc.txt; \
+    rm -rf /var/lib/apt/lists/*
+
+FROM common AS builder
+# Fixed source URL and SHA256 are not overridable build args. The SHA256 was
+# independently calculated from the official release; its official MD5 matches.
+# No official SHA256/signature was available at the reviewed URL (see contract).
+RUN set -eu; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        build-essential curl libgdal-dev libgeos-dev libjson-c-dev libpcre2-dev \
+        libproj-dev libprotobuf-c-dev libsfcgal-dev libxml2-dev \
+        pkg-config protobuf-c-compiler xsltproc docbook-xsl \
+        "postgresql-server-dev-17=$PG_VERSION"; \
+    test "$(dpkg-query -W -f='${Version}' postgresql-17)" = "$PG_VERSION"; \
+    mkdir /build; cd /build; \
+    curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 \
+        --max-time 180 --output postgis.tar.gz \
+        https://download.osgeo.org/postgis/source/postgis-3.5.7.tar.gz; \
+    echo 'af9ab591854d52a0d1115f90b797ef1cd60d01b85a11ff813073689e332272ff  postgis.tar.gz' | sha256sum -c -; \
+    tar -xzf postgis.tar.gz; cd postgis-3.5.7; \
+    grep -Eq '^POSTGIS_MAJOR_VERSION=3$' Version.config; \
+    grep -Eq '^POSTGIS_MINOR_VERSION=5$' Version.config; \
+    grep -Eq '^POSTGIS_MICRO_VERSION=7$' Version.config; \
+    ./configure --with-pgconfig=/usr/lib/postgresql/17/bin/pg_config \
+        --with-sfcgal=/usr/bin/sfcgal-config \
+        --with-raster --with-topology --with-protobuf --with-address-standardizer; \
+    make -j2; \
+    make install DESTDIR=/stage; \
+    test -f /stage/usr/share/postgresql/17/extension/postgis.control; \
+    test -f /stage/usr/share/postgresql/17/extension/postgis_topology.control; \
+    test -f /stage/usr/share/postgresql/17/extension/postgis_raster.control; \
+    test -f /stage/usr/share/postgresql/17/extension/postgis_sfcgal.control; \
+    test -f /stage/usr/share/postgresql/17/extension/address_standardizer.control; \
+    test -f /stage/usr/share/postgresql/17/extension/postgis--3.5.2--ANY.sql; \
+    test -f /stage/usr/share/postgresql/17/extension/postgis--ANY--3.5.7.sql; \
+    install -d -m 0755 /stage/usr/share/map-candidate; \
+    cp Version.config config.log /stage/usr/share/map-candidate/; \
+    printf '%s\n' 'https://download.osgeo.org/postgis/source/postgis-3.5.7.tar.gz' \
+        > /stage/usr/share/map-candidate/postgis-source-url.txt; \
+    sha256sum /build/postgis.tar.gz > /stage/usr/share/map-candidate/postgis-source-sha256.txt; \
+    dpkg-query -W -f='${binary:Package}\t${Version}\n' \
+        libgdal32 libgeos-c1v5 libjson-c5 libpcre2-8-0 libproj25 libprotobuf-c1 libsfcgal1 libxml2 \
+        > /stage/usr/share/map-candidate/postgis-build-runtime-packages.tsv
+
+FROM common AS candidate
+ARG SOURCE_SHA
+COPY --from=builder /stage/ /
+RUN set -eu; \
+    printf '%s\n' "$SOURCE_SHA" | grep -Eq '^[a-f0-9]{40}$'; \
+    test "$(id -u postgres)" = 999; test "$(id -g postgres)" = 999; \
+    test "$(dpkg-query -W -f='${Version}' postgresql-17)" = '17.11-1.pgdg12+2'; \
+    locale -a | grep -Fx en_US.utf8; \
+    test -f /usr/lib/postgresql/17/lib/pgcrypto.so; \
+    test -f /usr/share/postgresql/17/extension/pgcrypto.control; \
+    test -f /usr/lib/postgresql/17/lib/postgis-3.so; \
+    test -f /usr/lib/postgresql/17/lib/postgis_topology-3.so; \
+    test -f /usr/lib/postgresql/17/lib/postgis_raster-3.so; \
+    test -f /usr/lib/postgresql/17/lib/postgis_sfcgal-3.so; \
+    test -f /usr/lib/postgresql/17/lib/address_standardizer-3.so; \
+    dpkg-query -W -f='${binary:Package}\t${Version}\n' \
+        libgdal32 libgeos-c1v5 libjson-c5 libpcre2-8-0 libproj25 libprotobuf-c1 libsfcgal1 libxml2 \
+        > /usr/share/map-candidate/postgis-final-runtime-packages.tsv; \
+    cmp /usr/share/map-candidate/postgis-build-runtime-packages.tsv \
+        /usr/share/map-candidate/postgis-final-runtime-packages.tsv; \
+    for module in /usr/lib/postgresql/17/lib/postgis-3.so \
+        /usr/lib/postgresql/17/lib/postgis_topology-3.so \
+        /usr/lib/postgresql/17/lib/postgis_raster-3.so \
+        /usr/lib/postgresql/17/lib/postgis_sfcgal-3.so \
+        /usr/lib/postgresql/17/lib/address_standardizer-3.so \
+        /usr/lib/postgresql/17/lib/pgcrypto.so; do \
+        ldd "$module"; \
+        ! ldd "$module" | grep -q 'not found'; \
+    done; \
+    dpkg-query -W > /usr/share/map-candidate/final-packages.tsv
+LABEL org.opencontainers.image.source="https://github.com/we-meet-trip/map-service-infra" \
+      org.opencontainers.image.revision="${SOURCE_SHA}" \
+      map.candidate-only="true" \
+      map.postgres.version="17.11" \
+      map.postgis.version="3.5.7" \
+      map.postgis.source.sha256="af9ab591854d52a0d1115f90b797ef1cd60d01b85a11ff813073689e332272ff" \
+      map.base.manifest="sha256:7bade6d532592ca8ce7ee32def7399dad2607c4ea5583839fc4352a095a11ea6" \
+      map.locale="en_US.utf8"
+# Build does not initialize a database, install an extension in a live database,
+# rewrite locale metadata, or recursively change ownership of any data volume.
+# The official entrypoint can initialize a new correctly owned fixture as UID999.
+USER 999:999
