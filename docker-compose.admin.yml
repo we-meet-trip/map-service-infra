@@ -198,11 +198,16 @@ services:
     profiles: ["monitoring"]
     depends_on:
       - prometheus
+    # 상한은 대시보드를 그리는 동안의 실사용을 기준으로 잡는다. 384m 에서는
+    # 놀고 있을 때 이미 275MiB 를 쓰고, 대시보드를 열면 상한에 닿아 커널이
+    # 되찾아 가기를 반복했다(죽지는 않는다). 그 회수 구간에서 내부 API 가
+    # 제때 답하지 못해 화면이 시간 초과로 끝나고, 로그에는 이유가 남지 않는다.
+    # 값을 올린 뒤에는 cgroup 의 상한 접촉 수가 더 늘지 않는지로 확인한다.
     deploy:
       resources:
         limits:
           cpus: "0.5"
-          memory: 384m
+          memory: 640m
     environment:
       GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:?Grafana 관리자 비밀번호가 필요하다}
