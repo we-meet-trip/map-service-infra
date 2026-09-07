@@ -57,7 +57,7 @@ class Fixture:
         require(p.returncode in accepted,'synthetic_command_failed:'+Path(args[0]).name)
         return p
     def sql(self,name,sql,*,database='fixture',user='postgres',accepted=(0,)):
-        return self.run(['docker','exec','-i',name,'psql','-X','-qAt','-v','ON_ERROR_STOP=1','-v','VERBOSITY=sqlstate','-U',user,'-d',database],input=sql.encode(),accepted=accepted)
+        return self.run(['docker','exec','-i',name,'psql','-h','127.0.0.1','-X','-qAt','-v','ON_ERROR_STOP=1','-v','VERBOSITY=sqlstate','-U',user,'-d',database],input=sql.encode(),accepted=accepted)
     def start(self,image,label):
         name='map-infra-pg-'+self.token+'-'+label
         self.run(['docker','run','-d','--name',name,'--label','map.infra.fixture='+self.token,'--network','none','--memory','768m','--cpus','1','-e','POSTGRES_HOST_AUTH_METHOD=trust','-e','POSTGRES_INITDB_ARGS=--locale=C --encoding=UTF8',image])

@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.request
 import uuid
@@ -43,7 +44,8 @@ class Sandbox:
         self.run(args + list(extra) + [image] + list(command))
         self.containers.append(name)
         if seed:
-            self.run(['docker', 'cp', '-a', str(seed) + '/.', name + ':' + data_path])
+            require(seed.is_file(), 'cold_backup_archive_required')
+            self.run(['docker', 'cp', '-a', '-', name + ':' + data_path], input=seed.read_bytes())
         self.run(['docker', 'start', name])
         info = json.loads(self.run(['docker', 'inspect', name]))[0]
         binding = info['NetworkSettings']['Ports'][str(port) + '/tcp'][0]
@@ -71,9 +73,11 @@ class Sandbox:
 
     def stop_copy(self, name, data_path, label):
         self.run(['docker', 'stop', '--time', '30', name])
-        backup = self.output / label
-        backup.mkdir()
-        self.run(['docker', 'cp', name + ':' + data_path + '/.', str(backup)])
+        backup = self.output / (label + '.tar')
+        # Preserve numeric owners in the tar stream; never extract/chown the retained backup.
+        backup.write_bytes(self.run(['docker', 'cp', name + ':' + data_path + '/.', '-']))
+        with tarfile.open(backup, 'r:*') as archive:
+            require(any(member.isfile() for member in archive), 'cold_backup_empty')
         return backup
 
     def clean(self):
@@ -88,6 +92,8 @@ class Sandbox:
 
 
 def tree_hashes(path):
+    if path.is_file():
+        return {path.name: hashlib.sha256(path.read_bytes()).hexdigest()}
     return {str(p.relative_to(path)): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in sorted(path.rglob('*')) if p.is_file()}
 
@@ -112,10 +118,24 @@ def prometheus(s, old, new):
     expected = json.loads(s.request(url, fixed_query))['data']['result']
     backup = s.stop_copy(before, '/prometheus', 'prom-pre-upgrade')
     hashes = tree_hashes(backup)
-    require(any('wal/' in p for p in hashes), 'prometheus_wal_backup_missing')
+    with tarfile.open(backup, 'r:*') as archive:
+        require(any('/wal/' in '/' + m.name for m in archive if m.isfile()), 'prometheus_wal_backup_missing')
+    candidate_started = time.time()
     forward, url = s.create(new, 'prom-new', 9090, '/prometheus', backup, options, command)
     s.wait(url, '/-/ready')
     require(json.loads(s.request(url, fixed_query))['data']['result'] == expected, 'prometheus_historical_sample_changed')
+    written = []
+    for _ in range(30):
+        samples = json.loads(s.request(url, '/api/v1/query?query=timestamp%28prometheus_build_info%29'))['data']['result']
+        written = [float(sample['value'][1]) for sample in samples if float(sample['value'][1]) >= candidate_started]
+        if written: break
+        time.sleep(1)
+    require(bool(written), 'candidate_new_tsdb_sample_not_written')
+    new_query = query + '&time=' + str(max(written) + 0.01)
+    new_expected = json.loads(s.request(url, new_query))['data']['result']
+    require(bool(new_expected), 'candidate_written_sample_not_queryable')
+    s.run(['docker', 'restart', forward]); s.wait(url, '/-/ready')
+    require(json.loads(s.request(url, new_query))['data']['result'] == new_expected, 'candidate_new_sample_restart_lost')
     upgraded = s.stop_copy(forward, '/prometheus', 'prom-post-upgrade')
     rollback, url = s.create(old, 'prom-rollback', 9090, '/prometheus', backup, options, command)
     s.wait(url, '/-/ready')
@@ -123,11 +143,13 @@ def prometheus(s, old, new):
     require(tree_hashes(backup) == hashes, 'retained_prometheus_backup_mutated')
     # Opening a candidate-written TSDB with the old binary is checked separately.
     outcome = {'pre_upgrade_backup_restore': True, 'forward_historical_query': True,
-               'pre_backup_unchanged': True, 'post_upgrade_data_direct_downgrade': 'NOT_TESTED'}
+               'pre_backup_unchanged': True, 'candidate_new_sample_and_restart': True,
+               'candidate_sample_timestamp': max(written), 'post_upgrade_data_direct_downgrade': 'NOT_TESTED'}
     try:
         direct, url = s.create(old, 'prom-direct-old', 9090, '/prometheus', upgraded, options, command)
         s.wait(url, '/-/ready')
         require(json.loads(s.request(url, fixed_query))['data']['result'] == expected, 'prometheus_direct_downgrade_query_failed')
+        require(json.loads(s.request(url, new_query))['data']['result'] == new_expected, 'prometheus_candidate_sample_old_read_failed')
         outcome['post_upgrade_data_direct_downgrade'] = 'PASS_SYNTHETIC'
     except Exception:
         outcome['post_upgrade_data_direct_downgrade'] = 'FAIL_USE_PRE_UPGRADE_BACKUP'
@@ -157,7 +179,8 @@ def grafana(s, old, new):
             require(actual[key] == expected[key], 'grafana_dashboard_field_changed:' + key)
     backup = s.stop_copy(before, '/var/lib/grafana', 'grafana-pre-upgrade')
     hashes = tree_hashes(backup)
-    require('grafana.db' in hashes, 'grafana_sqlite_backup_missing')
+    with tarfile.open(backup, 'r:*') as archive:
+        require(any(Path(m.name).name == 'grafana.db' for m in archive if m.isfile()), 'grafana_sqlite_backup_missing')
     forward, url = s.create(new, 'grafana-new', 3000, '/var/lib/grafana', backup, options)
     s.wait(url, '/api/health'); assert_dashboard(url)
     s.run(['docker', 'restart', forward]); s.wait(url, '/api/health'); assert_dashboard(url)
