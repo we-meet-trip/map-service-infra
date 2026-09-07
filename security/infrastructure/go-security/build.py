@@ -7,8 +7,10 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import platform
+import posixpath
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import tarfile
@@ -127,6 +129,148 @@ def unpack_ui(archive, destination):
             and (destination / 'static/react-app/index.html').is_file(), 'both_upstream_ui_variants_required')
 
 
+def ttar_manifest(archive, root):
+    """Validate pinned upstream textual fixtures before executing its exact ttar.
+
+    This only parses metadata. The upstream tool remains responsible for its
+    NULLBYTE/EOF payload encoding, including binary sysfs values and no-newline
+    files. Internal symlinks are necessary fixture data, not host mounts.
+    """
+    require(root in ('sys', 'udev'), 'reviewed_fixture_root')
+    raw = Path(archive).read_bytes()
+    require(len(raw) < 2 * 1024 * 1024 and b'\x00' not in raw, 'bounded_text_fixture_archive')
+    lines = raw.decode('utf-8').split('\n')  # Bash read splits only LF, not other Unicode line separators.
+    require(lines[-1] == '', 'complete_ttar_final_newline')
+    lines.pop()
+    members, offset = {}, 0
+
+    def safe_path(value):
+        path = PurePosixPath(value)
+        require(value == str(path) and path.parts and path.parts[0] == root
+                and '..' not in path.parts and not path.is_absolute()
+                and not any(ord(c) < 32 for c in value), 'fixture_path_outside_root_or_noncanonical')
+        return path
+
+    while offset < len(lines):
+        line = lines[offset]
+        offset += 1
+        if line.startswith('#'):
+            continue
+        is_dir = line.startswith('Directory: ')
+        require(is_dir or line.startswith('Path: '), 'fixture_unknown_header')
+        name = line.split(': ', 1)[1]
+        path = safe_path(name)
+        require(name not in members and len(members) < 10000, 'fixture_duplicate_or_excess_entries')
+        require(offset < len(lines), 'fixture_truncated_header')
+        row = {'path': name, 'type': 'directory' if is_dir else 'file'}
+        if not is_dir:
+            header = lines[offset]
+            offset += 1
+            if header.startswith('SymlinkTo: '):
+                target = header.split(': ', 1)[1]
+                require(target and not target.startswith('/') and not any(ord(c) < 32 for c in target),
+                        'fixture_absolute_or_invalid_symlink')
+                safe_path(posixpath.normpath(posixpath.join(str(path.parent), target)))
+                row.update(type='symlink', target=target)
+            else:
+                require(re.fullmatch(r'Lines: [0-9]+', header), 'fixture_file_line_count')
+                count = int(header[7:])
+                require(count <= 100000 and offset + count < len(lines), 'fixture_truncated_payload')
+                offset += count
+        if row['type'] != 'symlink':
+            require(offset < len(lines) and re.fullmatch(r'Mode: [0-7]{3}', lines[offset]),
+                    'fixture_ordinary_mode_required')
+            row['mode'] = int(lines[offset][6:], 8)
+            offset += 1
+        members[name] = row
+
+    require(members.get(root, {}).get('type') == 'directory', 'fixture_root_directory_required')
+    for name in members:
+        for parent in PurePosixPath(name).parents:
+            if str(parent) != '.':
+                require(members.get(str(parent), {}).get('type') == 'directory', 'fixture_write_through_nondirectory')
+    # Resolve chained links in metadata without following any host filesystem.
+    def resolve_link(name):
+        seen = set()
+        while True:
+            parts = safe_path(name).parts
+            for index in range(1, len(parts) + 1):
+                prefix = '/'.join(parts[:index])
+                entry = members.get(prefix, {})
+                if entry.get('type') == 'symlink':
+                    require(prefix not in seen and len(seen) < 100, 'fixture_symlink_cycle')
+                    seen.add(prefix)
+                    name = posixpath.normpath(posixpath.join(posixpath.dirname(prefix), entry['target'], *parts[index:]))
+                    break
+            else:
+                return name
+    for name, entry in members.items():
+        if entry['type'] == 'symlink':
+            entry['resolved_target'] = resolve_link(name)
+    return list(members.values())
+
+
+def fixture_inventory(base, root, members):
+    """Inspect real extracted files without following fixture symlinks."""
+    expected = {entry['path']: entry for entry in members}
+    actual, total_bytes = {}, 0
+    for directory, dirs, files in os.walk(base / root, followlinks=False):
+        current = Path(directory)
+        paths = [current, *(current / name for name in files),
+                 *(current / name for name in dirs if (current / name).is_symlink())]
+        for path in paths:
+            name, mode = path.relative_to(base).as_posix(), path.lstat().st_mode
+            require(name in expected and name not in actual, 'unexpected_fixture_entry')
+            entry = expected[name]
+            row = {'path': name, 'type': entry['type']}
+            if entry['type'] == 'symlink':
+                require(stat.S_ISLNK(mode) and os.readlink(path) == entry['target'], 'fixture_symlink_changed')
+                row.update(target=entry['target'], resolved_target=entry['resolved_target'])
+            else:
+                require((stat.S_ISDIR(mode) if entry['type'] == 'directory' else stat.S_ISREG(mode))
+                        and stat.S_IMODE(mode) == entry['mode'], 'fixture_type_or_mode_changed')
+                row['mode'] = oct(stat.S_IMODE(mode))
+                if entry['type'] == 'file':
+                    size = path.stat().st_size
+                    total_bytes += size
+                    require(size < 1024 * 1024 and total_bytes < 8 * 1024 * 1024, 'fixture_payload_budget')
+                    row.update(size_bytes=size, sha256=sha(path))
+            actual[name] = row
+    require(set(actual) == set(expected), 'missing_fixture_entries')
+    return [actual[name] for name in sorted(actual)]
+
+
+def prepare_node_fixtures(source, spec, evidence, run):
+    fixtures = spec['test_fixtures']
+    require(fixtures['tool'] == 'ttar', 'pinned_upstream_fixture_tool')
+    base = source / 'collector/fixtures'
+    prepared = []
+    for archive in fixtures['archives']:
+        path = source / archive['path']
+        require(path.stat().st_size == archive['size_bytes'] and sha(path) == archive['sha256'],
+                'exact_upstream_fixture_archive')
+        destination = base / archive['root']
+        require(not destination.exists() and not destination.is_symlink(), 'fixture_destination_must_be_new')
+        prepared.append((archive, ttar_manifest(path, archive['root'])))
+    receipts = []
+    for archive, members in prepared:
+        root = archive['root']
+        # Matches upstream Makefile prerequisites; no make tool downloads, rm,
+        # local Go execution, host /sys mount, test skipping or content rewriting.
+        run(['bash', str(source / 'ttar'), '-C', str(base), '-x', '-f', str(source / archive['path'])],
+            'unpack-upstream-' + root + '-fixture', timeout=180)
+        inventory = fixture_inventory(base, root, members)
+        (base / root / '.unpacked').touch(exist_ok=False)
+        receipts.append({'archive': archive, 'entries': inventory,
+                         'counts': {kind: sum(e['type'] == kind for e in inventory)
+                                    for kind in ['directory', 'file', 'symlink']},
+                         'marker': 'collector/fixtures/' + root + '/.unpacked'})
+    (evidence / 'node-upstream-fixtures.json').write_text(json.dumps({
+        'upstream_commit': spec['commit'], 'tool_sha256': sha(source / 'ttar'),
+        'makefile_sha256': sha(source / 'Makefile'), 'fixtures': receipts,
+        'host_mounts_used': False, 'upstream_test_packages_unchanged': spec['test_packages']}, indent=2) + '\n')
+
+
 def execute(recipe):
     require_builder()  # Before any filesystem mutation, Git, Go or network operation.
     source, output = Path('/build/source'), Path('/out')
@@ -205,6 +349,8 @@ def execute(recipe):
         (evidence / 'ui-assets.json').write_text(json.dumps({'archive': asset, 'files': [
             {'path': str(p.relative_to(source)), 'sha256': sha(p), 'size_bytes': p.stat().st_size} for p in files
         ]}, indent=2) + '\n')
+    if 'test_fixtures' in spec:
+        prepare_node_fixtures(source, spec, evidence, run)
     tags = ['-tags', ','.join(spec['build_tags'])] if spec['build_tags'] else []
     run(['go', 'test', '-mod=readonly', '-short', '-count=1', '-p', '2', '-timeout', '8m', *tags,
          *spec['test_packages']], 'upstream-unit-tests', timeout=900)

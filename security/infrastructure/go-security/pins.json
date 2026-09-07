@@ -125,14 +125,36 @@
       ],
       "runtime_user": "nobody",
       "tag": "v1.12.1",
+      "test_fixtures": {
+        "archives": [
+          {
+            "path": "collector/fixtures/sys.ttar",
+            "root": "sys",
+            "sha256": "052069be9fd459de323b26f8a1245fa49508d4a457f0511057600b236366347e",
+            "size_bytes": 457761
+          },
+          {
+            "path": "collector/fixtures/udev.ttar",
+            "root": "udev",
+            "sha256": "c1075419592ee38a182987e8c7895394fdf62e47c8fedfd9598e8bd4cc270070",
+            "size_bytes": 15880
+          }
+        ],
+        "format": "upstream textual ttar",
+        "tool": "ttar"
+      },
       "test_packages": [
         "./collector"
       ],
       "upstream_file_sha256": {
         ".promu.yml": "410ca87c14255963da74913bc7b6dfe5a1096ebcf42b341406e0d040a2014f0f",
         "Dockerfile": "d1fa2b77ee611d721a69bed70939cb26ec821b5f710776bb2d2dc097dfccf095",
+        "Makefile": "fcbb126b3e34fde145c792366b30013eac8ee7e1dde7cf4705613918eb1fb279",
+        "collector/fixtures/sys.ttar": "052069be9fd459de323b26f8a1245fa49508d4a457f0511057600b236366347e",
+        "collector/fixtures/udev.ttar": "c1075419592ee38a182987e8c7895394fdf62e47c8fedfd9598e8bd4cc270070",
         "go.mod": "0e4614c617f16e308698ed1afdd0f0f055b119d4cdf015b336c095eb35fa34ed",
-        "go.sum": "e9457fad10a31b707ebfb68dc8378ec71f3271d04faf84f7ec8f9d231d81ea57"
+        "go.sum": "e9457fad10a31b707ebfb68dc8378ec71f3271d04faf84f7ec8f9d231d81ea57",
+        "ttar": "ff7d7f70fca604df2bd141384a240d14966d33285e730128cd2816f4348f200c"
       },
       "version": "1.12.1"
     },

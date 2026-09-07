@@ -1,5 +1,41 @@
 # Pinned Go security rebuild candidates
 
+## Node fixture preparation after run 34093162175
+
+The actual Node Exporter candidate build in run `34093162175` stopped at the
+unchanged `go test ./collector` scope because `collector/fixtures/sys` had not
+been prepared. It did not produce a passing Node build or strict scan. The
+[exact v1.12.1 Makefile](https://github.com/prometheus/node_exporter/blob/6044da783597cc3b57aef7580ddcdcff58a4ee99/Makefile)
+requires both `sys/.unpacked` and `udev/.unpacked` before tests and extracts the
+tracked textual archives with its own `ttar` script.
+
+The recipe now pins the same commit's Makefile, ttar tool, sys.ttar and udev.ttar
+hashes. Before the unchanged collector test command it validates both archives,
+then executes that exact upstream tool with Bash in the remote Linux builder.
+It does not invoke the wider Makefile, download a mutable extraction tool, skip
+failing tests, mount host sysfs or rewrite fixture content. Existing destinations
+fail instead of being removed. A metadata preflight rejects traversal, absolute
+or escaping symlinks, symlink cycles, duplicate entries, writes below non-directory
+parents, special permission bits, oversized/truncated archives and unknown
+headers. The original tool decodes NULLBYTE/EOF payloads; the preflight does not
+reimplement or reinterpret file content.
+
+Internal and dangling internal symlinks are retained because upstream sysfs
+fixtures use them. The independently downloaded exact sys.ttar preflight found
+428 directories, 1,974 regular files and 92 symlinks; udev.ttar has 2 directories
+and 15 files. These are metadata inspection counts, not an executed test PASS.
+After actual remote extraction the recipe checks the complete type/mode/link
+inventory, records every regular file's size/hash and creates the same .unpacked
+markers. `node-upstream-fixtures.json` and extraction command receipts enter the
+existing `/usr/share/map-security/go/` evidence directory. Actual symlinks and
+fixture files stay in the disposable builder and are not shipped in the runtime.
+
+Local stdlib regression checks cover the path/link rejection cases, payload
+header handling, actual synthetic inventory validation, and validation of both
+archives before any upstream tool runs. The real ttar, Go compiler and collector
+tests have not been executed locally. The corrected Node remote build, scan and
+smoke still require root's next serial CI run.
+
 Prepared 2026-09-07 from Infra `bb9c63398295c3b8fd3e33f97235d3588c5c7fce`. These files prepare remote builds; they do not deploy, upgrade a live service, approve a candidate, or modify the common scanner/manifest/fixtures/workflow. Local Go and Docker executions: zero.
 
 ## Exact reason for the rebuild

@@ -107,5 +107,87 @@ class GoSecurityRecipeTest(unittest.TestCase):
                 builder.static_elf(path)
 
 
+class NodeFixtureTest(unittest.TestCase):
+    BASE = 'Directory: sys\nMode: 755\n'
+
+    def manifest(self, text, root='sys'):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / 'fixture.ttar'
+            archive.write_text(text)
+            return builder.ttar_manifest(archive, root)
+
+    def test_payload_headers_are_data_and_internal_links_are_preserved(self):
+        rows = self.manifest(self.BASE + 'Path: sys/value\nLines: 2\nPath: /not-a-header\nNULLBYTEEOF\nMode: 444\n'
+                             + 'Path: sys/link\nSymlinkTo: value\n')
+        self.assertEqual([r['path'] for r in rows], ['sys', 'sys/value', 'sys/link'])
+        self.assertEqual(rows[-1]['resolved_target'], 'sys/value')
+        self.assertEqual(rows[1]['mode'], 0o444)
+
+    def test_traversal_absolute_duplicate_and_special_modes_are_rejected(self):
+        for extra in ['Path: ../outside\nLines: 0\nMode: 644\n',
+                      'Path: /sys/outside\nLines: 0\nMode: 644\n',
+                      'Directory: sys\nMode: 755\n',
+                      'Path: sys/setuid\nLines: 0\nMode: 4755\n',
+                      'Path: sys/../outside\nLines: 0\nMode: 644\n']:
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                self.manifest(self.BASE + extra)
+
+    def test_symlink_escape_cycle_and_write_through_link_are_rejected(self):
+        for extra in ['Path: sys/link\nSymlinkTo: /sys/host\n',
+                      'Path: sys/link\nSymlinkTo: ../../host\n',
+                      'Path: sys/link\nSymlinkTo: other\nPath: sys/other\nSymlinkTo: link\n',
+                      'Path: sys/link\nSymlinkTo: directory\nPath: sys/link/data\nLines: 0\nMode: 644\n']:
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                self.manifest(self.BASE + extra)
+
+    def test_relative_parent_symlink_and_internal_dangling_target_are_valid(self):
+        rows = self.manifest(self.BASE + 'Directory: sys/class\nMode: 755\n'
+                             + 'Path: sys/class/device\nSymlinkTo: ../missing/device\n')
+        self.assertEqual(rows[-1]['resolved_target'], 'sys/missing/device')
+
+    def test_truncated_payload_and_unknown_header_are_rejected(self):
+        for extra in ['Path: sys/data\nLines: 5\nonly-one\nMode: 644\n',
+                      'Execute: touch /outside\n', 'Path: sys/data\nLines: -1\nMode: 644\n']:
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                self.manifest(self.BASE + extra)
+
+    def test_inventory_checks_real_content_modes_and_symlinks(self):
+        rows = self.manifest(self.BASE + 'Path: sys/data\nLines: 1\npublic\nMode: 644\n'
+                             + 'Path: sys/link\nSymlinkTo: data\n')
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            (base / 'sys').mkdir(mode=0o755)
+            (base / 'sys/data').write_bytes(b'public\n')
+            (base / 'sys/data').chmod(0o644)
+            (base / 'sys/link').symlink_to('data')
+            inventory = builder.fixture_inventory(base, 'sys', rows)
+            self.assertEqual(len(inventory), 3)
+            self.assertEqual(inventory[1]['sha256'], builder.sha(base / 'sys/data'))
+            (base / 'sys/link').unlink()
+            (base / 'sys/link').symlink_to('../../outside')
+            with self.assertRaisesRegex(ValueError, 'symlink_changed'):
+                builder.fixture_inventory(base, 'sys', rows)
+
+    def test_all_archives_validate_before_upstream_tool_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            fixtures = source / 'collector/fixtures'
+            fixtures.mkdir(parents=True)
+            sys_archive = fixtures / 'sys.ttar'
+            sys_archive.write_text(self.BASE)
+            udev_archive = fixtures / 'udev.ttar'
+            udev_archive.write_text('Directory: udev\nMode: 755\n')
+            spec = {'test_fixtures': {'tool': 'ttar', 'archives': [
+                {'path': 'collector/fixtures/sys.ttar', 'root': 'sys', 'size_bytes': sys_archive.stat().st_size,
+                 'sha256': builder.sha(sys_archive)},
+                {'path': 'collector/fixtures/udev.ttar', 'root': 'udev', 'size_bytes': udev_archive.stat().st_size,
+                 'sha256': '0' * 64}]}}
+            with patch.object(builder.subprocess, 'run') as run:
+                with self.assertRaisesRegex(ValueError, 'exact_upstream_fixture_archive'):
+                    builder.prepare_node_fixtures(source, spec, source, run)
+                run.assert_not_called()
+            self.assertFalse((fixtures / 'sys').exists())
+
+
 if __name__ == '__main__':
     unittest.main()
