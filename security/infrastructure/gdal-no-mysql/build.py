@@ -220,7 +220,10 @@ def build(source_sha):
         run('upstream-tests', ['ctest', '--test-dir', str(build_dir), '--output-on-failure',
             '--no-tests=error', '--timeout', '300', '-R', '^('+'|'.join(sorted(selected))+')$'], timeout=1500)
         env = os.environ | {'DESTDIR': str(package)}
-        run('install', ['cmake', '--install', str(build_dir)], env=env)
+        # Match Debian's normal dh_strip packaging lifecycle: hardening flags
+        # include -g for diagnostics, but debug sections do not belong in the
+        # serving image. Dynamic symbols needed by the runtime are preserved.
+        run('install', ['cmake', '--install', str(build_dir), '--strip'], env=env)
         libdir = package / 'usr/local/lib'
         # Never satisfy the candidate inventory by auto-loading the original
         # distribution's plugin directory still present in this builder.
@@ -238,8 +241,10 @@ def build(source_sha):
         elf_program = run('runtime-elf-program-headers', ['readelf', '-W', '-l', str(libraries[0])])
         elf_dynamic = run('runtime-elf-dynamic', ['readelf', '-W', '-d', str(libraries[0])])
         elf_symbols = run('runtime-elf-symbols', ['readelf', '-W', '--dyn-syms', str(libraries[0])])
+        elf_sections = run('runtime-elf-sections', ['readelf', '-W', '--section-headers', str(libraries[0])])
         require('GNU_RELRO' in elf_program and 'BIND_NOW' in elf_dynamic
                 and '__stack_chk_fail' in elf_symbols, 'runtime_elf_hardening_missing')
+        require(not re.search(r'\.(?:z)?debug_info\b', elf_sections), 'runtime_debug_sections_not_stripped')
         control_dir = root / 'debian'; control_dir.mkdir()
         (control_dir / 'control').write_text('Source: gdal\nSection: libs\nPriority: optional\nMaintainer: MAP Release <mapadmin26@gmail.com>\nStandards-Version: 4.7.0\n\nPackage: libgdal39\nArchitecture: amd64\nDescription: MAP GDAL runtime with the MySQL driver removed\n')
         deps = run('runtime-package-dependencies', ['dpkg-shlibdeps', '-O', '-e'+str(libraries[0])]).strip()
