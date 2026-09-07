@@ -69,13 +69,37 @@ RUN set -eu; \
     printf '%s\n' 'https://download.osgeo.org/postgis/source/postgis-3.5.7.tar.gz' \
         > /stage/usr/share/map-candidate/postgis-source-url.txt; \
     sha256sum /build/postgis.tar.gz > /stage/usr/share/map-candidate/postgis-source-sha256.txt; \
-    dpkg-query -W -f='${binary:Package}\t${Version}\n' \
+    LC_ALL=C dpkg-query -W -f='${Package}\t${Architecture}\t${Version}\n' \
         libgdal32 libgeos-c1v5 libjson-c5 libpcre2-8-0 libproj25 libprotobuf-c1 libsfcgal1 libxml2 \
         > /stage/usr/share/map-candidate/postgis-build-runtime-packages.tsv
 
 FROM common AS candidate
 ARG SOURCE_SHA
 COPY --from=builder /stage/ /
+# Build dependencies can select newer runtime libraries than the common stage.
+# Install that exact recorded package/architecture/version tuple in this stage;
+# normal signed APT repositories, held PG packages and no-removal remain enforced.
+# Package and Architecture are separate fields because binary:Package can add
+# :amd64 depending on Multi-Arch metadata, even for native packages.
+RUN set -eu; \
+    set --; pg_runtime_seen=' '; \
+    while IFS="$(printf '\t')" read -r pg_runtime_package pg_runtime_arch pg_runtime_version pg_runtime_extra; do \
+        case "$pg_runtime_package" in \
+            libgdal32|libgeos-c1v5|libjson-c5|libpcre2-8-0|libproj25|libprotobuf-c1|libsfcgal1|libxml2) ;; \
+            *) printf '%s\n' 'unexpected_runtime_package' >&2; exit 1 ;; \
+        esac; \
+        case "$pg_runtime_arch" in amd64|all) ;; *) exit 1 ;; esac; \
+        case "$pg_runtime_version" in ''|*[!0-9A-Za-z.+:~_-]*) exit 1 ;; esac; \
+        case "$pg_runtime_version" in [0-9]*) ;; *) exit 1 ;; esac; \
+        test -z "$pg_runtime_extra"; \
+        case "$pg_runtime_seen" in *" $pg_runtime_package "*) exit 1 ;; esac; \
+        pg_runtime_seen="$pg_runtime_seen$pg_runtime_package "; \
+        set -- "$@" "$pg_runtime_package:$pg_runtime_arch=$pg_runtime_version"; \
+    done < /usr/share/map-candidate/postgis-build-runtime-packages.tsv; \
+    test "$#" -eq 8; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --no-remove "$@"; \
+    rm -rf /var/lib/apt/lists/*
 RUN set -eu; \
     printf '%s\n' "$SOURCE_SHA" | grep -Eq '^[a-f0-9]{40}$'; \
     test "$(id -u postgres)" = 999; test "$(id -g postgres)" = 999; \
@@ -88,11 +112,18 @@ RUN set -eu; \
     test -f /usr/lib/postgresql/17/lib/postgis_raster-3.so; \
     test -f /usr/lib/postgresql/17/lib/postgis_sfcgal-3.so; \
     test -f /usr/lib/postgresql/17/lib/address_standardizer-3.so; \
-    dpkg-query -W -f='${binary:Package}\t${Version}\n' \
+    LC_ALL=C dpkg-query -W -f='${Package}\t${Architecture}\t${Version}\n' \
         libgdal32 libgeos-c1v5 libjson-c5 libpcre2-8-0 libproj25 libprotobuf-c1 libsfcgal1 libxml2 \
         > /usr/share/map-candidate/postgis-final-runtime-packages.tsv; \
-    cmp /usr/share/map-candidate/postgis-build-runtime-packages.tsv \
-        /usr/share/map-candidate/postgis-final-runtime-packages.tsv; \
+    if ! cmp -s /usr/share/map-candidate/postgis-build-runtime-packages.tsv \
+        /usr/share/map-candidate/postgis-final-runtime-packages.tsv; then \
+        printf '%s\n' 'postgis_runtime_package_mismatch: build tuples then final tuples' >&2; \
+        head -c 8192 /usr/share/map-candidate/postgis-build-runtime-packages.tsv >&2; \
+        head -c 8192 /usr/share/map-candidate/postgis-final-runtime-packages.tsv >&2; \
+        diff -u /usr/share/map-candidate/postgis-build-runtime-packages.tsv \
+            /usr/share/map-candidate/postgis-final-runtime-packages.tsv | head -c 8192 >&2 || true; \
+        exit 1; \
+    fi; \
     for module in /usr/lib/postgresql/17/lib/postgis-3.so \
         /usr/lib/postgresql/17/lib/postgis_topology-3.so \
         /usr/lib/postgresql/17/lib/postgis_raster-3.so \
