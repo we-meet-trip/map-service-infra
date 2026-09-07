@@ -22,7 +22,6 @@ jobs:
       GOMEMLIMIT: 1GiB
       GOFLAGS: -p=2
       GOTOOLCHAIN: local
-      GOPATH: ${{ runner.temp }}/map-grafana-analysis-go
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -34,6 +33,7 @@ jobs:
       - name: Analyze the exact original signed binaries without executing them
         env:
           GH_TOKEN: ${{ github.token }}
+          GOPATH: ${{ runner.temp }}/map-grafana-analysis-go
         run: python3 security/infrastructure/grafana-applicability/analyze.py --output "$RUNNER_TEMP/map-grafana-binary-evidence"
       - name: Preserve raw analyses and frozen Go database
         if: always()
