@@ -1,0 +1,48 @@
+name: grafana-binary-applicability
+on:
+  push:
+    branches: [fix/grafana-binary-applicability-20260906]
+    paths:
+      - security/infrastructure/grafana-applicability/**
+      - .github/workflows/grafana-binary-applicability.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: grafana-binary-applicability
+  cancel-in-progress: false
+jobs:
+  binary-analysis:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GOMAXPROCS: '2'
+      GOMEMLIMIT: 1GiB
+      GOFLAGS: -p=2
+      GOTOOLCHAIN: local
+      GOPATH: ${{ runner.temp }}/map-grafana-analysis-go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.8'
+          cache: false
+      - name: Offline extraction and reporting tests
+        run: python3 -m unittest discover -s security/infrastructure/grafana-applicability -v
+      - name: Analyze the exact original signed binaries without executing them
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 security/infrastructure/grafana-applicability/analyze.py --output "$RUNNER_TEMP/map-grafana-binary-evidence"
+      - name: Preserve raw analyses and frozen Go database
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grafana-binary-applicability-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/map-grafana-binary-evidence/**
+            !${{ runner.temp }}/map-grafana-binary-evidence/inputs/grafana/candidate.oci.tar
+          retention-days: 14
+          compression-level: 6
+          if-no-files-found: error

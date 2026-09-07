@@ -1,0 +1,11 @@
+# Exact Grafana binary applicability evidence
+
+This separate, manually dispatched analysis downloads only the existing public-source candidate artifact10009460195 from CI34096994701. It verifies the entire wrapper, exact OCI identity, every compressed layer digest and uncompressed diffID, and the preserved hashes of all13 plugin binaries, plugin.json files and signed manifests. It also verifies the rebuilt core's recorded hash. Selected files are extracted as non-executable analysis inputs. No container or target binary is started, no image is published, and no service/database is contacted.
+
+The analyzer is govulncheck1.7.0, pinned through the public Go checksum database, compiled with Go1.26.8 on a hosted Linux runner. It analyzes core plus13 backend binaries sequentially. GOMAXPROCS2, GOMEMLIMIT1GiB and minimum6GiB free disk/2GiB available memory constrain the workload. No local build is needed.
+
+A module-only first pass fills a loopback cache from the official Go vulnerability database. Every response is saved with hash and headers. The cache then refuses new entries while the symbol pass analyzes the same14 inputs. Thus module-versus-symbol comparisons use the same returned advisory bytes. Original Trivy158 HIGH/CRITICAL records remain copied unchanged. The extracted-symbol blob is preserved as opaque evidence; it is not treated as a stable custom schema.
+
+Govulncheck binary analysis identifies included symbols, not source call graphs, application inputs or exploitability. Its JSON exit0 does not mean zero findings. If symbols cannot be extracted the tool can fall back to module reports; inspect event traces/config/output before claiming symbol absence. Main-module functions also need precise main-module versions. Go's database can differ from Trivy's advisory universe: missing advisories are coverage gaps, not unaffected declarations. See the official [govulncheck documentation](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck).
+
+The workflow creates a skipped registration on this dedicated branch's push and executes the analysis only on workflow_dispatch, allowing root to serialize hosted workloads. An Actions success is evidence collection success, not Grafana security approval. The original strict gate remains FAIL in SUMMARY.json even if some embedded modules lack vulnerable symbols.
