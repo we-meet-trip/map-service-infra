@@ -164,11 +164,15 @@ def restore_counts(path, image, platform, *, replica=False, databases=16):
             # loading, enabling reproducible per-DB counts of immutable RDB bytes.
             script += ' --replicaof 127.0.0.1 1'
         run(['docker', 'run', '-d', '-i', '--name', name, '--label', LABEL + '=true',
-             '--pull', 'never', '--platform', platform, '--network', 'none', '--read-only', '--memory', '128m',
+             '--pull', 'never', '--platform', platform, '--network', 'none', '--read-only',
+             '--user', '65534:65534', '--cap-drop', 'ALL', '--memory', '128m',
              '--memory-swap', '128m', '--cpus', '0.5', '--pids-limit', '64',
-             '--security-opt', 'no-new-privileges', '--tmpfs', '/data:rw,size=67108864,mode=0700',
+             '--security-opt', 'no-new-privileges', '--tmpfs', '/data:rw,size=67108864,uid=65534,gid=65534,mode=0700',
              '--tmpfs', '/tmp:rw,size=16777216', '--entrypoint', 'sh', image, '-c', script])
         created = True
+        isolation = json.loads(run(['docker', 'inspect', name]))[0]
+        require(isolation['Config']['User'] == '65534:65534' and
+                isolation['HostConfig']['CapDrop'] == ['ALL'], 'restore_privileges_mismatch')
         with path.open('rb') as stream:
             p = subprocess.run(['docker', 'exec', '-i', name, 'sh', '-c',
                                 'cat > /data/dump.rdb && touch /data/ready'], stdin=stream,
@@ -189,7 +193,8 @@ def restore_counts(path, image, platform, *, replica=False, databases=16):
         require(info.get('role') == ('slave' if replica else 'master'), 'restore_role_mismatch')
         counts = keyspace(redis.call('INFO', 'keyspace'))
         return {'keyspace': counts, 'redis_version': server['redis_version'],
-                'elapsed_seconds': round(time.monotonic() - started, 3), 'rdb_check': 'PASS'}
+                'elapsed_seconds': round(time.monotonic() - started, 3), 'rdb_check': 'PASS',
+                'uid_gid': '65534:65534', 'all_capabilities_dropped': True}
     finally:
         if created:
             own = json.loads(run(['docker', 'inspect', name]))[0]

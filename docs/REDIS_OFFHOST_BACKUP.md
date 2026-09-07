@@ -11,7 +11,7 @@ Redis는 BGSAVE에서 fork하고, 완성한 RDB를 원자적으로 rename하므�
 1. `--test`와 `--prod` 중 하나를 명시하고 해당 Compose project/service와 실행 중인 Redis 이미지 ID를 검증한다. 목적지는 환경명과 `/redis-v1`을 포함해야 한다.
 2. 실제 used_memory/RSS, container memory limit, host MemAvailable, 디스크 여유를 측정한다. 진행 중 BGSAVE/AOF rewrite, AOF 오류, fork 여유 부족이면 시작하지 않는다. 현재 검토한 소규모 운영 범위는 used_memory 16MiB 이하이며 그보다 커지면 복원 자원 상한 재검토를 요구한다. 기존 환경 설정을 임의 증설하지 않는다.
 3. BGSAVE 완료 후 `/data`의 완성된 RDB를 0700 디렉터리/0600 파일에 복사한다. 새 UTC 마이크로초·UUID 이름을 쓰며 기존 산출물을 덮어쓰지 않는다.
-4. 동일 이미지 ID/플랫폼을 `--pull never`로 실행한다. 새 복원 컨테이너는 network none, read-only, CPU0.5, 메모리/스왑 합계128MiB, `/data`64MiB tmpfs와 `/tmp`16MiB tmpfs뿐이다. source volume/host bind/socket/공개 포트는 없다. 실제 `redis-check-rdb` 및 로딩이 성공해야 한다.
+4. 동일 이미지 ID/플랫폼을 `--pull never`로 실행한다. 새 복원 컨테이너는 UID/GID65534, cap-drop ALL, network none, read-only, CPU0.5, 메모리/스왑 합계128MiB, `/data`64MiB tmpfs와 `/tmp`16MiB tmpfs뿐이다. source volume/host bind/socket/공개 포트는 없다. 실제 `redis-check-rdb` 및 로딩이 성공해야 한다.
 5. RDB 안의 TTL은 절대 시각이다. [Redis EXPIRE 설명](https://redis.io/docs/latest/commands/expire/)과 [7.4 RDB 로딩 소스](https://github.com/redis/redis/blob/7.4/src/rdb.c)에 따라 복원 시 이미 만료된 키는 primary에서 사라진다. 따라서 첫 격리 컨테이너는 network-none의 연결되지 않은 loopback replica로 열어 DB별 RDB 키 수를 재현한다. 두 번째는 일반 primary로 열어 비만료 키 수가 정확히 보존되고 TTL 키만 감소하는지 확인한다. replica는 실제 서비스에 연결하지 않는다. 원래 설정한 database 개수도 보존한다.
 6. 기존 `pg_backup.upload`의 GCS 다운로드 SHA256 검증을 재사용한다. RDB의 원격 바이트가 일치해야 manifest를 마지막으로 전송하고 그 manifest도 원격 checksum을 검사한다. 실패하면 성공 상태를 기록하지 않으며 다음 실행은 새 이름으로 재시도한다. 로컬 파일과 원격 부분 산출물을 자동 삭제하지 않는다.
 
@@ -60,4 +60,4 @@ python3 -m unittest discover -s tests -p test_redis_backup.py -v
 python3 scripts/verify-redis-backup-fixture.py
 ```
 
-최종 local 실행은 [`redis-backup-fixture-20260906.json`](redis-backup-fixture-20260906.json)에 보존했다. Redis7.4.11/linux-arm64, databases32, DB0/2/4/6/19 총5키 snapshot과 만료후4키 primary 복원, 복사본 재복원 PASS, 3회 복원 합1.693초, fixture 제거 완료다. GCP 실제 linux-amd64 원격 저장/복원과 timer 활성화 증거는 아직 아니다. 전체 Infra162 tests와 신규12개 표적 회귀를 실행해 통과했다.
+최종 local 실행은 [`redis-backup-fixture-20260906.json`](redis-backup-fixture-20260906.json)에 보존했다. Redis7.4.11/linux-arm64, databases32, DB0/2/4/6/19 총5키 snapshot과 만료후4키 primary 복원, 복사본 재복원 PASS, 3회 복원 합1.48초, nonroot/capability 제거 실제 inspect 확인 및 fixture 제거 완료다. GCP 실제 linux-amd64 원격 저장/복원과 timer 활성화 증거는 아직 아니다. 전체 Infra162 tests와 신규12개 표적 회귀를 실행해 통과했다.

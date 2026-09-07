@@ -70,6 +70,8 @@ def main():
                       'snapshot_keyspace': meta['snapshot_keyspace'], 'primary_keyspace': meta['primary_restore']['keyspace'],
                       'expired_key_retained_in_replica_count': True, 'expired_key_absent_in_primary': True,
                       'copy_checksum_verified': True, 'restored_from_copied_bytes': True,
+                      'restore_uid_gid': restored['uid_gid'],
+                      'restore_all_capabilities_dropped': restored['all_capabilities_dropped'],
                       'remote_provider_calls': 0, 'bgsave_seconds': meta['bgsave_seconds'],
                       'restores_seconds': meta['primary_restore']['elapsed_seconds'] + meta['snapshot_count_restore_seconds'] + restored['elapsed_seconds']}
         finally:
