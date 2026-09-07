@@ -157,6 +157,10 @@ def analyze(output):
  free=shutil.disk_usage(output).free;write(output/'resources-before.json',{'mem_available':mem,'disk_free':free,'analysis_parallelism':1,'GOMAXPROCS':os.environ.get('GOMAXPROCS'),'GOMEMLIMIT':os.environ.get('GOMEMLIMIT')})
  require(mem>=2*1024**3 and free>=6*1024**3,'analysis_resource_floor')
  commands=output/'commands';wrapper=output.parent/'grafana-original-actions.zip'
+ helper_source=ROOT/'security/infrastructure/grafana-applicability/pclntab/main.go'
+ command(['go','test',str(helper_source),str(helper_source.with_name('main_test.go'))],commands,'pclntab-stripped-fixture-tests',timeout=180)
+ helper=output.parent/'map-pclntab-analysis'
+ command(['go','build','-o',str(helper),str(helper_source)],commands,'pclntab-tool-build',timeout=180)
  command(['gh','api',f'repos/we-meet-trip/map-service-infra/actions/artifacts/{ARTIFACT}'],commands,'artifact-metadata')
  metadata=json.loads((commands/'artifact-metadata.stdout').read_text());require(metadata['id']==ARTIFACT and metadata['digest']=='sha256:'+WRAPPER_SHA and metadata['size_in_bytes']==945338216,'original_artifact_metadata')
  command(['gh','api',f'repos/we-meet-trip/map-service-infra/actions/artifacts/{ARTIFACT}/zip'],commands,'original-artifact',timeout=600)
@@ -187,10 +191,6 @@ def analyze(output):
  tool=json.loads(toolmeta.read_text());require(tool['Sum']=='h1:4MQBuhmXbz2uepNJrf3v+aaZLGDqw1JluwYboegA1qg=' and tool['GoModSum']=='h1:Xw7zvU3e1bsCYYBXu+w4wcn2Kgn27f34WBCTw8LL5Us=','govulncheck_checksum_database_pins')
  command(['go','install','golang.org/x/vuln/cmd/govulncheck@v1.7.0'],commands,'build-analysis-tool',timeout=600)
  govuln=pathlib.Path(os.environ['GOPATH'])/'bin/govulncheck';command([str(govuln),'-version'],commands,'govulncheck-version');command(['go','version','-m',str(govuln)],commands,'govulncheck-buildinfo')
- helper_source=ROOT/'security/infrastructure/grafana-applicability/pclntab/main.go'
- command(['go','test',str(helper_source),str(helper_source.with_name('main_test.go'))],commands,'pclntab-stripped-fixture-tests',timeout=180)
- helper=output.parent/'map-pclntab-analysis'
- command(['go','build','-o',str(helper),str(helper_source)],commands,'pclntab-tool-build',timeout=180)
  db=FrozenDatabase(output/'database');url=db.start();summaries={};precision={}
  try:
   # Module pass primes every required database response before a frozen symbol pass.

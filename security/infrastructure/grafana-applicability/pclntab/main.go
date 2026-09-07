@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"debug/elf"
 	"debug/gosym"
@@ -17,13 +18,13 @@ import (
 
 type Function struct {
 	Name string `json:"name"`
-	Entry uint64 `json:"entry"`
-	End uint64 `json:"end"`
+	Entry uint64 `json:"text_offset"`
+	End uint64 `json:"end_text_offset"`
 }
 type Report struct {
 	SHA256 string `json:"binary_sha256"`
 	Section string `json:"section"`
-	TextStart uint64 `json:"runtime_text_start"`
+	NameTable []string `json:"function_name_table_including_inlined"`
 	Count int `json:"function_count"`
 	Functions []Function `json:"functions"`
 	Scope string `json:"scope"`
@@ -44,19 +45,23 @@ func inspect(path string) (*Report, error) {
 	magic := binary.LittleEndian.Uint32(data)
 	if magic != 0xfffffff0 && magic != 0xfffffff1 { return nil, fmt.Errorf("unsupported pclntab version") }
 	count := binary.LittleEndian.Uint64(data[8:16])
-	textStart := binary.LittleEndian.Uint64(data[24:32])
-	if count == 0 || count > 1000000 || textStart < text.Addr || textStart >= text.Addr+text.Size { return nil, fmt.Errorf("invalid runtime text/count") }
-	if symbols, err := f.Symbols(); err == nil {
-		for _, s := range symbols { if s.Name == "runtime.text" && s.Value != textStart { return nil, fmt.Errorf("runtime.text header mismatch") } }
-	}
-	table, err := gosym.NewTable(nil, gosym.NewLineTable(data, textStart))
+	if count == 0 || count > 1000000 { return nil, fmt.Errorf("invalid function count") }
+	// Go1.26 linker marks header word2 unused (zero); do not mistake it for an
+	// absolute runtime.text address. Zero base retains actual text-relative offsets.
+	table, err := gosym.NewTable(nil, gosym.NewLineTable(data, 0))
 	if err != nil { return nil, err }
 	if uint64(len(table.Funcs)) != count { return nil, fmt.Errorf("incomplete function table") }
-	result := &Report{Section: section.Name, TextStart: textStart, Count: len(table.Funcs), Scope: "Actual non-inlined function table entries only. No call graph; absent entry does not exclude inlined code. Target binary was not executed."}
+	result := &Report{Section: section.Name, Count: len(table.Funcs), Scope: "Actual non-inlined entries with text-relative offsets, plus compiler function-name table containing linked/inlined Go names. No call graph or exploitability proof. Target binary was not executed."}
 	for _, fn := range table.Funcs {
-		if fn.Name == "" || fn.Entry < textStart || fn.End < fn.Entry || fn.End > text.Addr+text.Size { return nil, fmt.Errorf("invalid function entry") }
+		if fn.Name == "" || fn.End < fn.Entry || fn.End > text.Size { return nil, fmt.Errorf("invalid function entry") }
 		result.Functions = append(result.Functions, Function{fn.Name, fn.Entry, fn.End})
 	}
+	nameStart:=binary.LittleEndian.Uint64(data[32:40])
+	nameEnd:=binary.LittleEndian.Uint64(data[40:48])
+	if nameStart>=nameEnd||nameEnd>uint64(len(data)) { return nil,fmt.Errorf("invalid function name table offsets") }
+	for _,name:=range bytes.Split(data[nameStart:nameEnd],[]byte{0}) { if len(name)>0 { result.NameTable=append(result.NameTable,string(name)) } }
+	if len(result.NameTable)<len(result.Functions) { return nil,fmt.Errorf("incomplete function name table") }
+	sort.Strings(result.NameTable)
 	sort.Slice(result.Functions, func(i,j int) bool { return result.Functions[i].Name < result.Functions[j].Name })
 	input, err := os.Open(path)
 	if err != nil { return nil, err }

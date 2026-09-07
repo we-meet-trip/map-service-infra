@@ -11,7 +11,7 @@ import (
 func TestRealStrippedELFFunctionEntriesWithoutExecution(t *testing.T) {
 	dir:=t.TempDir()
 	source:=filepath.Join(dir,"fixture.go")
-	if err:=os.WriteFile(source,[]byte("package main\nimport \"fmt\"\n//go:noinline\nfunc linkedMarker() string { return \"marker\" }\nfunc deadMarker() string { return \"dead\" }\nfunc main(){fmt.Println(linkedMarker())}\n"),0600);err!=nil { t.Fatal(err) }
+	if err:=os.WriteFile(source,[]byte("package main\nimport (\"fmt\";\"os\")\n//go:noinline\nfunc linkedMarker() string { return \"marker\" }\nfunc deadMarker() string { return \"dead\" }\nfunc inlineMarker(x int) int{return x+1}\nfunc main(){fmt.Println(linkedMarker(),inlineMarker(len(os.Args)))}\n"),0600);err!=nil { t.Fatal(err) }
 	bin:=filepath.Join(dir,"stripped")
 	command:=exec.Command("go","build","-trimpath","-ldflags=-s -w","-o",bin,source)
 	command.Env=append(os.Environ(),"GOOS=linux","GOARCH=amd64","CGO_ENABLED=0")
@@ -24,6 +24,9 @@ func TestRealStrippedELFFunctionEntriesWithoutExecution(t *testing.T) {
 	if err!=nil { t.Fatal(err) }
 	linked,dead:=false,false
 	for _,fn:=range r.Functions { linked=linked||fn.Name=="main.linkedMarker";dead=dead||fn.Name=="main.deadMarker" }
+	inlineName:=false
+	for _,name:=range r.NameTable { inlineName=inlineName||name=="main.inlineMarker" }
+	if !inlineName { t.Fatal("compiler inline name missing") }
 	if !linked||dead||r.Count==0||len(r.SHA256)!=64 { t.Fatalf("unexpected extraction: linked=%v dead=%v count=%d",linked,dead,r.Count) }
 }
 
