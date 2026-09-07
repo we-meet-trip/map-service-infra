@@ -434,6 +434,133 @@ class RollbackPolicyTests(BundleFixture, unittest.TestCase):
         self.assertEqual(seen, list(deploy.PUBLIC_SERVICES) * 2)
 
 
+class PublicReadinessTests(unittest.TestCase):
+    class Clock:
+        def __init__(self):
+            self.now = 0.0
+            self.sleeps = []
+        def monotonic(self):
+            return self.now
+        def sleep(self, seconds):
+            self.sleeps.append(seconds)
+            self.now += seconds
+
+    def test_cold_connection_and_transient_gateway_then_real_readiness(self):
+        clock, output = self.Clock(), io.StringIO()
+        responses = [ConnectionRefusedError(deploy.errno.ECONNREFUSED, "private transport detail"),
+                     (503, b"private body"), (200, b"ok"), (200, b'{"status":"UP"}'), (401, b"")]
+        with patch.object(deploy, "http_response", side_effect=responses) as request, \
+             patch.object(deploy.time, "monotonic", clock.monotonic), patch.object(deploy.time, "sleep", clock.sleep), \
+             contextlib.redirect_stdout(output):
+            deploy.wait_public_readiness(90)
+        self.assertEqual(request.call_count, 5)
+        self.assertEqual(clock.sleeps, [0.25, 0.5])
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual([event["phase"] for event in events], ["public_probe_retry"] * 2 + ["public_probe_pass"] * 3)
+        self.assertEqual([event["error_kind"] for event in events[:2]], ["connection", "upstream_unavailable"])
+        self.assertTrue(all(set(event) == {"phase", "alias", "status", "error_kind"} for event in events))
+        self.assertNotIn("private", output.getvalue())
+        self.assertNotIn("http", output.getvalue())
+
+    def test_each_transient_status_is_retried_but_never_grants_pass(self):
+        for code in (502, 503, 504):
+            clock = self.Clock()
+            with self.subTest(code=code), patch.object(deploy, "http_response", return_value=(code, b"")), \
+                 patch.object(deploy.time, "monotonic", clock.monotonic), patch.object(deploy.time, "sleep", clock.sleep), \
+                 contextlib.redirect_stdout(io.StringIO()), self.assertRaises(deploy.SmokeDeadline):
+                deploy.wait_public_readiness(3)
+            self.assertEqual(clock.now, 3)
+
+    def test_tls_404_redirect_and_unknown_transport_fail_without_sleep(self):
+        cases = [(404, b""), (301, b""),
+                 deploy.urllib.error.URLError(deploy.ssl.SSLCertVerificationError(1, "private certificate detail")),
+                 deploy.urllib.error.URLError(deploy.ssl.SSLError(1, "private TLS detail")),
+                 deploy.urllib.error.URLError("private unclassified detail")]
+        for response in cases:
+            kwargs = {"side_effect": response} if isinstance(response, Exception) else {"return_value": response}
+            output = io.StringIO()
+            with self.subTest(response=type(response).__name__), patch.object(deploy, "http_response", **kwargs) as request, \
+                 patch.object(deploy.time, "sleep") as sleep, contextlib.redirect_stdout(output), \
+                 self.assertRaises(deploy.PublicProbeError):
+                deploy.wait_public_readiness(deploy.time.monotonic() + 90)
+            self.assertEqual(request.call_count, 1)
+            sleep.assert_not_called()
+            self.assertNotIn("private", output.getvalue())
+
+    def test_authentication_200_is_security_failure_without_retry(self):
+        responses = [(200, b"ok"), (200, b'{"status":"UP"}'), (200, b"private account body")]
+        output = io.StringIO()
+        with patch.object(deploy, "http_response", side_effect=responses), patch.object(deploy.time, "sleep") as sleep, \
+             contextlib.redirect_stdout(output), self.assertRaises(deploy.PublicProbeError) as raised:
+            deploy.wait_public_readiness(deploy.time.monotonic() + 90)
+        self.assertEqual(raised.exception.kind, "authentication_mismatch")
+        self.assertFalse(raised.exception.retryable)
+        sleep.assert_not_called()
+        self.assertNotIn("private account body", output.getvalue())
+
+    def test_readiness_wrong_or_malformed_body_is_not_retried(self):
+        for body in (b'{"status":"DOWN"}', b'{"status":"UNKNOWN"}', b'[]', b'not json'):
+            with self.subTest(body=body), patch.object(deploy, "http_response", side_effect=[(200, b""), (200, body)]), \
+                 patch.object(deploy.time, "sleep") as sleep, contextlib.redirect_stdout(io.StringIO()), \
+                 self.assertRaises(deploy.PublicProbeError):
+                deploy.wait_public_readiness(deploy.time.monotonic() + 90)
+            sleep.assert_not_called()
+
+    def test_timeout_retries_inside_same_deadline(self):
+        clock = self.Clock()
+        with patch.object(deploy, "http_response", side_effect=TimeoutError("private timeout")), \
+             patch.object(deploy.time, "monotonic", clock.monotonic), patch.object(deploy.time, "sleep", clock.sleep), \
+             contextlib.redirect_stdout(io.StringIO()), self.assertRaises(deploy.SmokeDeadline):
+            deploy.wait_public_readiness(90)
+        self.assertEqual(clock.now, 90)
+        self.assertLessEqual(max(clock.sleeps), 2)
+
+    def test_deadline_cannot_reset_per_probe_or_pass_after_late_response(self):
+        clock = self.Clock()
+        def late(_url, timeout):
+            self.assertEqual(timeout, 10)
+            clock.now += 95
+            return 200, b"ok"
+        with patch.object(deploy, "http_response", side_effect=late) as request, \
+             patch.object(deploy.time, "monotonic", clock.monotonic), contextlib.redirect_stdout(io.StringIO()), \
+             self.assertRaises(deploy.SmokeDeadline):
+            deploy.wait_public_readiness(90)
+        self.assertEqual(request.call_count, 1)
+
+    def test_full_smoke_private_recheck_consumes_same_public_budget(self):
+        clock, calls = self.Clock(), []
+        def response(url, timeout):
+            calls.append((url, timeout))
+            if url.startswith(deploy.PUBLIC_URL):
+                self.assertLessEqual(timeout, 1.000001)
+                return 503, b""
+            # Nine existing private checks total 89 seconds in this simulation.
+            clock.now += 89 / 9
+            return (401 if url.endswith("/me") else 200), b'{"status":"UP"}'
+        with patch.object(deploy, "ADMIN_DETACHED", False), patch.object(deploy, "http_response", side_effect=response), \
+             patch.object(deploy.time, "monotonic", clock.monotonic), patch.object(deploy.time, "sleep", clock.sleep), \
+             contextlib.redirect_stdout(io.StringIO()), self.assertRaises(deploy.SmokeDeadline):
+            deploy.smoke()
+        self.assertAlmostEqual(clock.now, 90)
+        self.assertEqual(sum(not url.startswith(deploy.PUBLIC_URL) for url, _ in calls), 9)
+
+    def test_alarm_bounds_blocking_io_and_restores_original_handler(self):
+        before = deploy.signal.getsignal(deploy.signal.SIGALRM)
+        with self.assertRaises(deploy.SmokeDeadline):
+            with deploy.smoke_deadline(deploy.time.monotonic() + 90):
+                deploy.signal.raise_signal(deploy.signal.SIGALRM)
+        self.assertEqual(deploy.signal.getsignal(deploy.signal.SIGALRM), before)
+        self.assertEqual(deploy.signal.getitimer(deploy.signal.ITIMER_REAL), (0.0, 0.0))
+
+    def test_private_only_smoke_does_not_retry_or_install_public_deadline(self):
+        with patch.object(deploy, "http_response", return_value=(503, b"")), \
+             patch.object(deploy, "wait_public_readiness") as wait, patch.object(deploy, "smoke_deadline") as deadline, \
+             self.assertRaises(deploy.DeployError):
+            deploy.smoke(include_public=False)
+        wait.assert_not_called()
+        deadline.assert_not_called()
+
+
 class ReceiverTests(BundleFixture, unittest.TestCase):
     def scenario(self, failure="", *, verified=True, interrupted=False, policy_fault=""):
         repo = self.root / "repo"
@@ -501,6 +628,22 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
             self.assertEqual("edge" in self.running, include_public)
             if failure == "smoke" or (failure == "public_smoke" and include_public):
                 raise deploy.DeployError("synthetic-private")
+            if failure == "public_alarm" and include_public:
+                self.blocked_response_returned = False
+                def blocked_response(_url, _timeout):
+                    time.sleep(1)
+                    self.blocked_response_returned = True
+                    return 200, b"ok"
+                deadline = time.monotonic() + 0.01
+                with patch.object(deploy, "http_response", side_effect=blocked_response), deploy.smoke_deadline(deadline):
+                    deploy.wait_public_readiness(deadline)
+            if failure in ("public_deadline", "public_auth_mismatch") and include_public:
+                clock = PublicReadinessTests.Clock()
+                responses = [(200, b"ok"), (200, b'{"status":"UP"}'), (200, b"private account")]
+                kwargs = {"return_value": (503, b"")} if failure == "public_deadline" else {"side_effect": responses}
+                with patch.object(deploy, "http_response", **kwargs), patch.object(deploy.time, "monotonic", clock.monotonic), \
+                     patch.object(deploy.time, "sleep", clock.sleep):
+                    deploy.wait_public_readiness(90)
         def fake_preflight(*args, **kwargs):
             if failure == "preflight":
                 raise deploy.DeployError("synthetic-private")
@@ -626,6 +769,28 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
         self.assertEqual(ups[0][-1], "edge")
         self.assertIn(("smoke", False), self.calls)
         self.assertIn(("smoke", True), self.calls)
+
+    def test_actual_public_deadline_quarantines_all_four_without_unsafe_rollback(self):
+        output = self.scenario("public_deadline", verified=False)
+        self.assertIn('"error_kind": "deadline"', output)
+        self.assertIn('"quarantined"', output)
+        self.assertFalse(set(deploy.PUBLIC_SERVICES) & self.running)
+        self.assertNotIn("rollback_started", output)
+
+    def test_real_alarm_interrupts_blocking_probe_and_quarantines_all_four(self):
+        output = self.scenario("public_alarm", verified=False)
+        self.assertFalse(self.blocked_response_returned)
+        self.assertIn('"error_kind": "deadline"', output)
+        self.assertFalse(set(deploy.PUBLIC_SERVICES) & self.running)
+        self.assertNotIn("rollback_started", output)
+        self.assertEqual(deploy.signal.getitimer(deploy.signal.ITIMER_REAL), (0.0, 0.0))
+
+    def test_actual_authentication_mismatch_quarantines_immediately(self):
+        output = self.scenario("public_auth_mismatch", verified=False)
+        self.assertIn('"error_kind": "authentication_mismatch"', output)
+        self.assertNotIn("public_probe_retry", output)
+        self.assertFalse(set(deploy.PUBLIC_SERVICES) & self.running)
+        self.assertNotIn("rollback_started", output)
 
     def test_interrupted_retry_never_uses_even_allowlisted_partial_prior(self):
         output = self.scenario("admin", verified=True, interrupted=True)

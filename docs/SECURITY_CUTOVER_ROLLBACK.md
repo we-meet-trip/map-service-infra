@@ -109,3 +109,36 @@ proven. A real reboot/hard-kill drill and independent recovery supervision remai
 an explicit operational gate. Do not reboot Docker/VM as a routine check on the
 current data-bearing host. The latch does not itself supervise an orphan after
 SIGKILL. Existing PG/Redis/OSRM restoration and full RPO/RTO acceptance are separate.
+
+
+## Bounded public readiness after edge start (2026-09-07)
+
+R3 run `34080156532` passed the private smoke and reached public smoke after edge
+opening, then quarantined. Root reported no application/data rollback and preserved
+PostgreSQL, Redis and OSRM. Caddy has no configured healthcheck; Compose `--wait`
+therefore confirms running, which alone does not establish TLS/HTTP readiness. A
+startup race is a hypothesis until the next cold-start timing/probe evidence, not a
+confirmed diagnosis.
+
+Full smoke now uses one 90-second monotonic deadline, including the private recheck
+and every public request/backoff. SIGALRM also interrupts blocking DNS/TLS/body
+reads that a socket timeout alone cannot bound. Each public round must actually
+receive `/healthz` 200, `/healthz/app` 200 with JSON `status=UP`, and unauthenticated
+`/api/v1/users/me` 401. Previously successful probes do not count for a later round.
+
+Only connection refusal/reset/abort/unreachable, timeout, temporary DNS failure and
+HTTP 502/503/504 are retried. Backoff follows a failed request (0.25 seconds rising
+to at most 2 seconds), consumes the same deadline and cannot grant success. TLS
+certificate/other TLS failure, permanent DNS error, unknown transport failures,
+404/redirects/other unexpected statuses, authentication 200, malformed readiness
+JSON and status other than UP fail immediately. Private-only smoke retains its
+existing immediate-failure behavior.
+
+Public probe logs contain only fixed path alias, phase, HTTP status (or null), and
+safe error classification. URLs, bodies and exception text are never logged. A
+public deadline or security mismatch propagates through the same rollback policy
+and four-service quarantine; this readiness wait does not authorize an old release.
+Injected tests cover cold connection/transient response followed by all real
+expected responses, permanent security failures without sleep, shared time budget,
+late response rejection and a real short SIGALRM interrupting a blocked probe before
+all four entrypoints are stopped. Actual GCP cold-start measurements are separate.

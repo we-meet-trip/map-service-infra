@@ -17,6 +17,7 @@ import base64
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
+import errno
 import hashlib
 import importlib.util
 import io
@@ -25,11 +26,14 @@ import os
 from pathlib import Path
 import re
 import signal
+import socket
+import ssl
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -701,32 +705,161 @@ def verify_admin_rollback_compatibility(bundle, active, env):
     require(len(heads[0]) == 1 and heads[0] == heads[1], "admin migration change requires verified rollback compatibility")
 
 
-def http_status(url, expected):
-    # No redirects: an unexpected login redirect must not pass a health check.
+PUBLIC_SMOKE_DEADLINE_SECONDS = 90
+PUBLIC_PROBES = (("edge_health", "/healthz", 200), ("bff_ready", "/healthz/app", 200),
+                 ("account_unauthorized", "/api/v1/users/me", 401))
+
+
+class SmokeDeadline(DeployError):
+    pass
+
+
+class PublicProbeError(DeployError):
+    def __init__(self, alias, code, kind, retryable):
+        super().__init__("public readiness failed")
+        self.alias, self.code, self.kind, self.retryable = alias, code, kind, retryable
+
+
+def probe_status(phase, alias, code=None, kind="none"):
+    # Fixed aliases and classifications only: never URL, body or exception text.
+    print(json.dumps({"phase": phase, "alias": alias, "status": code, "error_kind": kind}), flush=True)
+
+
+def remaining_smoke_time(deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise SmokeDeadline("public readiness deadline exceeded")
+    return remaining
+
+
+@contextmanager
+def smoke_deadline(deadline):
+    # urllib's socket timeout alone does not bound DNS resolution or a slow body.
+    # This fixed Linux receiver runs in the main thread, without another alarm.
+    require(signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0), "another process deadline is active")
+    previous = signal.getsignal(signal.SIGALRM)
+    def expired(_signum, _frame):
+        raise SmokeDeadline("public readiness deadline exceeded")
+    try:
+        signal.signal(signal.SIGALRM, expired)
+        signal.setitimer(signal.ITIMER_REAL, remaining_smoke_time(deadline))
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def http_response(url, timeout):
     opener = urllib.request.build_opener(NoRedirect())
     try:
-        with opener.open(url, timeout=10) as response:
-            code = response.status
-            body = read_limited(response, 65536)
+        with opener.open(url, timeout=timeout) as response:
+            return response.status, read_limited(response, 65536)
     except urllib.error.HTTPError as error:
-        code, body = error.code, b""
+        try:
+            return error.code, b""
+        finally:
+            error.close()
+
+
+def http_status(url, expected, *, deadline=None):
+    # Private probes retain their immediate-failure semantics; full smoke shares
+    # the public deadline across its private recheck and every external attempt.
+    timeout = min(10, remaining_smoke_time(deadline)) if deadline is not None else 10
+    code, body = http_response(url, timeout)
+    if deadline is not None:
+        remaining_smoke_time(deadline)
     require(code == expected, "smoke response mismatch")
     return body
 
 
+def network_failure(error):
+    reason = error.reason if isinstance(error, urllib.error.URLError) else error
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return "tls_verification", False
+    if isinstance(reason, ssl.SSLError):
+        return "tls_error", False
+    if isinstance(reason, (TimeoutError, socket.timeout)):
+        return "timeout", True
+    if isinstance(reason, socket.gaierror):
+        return ("dns_temporary", True) if reason.errno == socket.EAI_AGAIN else ("dns_error", False)
+    if isinstance(reason, ConnectionError):
+        return "connection", True
+    if isinstance(reason, OSError) and reason.errno in {
+            errno.ECONNREFUSED, errno.ECONNRESET, errno.ECONNABORTED,
+            errno.ETIMEDOUT, errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EPIPE}:
+        return "connection", True
+    return "transport_error", False
+
+
+def public_probe(alias, path, expected, deadline):
+    try:
+        code, body = http_response(PUBLIC_URL + path, min(10, remaining_smoke_time(deadline)))
+    except (urllib.error.URLError, OSError) as error:
+        kind, retryable = network_failure(error)
+        raise PublicProbeError(alias, None, kind, retryable) from None
+    remaining_smoke_time(deadline)
+    if code != expected:
+        transient = code in (502, 503, 504)
+        kind = "upstream_unavailable" if transient else (
+            "authentication_mismatch" if alias == "account_unauthorized" else "http_mismatch")
+        raise PublicProbeError(alias, code, kind, transient)
+    if alias == "bff_ready":
+        try:
+            ready = json.loads(body)
+        except (ValueError, UnicodeError):
+            raise PublicProbeError(alias, code, "invalid_readiness_body", False) from None
+        if not isinstance(ready, dict) or ready.get("status") != "UP":
+            raise PublicProbeError(alias, code, "readiness_mismatch", False)
+    probe_status("public_probe_pass", alias, code)
+
+
+def wait_public_readiness(deadline):
+    delay = 0.25
+    try:
+        while True:
+            remaining_smoke_time(deadline)
+            try:
+                # One complete round must pass; earlier successes do not mask a
+                # later readiness regression or authorize a partially healthy edge.
+                for alias, path, expected in PUBLIC_PROBES:
+                    public_probe(alias, path, expected, deadline)
+                remaining_smoke_time(deadline)
+                return
+            except PublicProbeError as error:
+                probe_status("public_probe_retry" if error.retryable else "public_probe_failed",
+                             error.alias, error.code, error.kind)
+                if not error.retryable:
+                    raise
+                # Backoff follows a real failed probe; elapsed time never grants PASS.
+                time.sleep(min(delay, remaining_smoke_time(deadline)))
+                delay = min(delay * 2, 2)
+    except SmokeDeadline:
+        probe_status("public_probe_failed", "public_smoke", kind="deadline")
+        raise
+
+
 def smoke(*, include_public=True):
-    for base in (("http://127.0.0.1:8290", PUBLIC_URL) if include_public else ("http://127.0.0.1:8290",)):
-        http_status(base + "/healthz", 200)
-        body = http_status(base + "/healthz/app", 200)
+    deadline = time.monotonic() + PUBLIC_SMOKE_DEADLINE_SECONDS if include_public else None
+    def check():
+        base = "http://127.0.0.1:8290"
+        http_status(base + "/healthz", 200, deadline=deadline)
+        body = http_status(base + "/healthz/app", 200, deadline=deadline)
         require(json.loads(body).get("status") == "UP", "BFF readiness failed")
-        http_status(base + "/api/v1/users/me", 401)
-    endpoints = [(8200, "/health/ready"), (8201, "/health/ready"), (8204, "/health")]
-    if not ADMIN_DETACHED:
-        endpoints.extend(((8202, "/health/ready"), (8203, "/")))
-    for port, path in endpoints:
-        http_status(f"http://127.0.0.1:{port}{path}", 200)
-    if not ADMIN_DETACHED:
-        http_status("http://127.0.0.1:8202/api/v1/auth/me", 401)
+        http_status(base + "/api/v1/users/me", 401, deadline=deadline)
+        endpoints = [(8200, "/health/ready"), (8201, "/health/ready"), (8204, "/health")]
+        if not ADMIN_DETACHED:
+            endpoints.extend(((8202, "/health/ready"), (8203, "/")))
+        for port, path in endpoints:
+            http_status(f"http://127.0.0.1:{port}{path}", 200, deadline=deadline)
+        if not ADMIN_DETACHED:
+            http_status("http://127.0.0.1:8202/api/v1/auth/me", 401, deadline=deadline)
+        if include_public:
+            wait_public_readiness(deadline)
+    if include_public:
+        with smoke_deadline(deadline):
+            check()
+    else:
+        check()
 
 
 def rollback(old_sha, original_env, env_metadata, previous, active, current_bundle, env):
