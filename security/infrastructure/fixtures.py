@@ -47,10 +47,13 @@ class Sandbox:
             require(seed.is_file(), 'cold_backup_archive_required')
             self.run(['docker', 'cp', '-a', '-', name + ':' + data_path], input=seed.read_bytes())
         self.run(['docker', 'start', name])
+        return name, self.origin(name, port)
+
+    def origin(self, name, port):
         info = json.loads(self.run(['docker', 'inspect', name]))[0]
         binding = info['NetworkSettings']['Ports'][str(port) + '/tcp'][0]
         require(binding['HostIp'] == '127.0.0.1', 'fixture_must_bind_loopback')
-        return name, 'http://127.0.0.1:' + binding['HostPort']
+        return 'http://127.0.0.1:' + binding['HostPort']
 
     def request(self, origin, path, payload=None, credentials=None):
         headers = {}
@@ -134,7 +137,7 @@ def prometheus(s, old, new):
     new_query = query + '&time=' + str(max(written) + 0.01)
     new_expected = json.loads(s.request(url, new_query))['data']['result']
     require(bool(new_expected), 'candidate_written_sample_not_queryable')
-    s.run(['docker', 'restart', forward]); s.wait(url, '/-/ready')
+    s.run(['docker', 'restart', forward]); url = s.origin(forward, 9090); s.wait(url, '/-/ready')
     require(json.loads(s.request(url, new_query))['data']['result'] == new_expected, 'candidate_new_sample_restart_lost')
     upgraded = s.stop_copy(forward, '/prometheus', 'prom-post-upgrade')
     rollback, url = s.create(old, 'prom-rollback', 9090, '/prometheus', backup, options, command)
@@ -183,7 +186,7 @@ def grafana(s, old, new):
         require(any(Path(m.name).name == 'grafana.db' for m in archive if m.isfile()), 'grafana_sqlite_backup_missing')
     forward, url = s.create(new, 'grafana-new', 3000, '/var/lib/grafana', backup, options)
     s.wait(url, '/api/health'); assert_dashboard(url)
-    s.run(['docker', 'restart', forward]); s.wait(url, '/api/health'); assert_dashboard(url)
+    s.run(['docker', 'restart', forward]); url = s.origin(forward, 3000); s.wait(url, '/api/health'); assert_dashboard(url)
     upgraded = s.stop_copy(forward, '/var/lib/grafana', 'grafana-post-upgrade')
     rollback, url = s.create(old, 'grafana-rollback', 3000, '/var/lib/grafana', backup, options)
     s.wait(url, '/api/health'); assert_dashboard(url)
