@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "status": "capacity_candidates_not_load_certified",
+  "os": "Ubuntu 24.04 amd64; exact NCP server image product code is an enrollment input",
+  "profiles": {
+    "prod-small": {
+      "role": "prod",
+      "sku": "s2-g3",
+      "cpu": 2,
+      "ram_gb": 8,
+      "root_gb": 40,
+      "data_gb": 100
+    },
+    "prod-headroom": {
+      "role": "prod",
+      "sku": "s4-g3",
+      "cpu": 4,
+      "ram_gb": 16,
+      "root_gb": 40,
+      "data_gb": 100
+    },
+    "admin-small": {
+      "role": "admin",
+      "sku": "c2-g3",
+      "cpu": 2,
+      "ram_gb": 4,
+      "root_gb": 30,
+      "data_gb": 50
+    },
+    "admin-medium": {
+      "role": "admin",
+      "sku": "s2-g3",
+      "cpu": 2,
+      "ram_gb": 8,
+      "root_gb": 30,
+      "data_gb": 50
+    },
+    "learning-cpu": {
+      "role": "learning",
+      "sku": "s4-g3",
+      "cpu": 4,
+      "ram_gb": 16,
+      "root_gb": 20,
+      "data_gb": 100
+    }
+  },
+  "secret_keys": {
+    "prod": [
+      "POSTGRES_PASSWORD",
+      "REDIS_PASSWORD",
+      "USER_DATABASE_PASSWORD",
+      "USER_MIGRATION_PASSWORD",
+      "HUB_DATABASE_PASSWORD",
+      "AGENT_DATABASE_PASSWORD",
+      "INTERNAL_SERVICE_TOKEN",
+      "USER_ADMIN_INTERNAL_TOKEN",
+      "JWT_SECRET",
+      "LOCATION_MASTER_KEY",
+      "GEMINI_API_KEY",
+      "KMA_API_KEY",
+      "KAKAO_REST_API_KEY",
+      "APPLE_PRIVATE_KEY",
+      "BACKUP_AGE_RECIPIENT",
+      "NCP_BACKUP_CREDENTIALS"
+    ],
+    "admin": [
+      "ADMIN_CONTROL_DATABASE_PASSWORD",
+      "ADMIN_CONTROL_MIGRATION_PASSWORD",
+      "ADMIN_BOOTSTRAP_PASSWORD",
+      "ADMIN_TARGET_TEST_TOKEN",
+      "ADMIN_TARGET_PROD_TOKEN",
+      "ADMIN_TARGET_TEST_USER_ADMIN_TOKEN",
+      "ADMIN_TARGET_PROD_USER_ADMIN_TOKEN",
+      "GRAFANA_ADMIN_PASSWORD",
+      "BACKUP_AGE_RECIPIENT",
+      "NCP_BACKUP_CREDENTIALS"
+    ],
+    "learning": [
+      "DATASET_READ_CREDENTIALS",
+      "CANDIDATE_WRITE_CREDENTIALS",
+      "BACKUP_AGE_RECIPIENT"
+    ]
+  },
+  "gates": {
+    "paid_creation": "user_confirmation",
+    "serving_activation": "separate_owner_receiver_and_user_confirmation",
+    "learning_capture_export": "HOLD",
+    "gpu": "not_selected",
+    "gcp_test": "observe_only",
+    "disk_format": "separate volume helper: exact device approval + entire zero check; never existing data"
+  }
+}

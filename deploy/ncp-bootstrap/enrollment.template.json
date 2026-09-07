@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "role": "prod",
+  "profile": "prod-small",
+  "machine_id": "REQUIRED_REAL_MACHINE_ID",
+  "hostname": "REQUIRED_REAL_HOSTNAME",
+  "instance_id": "REQUIRED_REAL_INSTANCE_ID",
+  "data_uuid": "REQUIRED_REAL_DATA_UUID",
+  "data_encryption": "luks2",
+  "inventory": {
+    "test": {
+      "machine_id": "REQUIRED_TEST_MACHINE_ID",
+      "instance_id": "REQUIRED_TEST_INSTANCE_ID",
+      "deploy_account": "map-deploy-test",
+      "data_volume_id": "REQUIRED_TEST_DATA_VOLUME_ID",
+      "secret_scope": "map-test",
+      "provider": "gcp"
+    },
+    "prod": {
+      "machine_id": "REQUIRED_PROD_MACHINE_ID",
+      "instance_id": "REQUIRED_PROD_INSTANCE_ID",
+      "deploy_account": "map-deploy-prod",
+      "data_volume_id": "REQUIRED_PROD_DATA_VOLUME_ID",
+      "secret_scope": "map-prod",
+      "provider": "ncp"
+    },
+    "admin": {
+      "machine_id": "REQUIRED_ADMIN_MACHINE_ID",
+      "instance_id": "REQUIRED_ADMIN_INSTANCE_ID",
+      "deploy_account": "map-deploy-admin",
+      "data_volume_id": "REQUIRED_ADMIN_DATA_VOLUME_ID",
+      "secret_scope": "map-admin",
+      "provider": "ncp"
+    },
+    "learning": {
+      "machine_id": "REQUIRED_LEARNING_MACHINE_ID",
+      "instance_id": "REQUIRED_LEARNING_INSTANCE_ID",
+      "deploy_account": "map-deploy-learning",
+      "data_volume_id": "REQUIRED_LEARNING_DATA_VOLUME_ID",
+      "secret_scope": "map-learning",
+      "provider": "ncp"
+    }
+  },
+  "docker_packages": {
+    "docker-ce-cli": "REQUIRED_REVIEWED_VERSION",
+    "docker-ce": "REQUIRED_REVIEWED_VERSION",
+    "containerd.io": "REQUIRED_REVIEWED_VERSION",
+    "docker-buildx-plugin": "REQUIRED_REVIEWED_VERSION",
+    "docker-compose-plugin": "REQUIRED_REVIEWED_VERSION"
+  },
+  "docker_key_sha256": "REQUIRED_REAL_DOCKER_KEY_SHA256",
+  "ssh_source_cidrs": [
+    "REQUIRED_OPERATOR_CIDR"
+  ],
+  "network_review_sha256": "REQUIRED_REAL_NETWORK_REVIEW_SHA256",
+  "account_quote_sha256": "REQUIRED_REAL_ACCOUNT_QUOTE_SHA256",
+  "approval": "pending",
+  "learning_hold": true
+}
