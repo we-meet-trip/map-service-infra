@@ -29,6 +29,17 @@ def raster_answer():
 
 
 class GdalSafetyTests(unittest.TestCase):
+    def test_dependent_option_internal_off_requires_no_mysql_target(self):
+        for kind in ('BOOL', 'INTERNAL'):
+            cache='GDAL_USE_MYSQL:BOOL=OFF\nOGR_ENABLE_DRIVER_MYSQL:'+kind+'=OFF\n'
+            self.assertEqual(g.validate_mysql_configuration(cache, 'ogr_PG: phony')['OGR_ENABLE_DRIVER_MYSQL']['value'], 'OFF')
+            for bad_cache, targets in ((cache.replace('=OFF','=ON',1),''),
+                                      (cache.replace(kind, 'UNINITIALIZED'),''),
+                                      (cache,'ogr_MySQL: phony'),
+                                      (cache,'ogr/ogrsf_frmts/mysql/driver.o: CXX_COMPILER')):
+                with self.subTest(kind=kind, targets=targets), self.assertRaises(ValueError):
+                    g.validate_mysql_configuration(bad_cache, targets)
+
     def test_normal_host_cannot_execute_builder_or_download(self):
         with patch.dict(g.os.environ, {}, clear=True), patch.object(g.subprocess, 'run') as run, patch.object(g, 'download') as download:
             with self.assertRaisesRegex(ValueError, 'disposable_linux_builder_only'):

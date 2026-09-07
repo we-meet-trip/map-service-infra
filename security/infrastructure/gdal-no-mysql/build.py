@@ -63,6 +63,20 @@ def verify_driver_delta(before, after):
     return {'removed': ['MySQL'], 'added': [], 'preserved_count': len(after)}
 
 
+def validate_mysql_configuration(cache, targets):
+    # GDAL's ogr_dependent_driver uses CMakeDependentOption, which changes a
+    # dependency-disabled option from BOOL to INTERNAL. Its value must still be
+    # exactly OFF, and no compiled MySQL target may exist.
+    values = {}
+    for key in ('GDAL_USE_MYSQL', 'OGR_ENABLE_DRIVER_MYSQL'):
+        rows = re.findall(r'^' + key + r':([^=\n]+)=([^\n]*)$', cache, re.M)
+        require(len(rows) == 1 and rows[0][0] in ('BOOL', 'INTERNAL') and rows[0][1] == 'OFF',
+                'mysql_disable_not_effective')
+        values[key] = {'type': rows[0][0], 'value': rows[0][1]}
+    require('ogr_MySQL' not in targets and 'ogrsf_frmts/mysql/' not in targets, 'mysql_build_target_present')
+    return values
+
+
 def relative(name):
     path = PurePosixPath(name)
     require(name and path.parts and '\\' not in name and not path.is_absolute()
@@ -157,13 +171,13 @@ def build(source_sha):
         build_dir = root / 'build'
         run('configure', ['cmake', '-S', str(tree), '-B', str(build_dir), '-G', 'Ninja',
             '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_INSTALL_PREFIX=/usr/local',
-            '-DGDAL_USE_MYSQL=OFF', '-DOGR_ENABLE_DRIVER_MYSQL=OFF',
+            '-DGDAL_USE_MYSQL:BOOL=OFF', '-DOGR_ENABLE_DRIVER_MYSQL:BOOL=OFF',
             '-DBUILD_PYTHON_BINDINGS=OFF', '-DBUILD_JAVA_BINDINGS=OFF', '-DBUILD_CSHARP_BINDINGS=OFF',
             '-DBUILD_TESTING=ON', '-DUSE_EXTERNAL_GTEST=ON'])
         cache = (build_dir / 'CMakeCache.txt').read_text()
-        require('GDAL_USE_MYSQL:BOOL=OFF' in cache and 'OGR_ENABLE_DRIVER_MYSQL:BOOL=OFF' in cache,
-                'mysql_disable_not_effective')
         shutil.copy2(build_dir / 'CMakeCache.txt', evidence / 'CMakeCache.txt')
+        targets = run('ninja-target-inventory', ['ninja', '-C', str(build_dir), '-t', 'targets', 'all'])
+        receipt['mysql_configuration'] = validate_mysql_configuration(cache, targets)
         run('compile', ['cmake', '--build', str(build_dir), '--parallel', '2'], timeout=3600)
         inventory = json.loads(run('ctest-inventory', ['ctest', '--test-dir', str(build_dir), '--show-only=json-v1']))
         selected = {'test-unit', 'test-float16', 'test-copy-words', 'test-block-cache-4'}
@@ -179,8 +193,8 @@ def build(source_sha):
                             'GDAL_DRIVER_PATH': 'disable'}
         after = drivers(run('candidate-raster-formats', [str(package / 'usr/local/bin/gdalinfo'), '--formats'], env=env)
                         + run('candidate-vector-formats', [str(package / 'usr/local/bin/ogrinfo'), '--formats'], env=env))
-        receipt['driver_delta'] = verify_driver_delta(before, after)
         receipt['baseline_drivers'], receipt['candidate_drivers'] = sorted(before), sorted(after)
+        receipt['driver_delta'] = verify_driver_delta(before, after)
         libraries = [x for x in libdir.glob('libgdal.so.*') if x.is_file() and not x.is_symlink()]
         require(len(libraries) == 1, 'unique_gdal_runtime_library_required')
         linked = run('runtime-ldd', ['ldd', str(libraries[0])], env=env)
@@ -209,6 +223,22 @@ def build(source_sha):
         (evidence / 'build-result.json').write_text(json.dumps(receipt, indent=2)+'\n')
         (evidence / 'SHA256SUMS.json').write_text(json.dumps({str(x.relative_to(evidence)): sha(x)
             for x in evidence.rglob('*') if x.is_file() and x.name != 'SHA256SUMS.json'}, indent=2)+'\n')
+        # Failed Docker stages cannot be copied out as candidate evidence. Keep
+        # bounded public-source diagnostics in the existing CI build log too.
+        print('gdal_build_receipt=' + json.dumps(receipt, sort_keys=True), flush=True)
+        if receipt['status'] != 'PASS':
+            diagnostic_paths = sorted(evidence.glob('*.stderr'))
+            if receipt['commands']:
+                diagnostic_paths.append(evidence / (receipt['commands'][-1]['label'] + '.stdout'))
+            for path in diagnostic_paths:
+                if path.stat().st_size:
+                    with path.open('rb') as stream:
+                        stream.seek(max(0, path.stat().st_size - 4096))
+                        print('gdal_log_tail=' + path.name + ':' + stream.read(4096).decode(errors='replace'), flush=True)
+            cache_path = evidence / 'CMakeCache.txt'
+            if cache_path.exists():
+                print('gdal_mysql_cache=' + json.dumps([line for line in cache_path.read_text().splitlines()
+                    if line.startswith(('GDAL_USE_MYSQL:', 'OGR_ENABLE_DRIVER_MYSQL:'))]), flush=True)
     return receipt
 
 
