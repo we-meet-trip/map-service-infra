@@ -34,6 +34,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import urllib.error
 import urllib.request
 import zipfile
@@ -41,6 +42,9 @@ import zipfile
 spec = importlib.util.spec_from_file_location("release_manifest", Path(__file__).resolve().with_name("release_manifest.py"))
 release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
+guard_spec = importlib.util.spec_from_file_location("cutover_watchdog", Path(__file__).resolve().with_name("cutover_watchdog.py"))
+cutover_guard = importlib.util.module_from_spec(guard_spec)
+guard_spec.loader.exec_module(cutover_guard)
 
 REPO = Path("/home/mapadmin26/map-service-infra")
 STATE = Path("/var/lib/map-deploy")
@@ -79,6 +83,11 @@ def require(condition, message):
 
 def status(phase):
     print(json.dumps({"phase": phase}), flush=True)
+
+
+def guard_context():
+    # Also works for importlib-loaded receiver regression fixtures.
+    return SimpleNamespace(**globals())
 
 
 PUBLIC_SERVICES = ("edge", "proxy", "user", "yolo")
@@ -205,7 +214,7 @@ def prior_rollback_compatible(policy, previous, env):
 
 def running_service_ids(service, env):
     ids = command(["docker", "ps", "-q", "--filter", "label=com.docker.compose.project=map-test",
-                   "--filter", f"label=com.docker.compose.service={service}"], env=env).splitlines()
+                   "--filter", f"label=com.docker.compose.service={service}"], env=env, cwd=STATE).splitlines()
     require(all(re.fullmatch(r"[a-f0-9]{12,64}", item) for item in ids), "invalid ingress container ID")
     return ids
 
@@ -217,7 +226,7 @@ def stop_public_services(env, services=PUBLIC_SERVICES):
         try:
             ids = running_service_ids(service, env)
             if ids:
-                command(["docker", "stop", "--time", "30", *ids], env=env, timeout=90)
+                command(["docker", "stop", "--time", "30", *ids], env=env, timeout=90, cwd=STATE)
         except Exception:
             errors.append(service)
     for service in services:
@@ -517,6 +526,8 @@ def compose_command(*, admin=False, bundle=None, env_file=None, infrastructure=N
         args.extend(("-f", str(bundle / "compose.target-images.yml")))
     if infrastructure:
         args.extend(("-f", str(infrastructure / ("compose.admin-infrastructure.yml" if admin else "compose.infrastructure.yml"))))
+    if not admin:
+        args.extend(("-f", str(STATE / "public-restart.yml")))
     for profile in (("monitoring",) if admin else ("full", "vision", "edge", "dns")):
         args.extend(("--profile", profile))
     return args
@@ -537,6 +548,8 @@ def preflight(bundle, env_file, env, infrastructure=None):
             image = config["services"][service].get("image", "")
             require(re.fullmatch(rf"{re.escape(release.REGISTRY)}/map-service-{service}@sha256:[0-9a-f]{{64}}", image), "unpinned application image")
         if not admin:
+            require(all(config["services"].get(service, {}).get("restart") == "no" for service in PUBLIC_SERVICES),
+                    "public services require supervised restart=no")
             for service in ("user", "agent", "hub"):
                 values = config["services"][service].get("environment", {})
                 require(str(values.get("AUTH_ENFORCED", "")).lower() == "true", "authentication must be enforced")
@@ -890,7 +903,9 @@ def rollback(old_sha, original_env, env_metadata, previous, active, current_bund
 def deployment_lock():
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
     validate_state_directory(STATE.lstat())
-    with (STATE / "deploy.lock").open("a") as lock:
+    fd = os.open(STATE / "deploy.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    with os.fdopen(fd, "a") as lock:
+        validate_host_metadata(os.fstat(lock.fileno()))
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -903,6 +918,10 @@ def receive(raw):
     verify_instance()
     require(REPO.is_dir() and not REPO.is_symlink(), "fixed deployment repository unavailable")
     with deployment_lock(), topology_scope(), interruption_guard():
+        cutover_guard.require_receiver_scope(guard_context())
+        # A ready systemd supervisor and fixed root override are mandatory before
+        # any checkout or serving mutation. Legacy/direct SSH commands fail here.
+        cutover_guard.require_enrolled(guard_context())
         with tempfile.TemporaryDirectory(prefix="incoming-", dir=STATE) as incoming:
             bundle = Path(incoming)
             data = unpack_payload(raw, bundle)
@@ -952,6 +971,8 @@ def receive(raw):
                 if ADMIN_DETACHED:
                     require(DETACHED_MARKER in (REPO / "scripts/cloud-up.sh").read_text().splitlines(),
                             "release lacks detached administrator support")
+                require("# MAP_CUTOVER_SUPERVISOR_VERSION=1" in (REPO / "scripts/cloud-up.sh").read_text().splitlines(),
+                        "release lacks public restart supervisor contract")
                 preflight(new_bundle, candidate_env, env)
                 infrastructure = history / "infrastructure"
                 evidence = prepare_infrastructure(infrastructure, new_bundle, candidate_env, captured_infrastructure, env)
@@ -974,8 +995,10 @@ def receive(raw):
                 # cloud-up's explicit application list omits edge/dns without --edge.
                 # Existing DNS remains running; all database/infrastructure pins remain.
                 command(["bash", "scripts/cloud-up.sh", "--test", "--registry", "--vision", *role_args],
-                        env={**env, "RELEASE_BUNDLE": str(new_bundle), "INFRA_IMAGE_BUNDLE": str(infrastructure)}, timeout=2400)
+                        env={**env, "RELEASE_BUNDLE": str(new_bundle), "INFRA_IMAGE_BUNDLE": str(infrastructure),
+                             "CUTOVER_SUPERVISED": "1"}, timeout=2400)
                 verify_edge_closed(env)
+                cutover_guard.require_public_restart(guard_context())
                 private_evidence = {**evidence, "projects": {
                     project: {service: entry for service, entry in entries.items() if service != "edge"}
                     for project, entries in evidence["projects"].items()}}
@@ -992,6 +1015,7 @@ def receive(raw):
                 verify_infrastructure_images(evidence, env)
                 status("smoke")
                 smoke()
+                cutover_guard.write_ready_receipt(guard_context(), latch, "complete")
                 atomic_state(history / "result.json", {"status": "complete", "run_id": data["github_run_id"],
                              "infra_sha": data["infra_sha"], "prior_rollback_compatible": rollback_allowed})
                 atomic_state(STATE / "current.json", {"bundle": str(new_bundle), "infrastructure": str(infrastructure), "run_id": data["github_run_id"]})
@@ -1004,6 +1028,8 @@ def receive(raw):
                     if rollback_allowed:
                         try:
                             rollback(old_sha, original_env, env_metadata, previous, active, new_bundle, env)
+                            smoke()
+                            cutover_guard.write_ready_receipt(guard_context(), latch, "rolled_back")
                             latch["phase"] = "rolled_back"
                             atomic_state(STATE / "security-cutover.json", latch)
                             atomic_state(history / "result.json", {"status": "failed_rolled_back", "run_id": data["github_run_id"]})

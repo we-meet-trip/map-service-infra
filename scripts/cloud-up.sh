@@ -111,6 +111,19 @@ if [ -n "${INFRA_IMAGE_BUNDLE:-}" ]; then
   ADMIN_FILES+=(-f "$INFRA_IMAGE_BUNDLE/compose.admin-infrastructure.yml")
 fi
 
+# MAP_CUTOVER_SUPERVISOR_VERSION=1
+# A root-installed host contract survives checkouts. It applies to manual test
+# cloud-up too, so a later Compose invocation cannot restore Docker auto-start.
+if [ "$ENV_FILE" = ./.env.test ]; then
+  if [ -e /var/lib/map-deploy/public-restart.yml ] || [ -n "${CUTOVER_SUPERVISED:-}" ]; then
+    /usr/bin/python3 /usr/local/lib/map-deploy/cutover_watchdog.py verify-override >/dev/null
+    FILES+=(-f /var/lib/map-deploy/public-restart.yml)
+  fi
+elif [ -n "${CUTOVER_SUPERVISED:-}" ]; then
+  echo 'cutover supervisor requires the fixed test host' >&2
+  exit 2
+fi
+
 # 작은 서버 덧칠은 1GB 급을 겨냥한다. 카메라 인식은 모델을 들고 있어 그 위에
 # 더 얹을 자리가 없다 — 재 보니 나머지 여섯만으로 부하 중 838 MiB 였고 거기에
 # 279 MiB 가 더 붙는다. 뜨기는 하다가 무엇이 먼저 죽을지 모르는 상태가 된다.

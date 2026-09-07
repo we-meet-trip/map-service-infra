@@ -213,6 +213,10 @@ class InfrastructureTests(BundleFixture, unittest.TestCase):
             admin = any(value.endswith("docker-compose.admin.yml") for value in args)
             project = "map-admin-test" if admin else "map-test"
             config = copy.deepcopy(self.configs[project])
+            if not admin and str(deploy.STATE / "public-restart.yml") in args:
+                for service in deploy.PUBLIC_SERVICES:
+                    if service in config["services"]:
+                        config["services"][service]["restart"] = "no"
             filename = "compose.admin-infrastructure.yml" if admin else "compose.infrastructure.yml"
             override = self.directory / filename
             if str(override) in args:
@@ -307,6 +311,8 @@ class InfrastructureTests(BundleFixture, unittest.TestCase):
         for admin in (False, True):
             args = deploy.compose_command(admin=admin, bundle=self.source, infrastructure=self.directory)
             files = [args[index + 1] for index, value in enumerate(args) if value == "-f"]
+            if not admin:
+                self.assertEqual(Path(files.pop()).name, "public-restart.yml")
             self.assertEqual(Path(files[-1]).parent, self.directory)
             self.assertEqual(Path(files[-2]).parent, self.source)
 
@@ -565,6 +571,8 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
     def scenario(self, failure="", *, verified=True, interrupted=False, policy_fault=""):
         repo = self.root / "repo"
         repo.mkdir()
+        (repo / "scripts").mkdir()
+        (repo / "scripts/cloud-up.sh").write_text("# MAP_CUTOVER_SUPERVISOR_VERSION=1\n")
         env_path = repo / ".env.test"
         original = b"MAP_STACK_ENV=test\nIMAGE_TAG=old\nPOSTGRES_PASSWORD=synthetic-private\n"
         env_path.write_bytes(original)
@@ -626,7 +634,7 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
         def fake_smoke(*, include_public=True):
             self.calls.append(("smoke", include_public))
             self.assertEqual("edge" in self.running, include_public)
-            if failure == "smoke" or (failure == "public_smoke" and include_public):
+            if current_sha[0] != "f" * 40 and (failure == "smoke" or (failure == "public_smoke" and include_public)):
                 raise deploy.DeployError("synthetic-private")
             if failure == "public_alarm" and include_public:
                 self.blocked_response_returned = False
@@ -669,6 +677,10 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
                  patch.object(deploy, "capture_infrastructure", side_effect=fake_capture), \
                  patch.object(deploy, "prepare_infrastructure", side_effect=fake_prepare), \
                  patch.object(deploy, "verify_infrastructure_images", side_effect=fake_verify), \
+                 patch.object(deploy.cutover_guard, "require_receiver_scope"), \
+                 patch.object(deploy.cutover_guard, "require_enrolled"), \
+                 patch.object(deploy.cutover_guard, "write_ready_receipt"), \
+                 patch.object(deploy.cutover_guard, "require_public_restart"), \
                  contextlib.redirect_stdout(output):
                 if failure == "interrupt":
                     with self.assertRaises(deploy.DeployError):

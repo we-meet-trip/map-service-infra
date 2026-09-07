@@ -100,15 +100,12 @@ interruption. It checks exact-six local identity, all-four stop attempts, candid
 preservation, no policy promotion, and private readiness before edge opening. These
 are local tests with simulated Docker/HTTP calls, not an actual GCP crash drill.
 
-SIGKILL, kernel failure and power loss cannot run Python cleanup. The durable latch
-prevents a subsequent receive from granting unsafe rollback, and a completed manual
-Docker stop remains stopped under the current `unless-stopped` restart policy.
-However, without a separate boot/watchdog recovery command, immediate closure in
-all hard-kill windows (especially after edge opening and before `complete`) is not
-proven. A real reboot/hard-kill drill and independent recovery supervision remain
-an explicit operational gate. Do not reboot Docker/VM as a routine check on the
-current data-bearing host. The latch does not itself supervise an orphan after
-SIGKILL. Existing PG/Redis/OSRM restoration and full RPO/RTO acceptance are separate.
+SIGKILL, kernel failure and power loss cannot run Python cleanup. The original
+latch alone required a subsequent receive; the separate supervisor contract is now
+implemented in [CUTOVER_SUPERVISOR.md](CUTOVER_SUPERVISOR.md). Its installation and
+actual GCP fault acceptance remain separate gates. Do not reboot Docker/VM as a
+routine check on the current data-bearing host. Existing PG/Redis/OSRM restoration
+and full RPO/RTO acceptance are separate.
 
 
 ## Bounded public readiness after edge start (2026-09-07)

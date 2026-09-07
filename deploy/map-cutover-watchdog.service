@@ -1,0 +1,25 @@
+[Unit]
+Description=MAP public cutover recovery (four services only)
+After=docker.service
+Wants=docker.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=root
+UMask=0077
+WorkingDirectory=/var/lib/map-deploy
+ExecStart=/usr/bin/python3 /usr/local/lib/map-deploy/cutover_watchdog.py watch
+Restart=always
+RestartSec=2
+KillMode=control-group
+TimeoutStopSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/map-deploy
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
