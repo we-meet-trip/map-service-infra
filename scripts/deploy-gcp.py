@@ -77,6 +77,158 @@ def status(phase):
     print(json.dumps({"phase": phase}), flush=True)
 
 
+PUBLIC_SERVICES = ("edge", "proxy", "user", "yolo")
+CUTOVER_PHASES = {"starting_private", "private_ready", "opening_ingress", "complete",
+                  "quarantined", "quarantine_failed", "rolled_back", "rollback_failed_quarantined"}
+
+
+def validate_host_metadata(info):
+    require(stat.S_ISREG(info.st_mode) and info.st_uid == 0
+            and stat.S_IMODE(info.st_mode) in (0o600, 0o644), "unsafe root-owned host policy")
+
+
+
+def validate_state_directory(info):
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and info.st_mode & 0o022 == 0,
+            "unsafe deployment state directory")
+
+def read_host_json(path):
+    # O_NOFOLLOW + descriptor metadata avoids swapping a checked path for a symlink.
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            validate_host_metadata(os.fstat(stream.fileno()))
+            content = stream.read(65537)
+        require(len(content) <= 65536, "host policy exceeds limit")
+        return json.loads(content, object_pairs_hook=release.unique_object)
+    except (OSError, ValueError, TypeError):
+        raise DeployError("root-owned host policy missing or invalid") from None
+
+
+def exact_image_tuple(value):
+    require(isinstance(value, dict) and set(value) == set(release.SERVICES), "policy requires exactly six services")
+    for service, image in value.items():
+        require(isinstance(image, str) and re.fullmatch(
+            rf"{re.escape(release.REGISTRY)}/map-service-{service}@sha256:[a-f0-9]{{64}}", image),
+            "policy requires fixed repository and exact digest")
+    return value
+
+
+def candidate_images(data):
+    return {service: data["services"][service]["image"] + "@" + data["services"][service]["digest"]
+            for service in release.SERVICES}
+
+
+def load_rollback_policy(candidate):
+    policy = read_host_json(STATE / "rollback-policy.json")
+    require(isinstance(policy, dict) and set(policy) ==
+            {"schema_version", "instance_id", "candidate_allowed", "rollback_verified"}, "invalid rollback policy schema")
+    require(type(policy["schema_version"]) is int and policy["schema_version"] == 1
+            and policy["instance_id"] == INSTANCE_ID, "rollback policy instance mismatch")
+    for key in ("candidate_allowed", "rollback_verified"):
+        values = policy[key]
+        require(isinstance(values, list) and len(values) <= 32, "invalid rollback policy list")
+        unique = set()
+        for value in values:
+            exact_image_tuple(value)
+            identity = json.dumps(value, sort_keys=True)
+            require(identity not in unique, "duplicate rollback tuple")
+            unique.add(identity)
+    require(bool(policy["candidate_allowed"]) and exact_image_tuple(candidate) in policy["candidate_allowed"],
+            "candidate is not explicitly allowed")
+    return policy
+
+
+def load_cutover_latch():
+    path = STATE / "security-cutover.json"
+    if not path.exists() and not path.is_symlink():
+        return None
+    data = read_host_json(path)
+    require(isinstance(data, dict) and set(data) == {"schema_version", "instance_id", "phase", "run_id",
+            "infra_sha", "bundle", "candidate", "prior_rollback_compatible"}, "invalid cutover latch")
+    require(type(data["schema_version"]) is int and data["schema_version"] == 1
+            and data["instance_id"] == INSTANCE_ID and data["phase"] in CUTOVER_PHASES
+            and type(data["prior_rollback_compatible"]) is bool
+            and isinstance(data["run_id"], str) and re.fullmatch(r"[1-9][0-9]{0,19}", data["run_id"])
+            and isinstance(data["infra_sha"], str) and release.SHA.fullmatch(data["infra_sha"])
+            and isinstance(data["bundle"], str), "invalid cutover state")
+    exact_image_tuple(data["candidate"])
+    return data
+
+
+def atomic_state(path, value):
+    # State is outside the source checkout and must survive kill/reboot/rollback.
+    fd, temporary = tempfile.mkstemp(prefix=".cutover-", dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            json.dump(value, stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def prior_rollback_compatible(policy, previous, env):
+    # These files were generated from the containers' actual .Image identities.
+    # Resolve allowed registry digests LOCALLY to the same .Id field; no pull, tag,
+    # label, registry/index-vs-config guess, or partial match can grant permission.
+    identities = {}
+    for filename in ("compose.images.yml", "compose.admin-images.yml"):
+        path = previous / filename
+        if path.is_file():
+            identities.update(re.findall(r"^  ([a-z-]+):\n    build: !reset null\n    image: (sha256:[a-f0-9]{64})$",
+                                         path.read_text(), flags=re.MULTILINE))
+    if not set(release.SERVICES) <= identities.keys():
+        return False
+    for image_tuple in policy["rollback_verified"]:
+        try:
+            if all(command(["docker", "image", "inspect", "--format", "{{.Id}}", image_tuple[service]], env=env)
+                   == identities[service] for service in release.SERVICES):
+                return True
+        except DeployError:
+            continue
+    return False
+
+
+def running_service_ids(service, env):
+    ids = command(["docker", "ps", "-q", "--filter", "label=com.docker.compose.project=map-test",
+                   "--filter", f"label=com.docker.compose.service={service}"], env=env).splitlines()
+    require(all(re.fullmatch(r"[a-f0-9]{12,64}", item) for item in ids), "invalid ingress container ID")
+    return ids
+
+
+def stop_public_services(env, services=PUBLIC_SERVICES):
+    # Try every service even if one stop fails, then independently verify all.
+    errors = []
+    for service in services:
+        try:
+            ids = running_service_ids(service, env)
+            if ids:
+                command(["docker", "stop", "--time", "30", *ids], env=env, timeout=90)
+        except Exception:
+            errors.append(service)
+    for service in services:
+        try:
+            if running_service_ids(service, env):
+                errors.append(service)
+        except Exception:
+            errors.append(service)
+    require(not errors, "public entrypoint stop or verification failed")
+
+
+def verify_edge_closed(env):
+    require(not running_service_ids("edge", env), "public entrypoint opened before private readiness")
+
+
 @contextmanager
 def topology_scope():
     """Root-owned host policy outlives every app checkout and application rollback."""
@@ -129,6 +281,41 @@ def verify_detached_services(env):
         require(not running, "retired control service is still running on application host")
 
 
+@contextmanager
+def interruption_guard():
+    watched = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+    previous = {sig: signal.getsignal(sig) for sig in watched}
+    def interrupted(_signum, _frame):
+        # A second termination signal must not interrupt group/ingress cleanup.
+        for sig in watched:
+            signal.signal(sig, signal.SIG_IGN)
+        raise DeployError("deployment interrupted")
+    try:
+        for sig in watched:
+            signal.signal(sig, interrupted)
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def stop_process_group(process):
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.communicate(timeout=PROCESS_TERM_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+    # The parent can exit before children that ignored TERM or detached pipes.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.communicate()
+
+
 def command(args, *, env=None, timeout=300, cwd=REPO, umask=-1):
     # A timed-out shell must not leave its compose/backup children racing rollback.
     process = subprocess.Popen(args, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE,
@@ -136,22 +323,11 @@ def command(args, *, env=None, timeout=300, cwd=REPO, umask=-1):
     try:
         output, _errors = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            process.communicate(timeout=PROCESS_TERM_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            pass
-        # The shell can exit before a child that ignores TERM, even if that child
-        # redirected its pipes. Always kill the remaining group, not only the shell.
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.communicate()
+        stop_process_group(process)
         raise DeployError("subprocess timed out and process group was stopped") from None
+    except BaseException:
+        stop_process_group(process)
+        raise
     require(process.returncode == 0, "subprocess failed")
     return output.strip()
 
@@ -480,7 +656,7 @@ def verify_infrastructure_images(evidence, env):
             require(image == metadata["image_id"], "running infrastructure image changed unexpectedly")
 
 
-def snapshot_images(directory, env):
+def snapshot_images(directory, env, *, include_stopped=False):
     active = {}
     for admin, candidates in ((False, APP_SERVICES), (True, admin_services())):
         # Query by labels so capturing an older deployment does not need new compose syntax.
@@ -488,7 +664,7 @@ def snapshot_images(directory, env):
         pins = ["services:"]
         active[project] = []
         for service in candidates:
-            ids = command(["docker", "ps", "--filter", f"label=com.docker.compose.project={project}",
+            ids = command(["docker", "ps", *(["-a"] if include_stopped else []), "--filter", f"label=com.docker.compose.project={project}",
                            "--filter", f"label=com.docker.compose.service={service}", "--format", "{{.ID}}"], env=env).splitlines()
             require(len(ids) <= 1, "multiple containers for a service")
             if not ids:
@@ -509,7 +685,7 @@ def verify_admin_rollback_compatibility(bundle, active, env):
         return
     # Do not bypass old entrypoints: an old Alembic cannot read an unknown new head.
     # Changing a head requires a separately verified rollback strategy before enabling it.
-    ids = command(["docker", "ps", "-q", "--filter", "label=com.docker.compose.project=map-admin-test",
+    ids = command(["docker", "ps", "-a", "-q", "--filter", "label=com.docker.compose.project=map-admin-test",
                    "--filter", "label=com.docker.compose.service=admin"], env=env).splitlines()
     require(len(ids) == 1, "previous admin unavailable")
     old_image = command(["docker", "inspect", "--format", "{{.Image}}", ids[0]], env=env)
@@ -538,8 +714,8 @@ def http_status(url, expected):
     return body
 
 
-def smoke():
-    for base in ("http://127.0.0.1:8290", PUBLIC_URL):
+def smoke(*, include_public=True):
+    for base in (("http://127.0.0.1:8290", PUBLIC_URL) if include_public else ("http://127.0.0.1:8290",)):
         http_status(base + "/healthz", 200)
         body = http_status(base + "/healthz/app", 200)
         require(json.loads(body).get("status") == "UP", "BFF readiness failed")
@@ -580,6 +756,7 @@ def rollback(old_sha, original_env, env_metadata, previous, active, current_bund
 @contextmanager
 def deployment_lock():
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    validate_state_directory(STATE.lstat())
     with (STATE / "deploy.lock").open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -592,12 +769,21 @@ def receive(raw):
     os.umask(0o077)
     verify_instance()
     require(REPO.is_dir() and not REPO.is_symlink(), "fixed deployment repository unavailable")
-    with deployment_lock(), topology_scope():
+    with deployment_lock(), topology_scope(), interruption_guard():
         with tempfile.TemporaryDirectory(prefix="incoming-", dir=STATE) as incoming:
             bundle = Path(incoming)
             data = unpack_payload(raw, bundle)
+            candidate = candidate_images(data)
+            policy = load_rollback_policy(candidate)
+            prior_latch = load_cutover_latch()
+            interrupted = prior_latch is not None and prior_latch["phase"] not in ("complete", "rolled_back")
             env = backup_environment()
             verify_detached_services(env)
+            if interrupted:
+                # Recover even the kill windows before the first edge stop or after
+                # edge reopening. Never treat a pending attempt as a verified prior.
+                stop_public_services(env)
+                status("interrupted_cutover_closed")
             git("diff", "--quiet", "--")
             git("diff", "--cached", "--quiet", "--")
             old_sha = git("rev-parse", "HEAD")
@@ -612,7 +798,9 @@ def receive(raw):
             previous.mkdir(mode=0o700)
             (previous / "environment").write_bytes(original_env)
             (previous / "infra_sha").write_text(old_sha + "\n")
-            active = snapshot_images(previous, env)
+            active = snapshot_images(previous, env, include_stopped=interrupted)
+            rollback_allowed = not interrupted and prior_rollback_compatible(policy, previous, env)
+            status("verified_rollback_available" if rollback_allowed else "security_cutover_no_rollback")
             (previous / "active.json").write_text(json.dumps(active))
             captured_infrastructure = capture_infrastructure(env)
             (previous / "infrastructure.json").write_text(json.dumps(captured_infrastructure))
@@ -640,26 +828,74 @@ def receive(raw):
                 # Verified new backup implementation reads the unchanged prior test environment.
                 command(["bash", "scripts/pg-backup.sh", "--test"], env=env, timeout=1800)
                 replace_environment(env_path, candidate_env.read_bytes(), env_metadata)
+                latch = {"schema_version": 1, "instance_id": INSTANCE_ID, "phase": "starting_private",
+                         "run_id": data["github_run_id"], "infra_sha": data["infra_sha"], "bundle": str(new_bundle),
+                         "candidate": candidate, "prior_rollback_compatible": rollback_allowed}
+                atomic_state(STATE / "security-cutover.json", latch)
                 started = True
-                status("deploy_started")
+                # The latch precedes the first serving mutation. A pending latch on
+                # retry never authorizes rollback, including a partially started candidate.
+                stop_public_services(env, ("edge",))
+                status("deploy_private_started")
                 role_args = ["--target-exporters"] if ADMIN_DETACHED else ["--admin", "--monitoring"]
-                command(["bash", "scripts/cloud-up.sh", "--test", "--registry", "--vision", "--edge", *role_args],
+                # cloud-up's explicit application list omits edge/dns without --edge.
+                # Existing DNS remains running; all database/infrastructure pins remain.
+                command(["bash", "scripts/cloud-up.sh", "--test", "--registry", "--vision", *role_args],
                         env={**env, "RELEASE_BUNDLE": str(new_bundle), "INFRA_IMAGE_BUNDLE": str(infrastructure)}, timeout=2400)
+                verify_edge_closed(env)
+                private_evidence = {**evidence, "projects": {
+                    project: {service: entry for service, entry in entries.items() if service != "edge"}
+                    for project, entries in evidence["projects"].items()}}
+                verify_infrastructure_images(private_evidence, env)
+                status("private_smoke")
+                smoke(include_public=False)
+                latch["phase"] = "private_ready"
+                atomic_state(STATE / "security-cutover.json", latch)
+                latch["phase"] = "opening_ingress"
+                atomic_state(STATE / "security-cutover.json", latch)
+                command(compose_command(bundle=new_bundle, infrastructure=infrastructure)
+                        + ["up", "-d", "--no-deps", "--no-build", "--pull", "never", "--wait", "--wait-timeout", "180", "edge"],
+                        env=env, timeout=300)
                 verify_infrastructure_images(evidence, env)
                 status("smoke")
                 smoke()
-                (history / "result.json").write_text(json.dumps({"status": "complete", "run_id": data["github_run_id"], "infra_sha": data["infra_sha"]}))
-                (STATE / "current.json").write_text(json.dumps({"bundle": str(new_bundle), "infrastructure": str(infrastructure), "run_id": data["github_run_id"]}))
+                atomic_state(history / "result.json", {"status": "complete", "run_id": data["github_run_id"],
+                             "infra_sha": data["infra_sha"], "prior_rollback_compatible": rollback_allowed})
+                atomic_state(STATE / "current.json", {"bundle": str(new_bundle), "infrastructure": str(infrastructure), "run_id": data["github_run_id"]})
+                latch["phase"] = "complete"
+                atomic_state(STATE / "security-cutover.json", latch)
+                # Success clears only the quarantine phase, NEVER the root policy.
                 status("deploy_complete")
-            except Exception:
-                # Before application mutation, restoring checkout/env is enough. After it,
-                # one application rollback is attempted; the deployment still reports failed.
+            except BaseException:
                 if started:
-                    try:
-                        rollback(old_sha, original_env, env_metadata, previous, active, new_bundle, env)
-                    except Exception:
-                        status("rollback_failed")
-                        raise DeployError("deployment and application rollback failed") from None
+                    if rollback_allowed:
+                        try:
+                            rollback(old_sha, original_env, env_metadata, previous, active, new_bundle, env)
+                            latch["phase"] = "rolled_back"
+                            atomic_state(STATE / "security-cutover.json", latch)
+                            atomic_state(history / "result.json", {"status": "failed_rolled_back", "run_id": data["github_run_id"]})
+                        except Exception:
+                            latch["phase"] = "rollback_failed_quarantined"
+                            try:
+                                stop_public_services(env)
+                            except Exception:
+                                latch["phase"] = "quarantine_failed"
+                            atomic_state(STATE / "security-cutover.json", latch)
+                            atomic_state(history / "result.json", {"status": latch["phase"], "run_id": data["github_run_id"]})
+                            status(latch["phase"])
+                            raise DeployError("deployment and verified rollback failed; ingress quarantine attempted") from None
+                    else:
+                        # Keep candidate source/env/bundle; never restart unsafe prior code.
+                        latch["phase"] = "quarantined"
+                        try:
+                            stop_public_services(env)
+                        except Exception:
+                            latch["phase"] = "quarantine_failed"
+                        atomic_state(STATE / "security-cutover.json", latch)
+                        atomic_state(history / "result.json", {"status": latch["phase"], "run_id": data["github_run_id"],
+                                     "infra_sha": data["infra_sha"], "candidate_preserved": True})
+                        status(latch["phase"])
+                        raise DeployError("deployment failed; unverified rollback prohibited; ingress quarantine attempted") from None
                 else:
                     git("checkout", "--detach", old_sha)
                     replace_environment(env_path, original_env, env_metadata)
