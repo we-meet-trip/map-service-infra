@@ -87,11 +87,13 @@ def verify_vector_response(response):
 def check(s, grafana_origin, credentials, prometheus_url=PROMETHEUS_URL):
     """Return checks only after all 13 signatures and backend health/query pass."""
     origin = urllib.parse.urlsplit(grafana_origin)
-    require(origin.scheme == 'http' and origin.hostname == '127.0.0.1'
+    require(origin.scheme == 'http'
             and origin.port is not None and 0 < origin.port < 65536
             and not origin.username and not origin.password
             and not origin.path and not origin.query and not origin.fragment,
-            'grafana_fixture_loopback_origin_required')
+            'grafana_fixture_http_origin_required')
+    require(callable(getattr(s, 'owns_origin', None)) and s.owns_origin(grafana_origin),
+            'grafana_fixture_owned_origin_required')
     require(prometheus_url == PROMETHEUS_URL, 'owned_prometheus_alias_required')
     require(re.fullmatch(r'[a-f0-9]{12}', getattr(s, 'token', '')),
             'owned_sandbox_required')

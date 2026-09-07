@@ -15,6 +15,9 @@ SPEC.loader.exec_module(FIXTURE)
 class FakeSandbox:
     token = '0123456789ab'
 
+    def owns_origin(self, origin):
+        return origin in ('http://127.0.0.1:45678', 'http://172.19.0.3:3000')
+
     def __init__(self):
         self.plugins = [{'id': name, 'type': 'datasource', 'signature': 'valid',
                          'signatureType': 'grafana', 'signatureOrg': 'grafana',
@@ -63,6 +66,15 @@ class PluginFixtureTests(unittest.TestCase):
         self.assertEqual(len(queries), 2)
         self.assertEqual(queries[0]['queries'][0]['expr'], 'vector(1)')
         self.assertEqual(queries[0]['queries'][0]['datasource']['uid'], FIXTURE.DATASOURCE_UID)
+
+    def test_proven_internal_origin_allowed_but_other_private_origin_refused(self):
+        sandbox = FakeSandbox()
+        self.assertEqual(FIXTURE.check(sandbox, 'http://172.19.0.3:3000',
+                                      'fixture-admin:synthetic')['status'], 'PASS')
+        sandbox = FakeSandbox()
+        with self.assertRaisesRegex(ValueError, 'owned_origin_required'):
+            FIXTURE.check(sandbox, 'http://172.19.0.4:3000', 'fixture-admin:synthetic')
+        self.assertEqual(sandbox.calls, [])
 
     def test_missing_duplicate_wrong_type_or_modified_signature_rejected_before_write(self):
         for mutation in ('missing', 'duplicate', 'modified', 'unsigned', 'internal', 'type'):

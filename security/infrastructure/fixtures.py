@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import importlib.util
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import traceback
 import urllib.request
 import uuid
 
@@ -20,6 +22,11 @@ def require(ok, reason):
         raise ValueError(reason)
 
 
+class NoFixtureRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError('fixture_http_redirect_refused')
+
+
 class Sandbox:
     def __init__(self, output):
         self.output = output
@@ -27,6 +34,7 @@ class Sandbox:
         self.containers = []
         self.volumes = []
         self.networks = []
+        self.origins = {}
 
     def run(self, args, **kwargs):
         p = subprocess.run(args, capture_output=True, timeout=kwargs.pop('timeout', 120), **kwargs)
@@ -58,13 +66,79 @@ class Sandbox:
         self.run(['docker', 'start', name])
         return name, self.origin(name, port)
 
-    def origin(self, name, port):
+    def resolve_origin(self, name, port):
+        require(name in self.containers, 'fixture_container_not_registered')
+        require(type(port) is int and 0 < port < 65536, 'fixture_port_invalid')
         info = json.loads(self.run(['docker', 'inspect', name]))[0]
-        binding = info['NetworkSettings']['Ports'][str(port) + '/tcp'][0]
-        require(binding['HostIp'] == '127.0.0.1', 'fixture_must_bind_loopback')
-        return 'http://127.0.0.1:' + binding['HostPort']
+        require(info.get('Name') == '/' + name and
+                (info.get('Config', {}).get('Labels') or {}).get('map.infra.fixture') == self.token,
+                'fixture_container_owner_mismatch')
+        require(info.get('State', {}).get('Running') is True, 'fixture_container_not_running')
+        key = str(port) + '/tcp'
+        requested = (info.get('HostConfig', {}).get('PortBindings') or {}).get(key)
+        require(isinstance(requested, list) and len(requested) == 1 and
+                requested[0].get('HostIp') == '127.0.0.1', 'fixture_must_bind_loopback')
+        settings = info.get('NetworkSettings') or {}
+        networks = settings.get('Networks') or {}
+        owned = set(networks).intersection(self.networks)
+        proof = {'container': name, 'container_id': info['Id'], 'container_port': port}
+        if owned:
+            # Docker 28 does not publish ports on an internal-only network. The
+            # hosted Linux runner can reach its bridge IP without enabling egress.
+            require(len(owned) == 1 and set(networks) == owned, 'fixture_network_must_be_internal_only')
+            actual_bindings = (settings.get('Ports') or {}).get(key)
+            require(actual_bindings in (None, []) or
+                    (isinstance(actual_bindings, list) and len(actual_bindings) == 1 and
+                     actual_bindings[0].get('HostIp') == '127.0.0.1' and
+                     re.fullmatch(r'[0-9]{1,5}', actual_bindings[0].get('HostPort', '')) and
+                     0 < int(actual_bindings[0]['HostPort']) < 65536),
+                    'fixture_internal_unexpected_publication')
+            network = next(iter(owned))
+            meta = json.loads(self.run(['docker', 'network', 'inspect', network]))[0]
+            endpoint = networks[network]
+            require(meta.get('Name') == network and meta.get('Internal') is True and
+                    meta.get('Driver') == 'bridge' and
+                    (meta.get('Labels') or {}).get('map.infra.fixture') == self.token and
+                    meta.get('Id') == endpoint.get('NetworkID'), 'fixture_internal_network_owner_mismatch')
+            member = (meta.get('Containers') or {}).get(info['Id'], {})
+            address = ipaddress.IPv4Address(endpoint.get('IPAddress', ''))
+            require(any(address in ipaddress.IPv4Network(cidr) for cidr in
+                        ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')),
+                    'fixture_internal_address_invalid')
+            require(member.get('Name') == name and
+                    ipaddress.IPv4Interface(member.get('IPv4Address', '')).ip == address,
+                    'fixture_internal_endpoint_mismatch')
+            proof.update(mode='owned_internal_bridge', network=network, network_id=meta['Id'])
+            return 'http://' + str(address) + ':' + str(port), proof
+        require(set(networks) == {'bridge'}, 'fixture_unowned_network_refused')
+        bindings = (settings.get('Ports') or {}).get(key)
+        require(isinstance(bindings, list) and len(bindings) == 1, 'fixture_loopback_binding_missing')
+        binding = bindings[0]
+        require(binding.get('HostIp') == '127.0.0.1' and
+                re.fullmatch(r'[0-9]{1,5}', binding.get('HostPort', '')) and
+                0 < int(binding['HostPort']) < 65536, 'fixture_loopback_binding_invalid')
+        proof['mode'] = 'owned_loopback_binding'
+        return 'http://127.0.0.1:' + binding['HostPort'], proof
+
+    def origin(self, name, port):
+        origin, proof = self.resolve_origin(name, port)
+        self.origins[origin] = proof
+        return origin
+
+    def owns_origin(self, origin):
+        proof = self.origins.get(origin)
+        if not proof:
+            return False
+        try:
+            current, current_proof = self.resolve_origin(proof['container'], proof['container_port'])
+            return current == origin and current_proof == proof
+        except (ValueError, KeyError, TypeError):
+            return False
 
     def request(self, origin, path, payload=None, credentials=None):
+        require(self.owns_origin(origin), 'fixture_http_origin_not_owned')
+        require(isinstance(path, str) and path.startswith('/') and not path.startswith('//')
+                and '#' not in path, 'fixture_http_path_invalid')
         headers = {}
         if credentials:
             headers['Authorization'] = 'Basic ' + base64.b64encode(credentials.encode()).decode()
@@ -72,8 +146,25 @@ class Sandbox:
             headers['Content-Type'] = 'application/json'
             payload = json.dumps(payload).encode()
         req = urllib.request.Request(origin + path, data=payload, headers=headers)
-        with urllib.request.urlopen(req, timeout=5) as response:
+        # Never forward synthetic credentials via environment proxies or redirects.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoFixtureRedirect())
+        with opener.open(req, timeout=5) as response:
             return response.read()
+
+    def diagnostics(self):
+        states = []
+        for name in self.containers:
+            try:
+                meta = json.loads(self.run(['docker', 'inspect', name]))[0]
+                require((meta.get('Config', {}).get('Labels') or {}).get('map.infra.fixture') == self.token,
+                        'fixture_diagnostic_owner_mismatch')
+                state = meta.get('State') or {}
+                states.append({'container': name, 'image_id': meta.get('Image'),
+                               'state': {key: state.get(key) for key in
+                                         ('Status', 'Running', 'ExitCode', 'OOMKilled', 'StartedAt', 'FinishedAt')}})
+            except Exception as error:
+                states.append({'container': name, 'diagnostic_error_type': type(error).__name__})
+        return states
 
     def wait(self, origin, path):
         for _ in range(90):
@@ -271,7 +362,11 @@ def check(service, before, candidate, output):
         result['status'] = 'PASS'
     except Exception as error:
         result['failure_code'] = str(error) if isinstance(error, ValueError) else type(error).__name__
+        result['failure_trace'] = [{'file': Path(frame.filename).name, 'function': frame.name,
+                                    'line': frame.lineno} for frame in traceback.extract_tb(error.__traceback__)[-12:]]
+        result['owned_container_states'] = s.diagnostics()
     finally:
+        result['http_origin_proofs'] = s.origins
         try: s.clean(); result['cleanup'] = 'PASS'
         except Exception: result['cleanup'] = 'FAIL'; result['status'] = 'FAIL'
         (directory / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
