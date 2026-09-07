@@ -104,7 +104,7 @@ class BuildEvidenceExportTest(unittest.TestCase):
         self.assertIn(docker.name + ':/usr/share/map-security/go/.', next(c for c in docker.calls if c[1] == 'cp'))
 
     def test_source_recipe_paths_are_explicit_and_other_recipes_do_nothing(self):
-        for build, path in [('postgres-debian', '/usr/share/map-candidate'), ('grafana-security', '/usr/share/map-security/grafana-core')]:
+        for build, path in [('postgres-debian', '/usr/share/map-candidate'), ('postgres-trixie', '/usr/share/map-candidate'), ('grafana-security', '/usr/share/map-security/grafana-core')]:
             with self.subTest(build=build), tempfile.TemporaryDirectory() as temp:
                 docker = DockerDouble(make_tar([('proof', b'synthetic', tarfile.REGTYPE)]))
                 self.invoke(docker, Path(temp), build)

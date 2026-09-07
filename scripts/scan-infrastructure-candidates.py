@@ -21,6 +21,9 @@ SERVICES = {'postgres','redis','proxy','dns','prometheus','grafana','postgres-ex
 DIGEST = re.compile(r'sha256:[a-f0-9]{64}')
 POSTGRES_CURRENT = 'postgis/postgis@sha256:01a6a70e41e6c4467c8f55f6063555ed72db2d6662cd0d571040d42eadaeb6f6'
 POSTGRES_DEBIAN_BASE = 'postgres@sha256:7bade6d532592ca8ce7ee32def7399dad2607c4ea5583839fc4352a095a11ea6'
+POSTGRES_TRIXIE_BASE = 'postgres@sha256:d13db94ae661d517c5ed57c509a578d5ea64aae639871ba25294f4f42d83de28'
+POSTGRES_VARIANTS = {'bookworm': ('postgres-debian', POSTGRES_DEBIAN_BASE),
+                     'trixie': ('postgres-trixie', POSTGRES_TRIXIE_BASE)}
 
 
 def require(value, message):
@@ -44,16 +47,30 @@ def write(path, data):
     with Path(path).open('x') as stream: json.dump(data, stream, indent=2, sort_keys=True); stream.write('\n')
 
 
-def load_spec():
+def load_spec(postgres_variant='bookworm'):
+    require(postgres_variant in POSTGRES_VARIANTS, 'postgres_variant_allowlist')
     spec = json.loads(SPEC.read_text())
     require(spec['schema_version']==1 and spec['platform']=='linux/amd64', 'manifest_schema')
     require({r['service'] for r in spec['services']}==SERVICES and len(spec['services'])==9, 'exact_nine_services')
+    default_pg = next(r for r in spec['services'] if r['service'] == 'postgres')
+    require(default_pg['build'] == 'postgres-debian' and default_pg['current'] == POSTGRES_CURRENT
+            and default_pg['candidate_selector'] == POSTGRES_DEBIAN_BASE, 'pinned_postgres_debian_contract')
+    alternatives = spec.get('postgres_alternatives', {})
+    require(alternatives == {'trixie': {'build': 'postgres-trixie', 'candidate_selector': POSTGRES_TRIXIE_BASE}},
+            'pinned_postgres_alternatives_contract')
+    if postgres_variant == 'trixie':
+        default_pg.update(alternatives['trixie'])
+    spec['selected_postgres_variant'] = postgres_variant
     for row in spec['services']:
         require(re.fullmatch(r'[a-z0-9/_-]+@sha256:[a-f0-9]{64}', row['current']), 'immutable_current_required')
-        require(row['build'] in ('postgres','postgres-debian','preserve','upstream','os-update','go-security','grafana-security'), 'build_mode')
+        require(row['build'] in ('postgres','postgres-debian','postgres-trixie','preserve','upstream','os-update','go-security','grafana-security'), 'build_mode')
         if row['build']=='postgres-debian':
             require(row['service']=='postgres' and row['current']==POSTGRES_CURRENT
                     and row['candidate_selector']==POSTGRES_DEBIAN_BASE,'pinned_postgres_debian_contract')
+        elif row['build']=='postgres-trixie':
+            require(postgres_variant == 'trixie' and row['service']=='postgres'
+                    and row['current']==POSTGRES_CURRENT and row['candidate_selector']==POSTGRES_TRIXIE_BASE,
+                    'pinned_postgres_trixie_contract')
         elif row['build']=='go-security':
             pins=json.loads((ROOT/'security/infrastructure/go-security/pins.json').read_text())['services']
             require(row['service'] in pins and row['candidate_selector']==pins[row['service']]['runtime_base'],
@@ -107,6 +124,7 @@ def oci_identity(path):
 
 def export_build_evidence(row, image, identity, output):
     paths={'postgres-debian':'/usr/share/map-candidate',
+           'postgres-trixie':'/usr/share/map-candidate',
            'go-security':'/usr/share/map-security/go',
            'grafana-security':'/usr/share/map-security/grafana-core'}
     path=paths.get(row['build'])
@@ -166,7 +184,7 @@ def build_candidate(row, base, output, source_sha):
     args=['docker','buildx','build','--platform','linux/amd64','--provenance=false','--file',str(ROOT/'security/infrastructure'/('Dockerfile.'+row['build'])),'--build-arg','BASE='+base,'--build-arg','SOURCE_SHA='+source_sha,'--build-arg','RUNTIME_USER='+user]
     if row['build']=='go-security':args+=['--build-arg','SERVICE='+row['service']]
     args+=['--tag',tag,'--output','type=oci,dest='+str(oci),'--output','type=docker,dest='+str(docker),str(ROOT/'security/infrastructure')]
-    timeout={'postgres-debian':2400,'go-security':2700,'grafana-security':4200}.get(row['build'],1200)
+    timeout={'postgres-debian':2400,'postgres-trixie':2400,'go-security':2700,'grafana-security':4200}.get(row['build'],1200)
     try:
         build_process=run(args,accepted=(0,1),timeout=timeout)
     except subprocess.TimeoutExpired as error:
@@ -275,7 +293,7 @@ def execute(spec, output, selected):
     updated=datetime.fromisoformat(db['UpdatedAt'].replace('Z','+00:00'))
     require(timedelta(0)<=datetime.now(timezone.utc)-updated<=timedelta(hours=48),'fresh_scanner_database_required')
     db_hash=sha(cache/'db/trivy.db');write(output/'scanner-db-metadata.json',db|{'db_sha256':db_hash,'scanner':spec['scanner'],'version':spec['scanner_version']})
-    summary={'source_sha':source_sha,'started_at':datetime.now(timezone.utc).isoformat(),'services':{},'strict_policy':'HIGH=0 and CRITICAL=0 including unfixed; no ignore file','actual_gcp_changes':0,'production_data_used':False,'security_approved':False}
+    summary={'source_sha':source_sha,'postgres_variant':spec['selected_postgres_variant'],'started_at':datetime.now(timezone.utc).isoformat(),'services':{},'strict_policy':'HIGH=0 and CRITICAL=0 including unfixed; no ignore file','actual_gcp_changes':0,'production_data_used':False,'security_approved':False}
     for row in spec['services']:
         service=row['service']
         if service not in selected:continue
@@ -316,8 +334,9 @@ def execute(spec, output, selected):
 
 
 def main():
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--run',action='store_true');parser.add_argument('--services',default='all');parser.add_argument('--output',type=Path,default=ROOT/'candidate-results')
-    args=parser.parse_args();spec=load_spec();selected=SERVICES if args.services=='all' else set(args.services.split(','));require(selected and selected<=SERVICES,'service_allowlist')
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--run',action='store_true');parser.add_argument('--services',default='all');parser.add_argument('--postgres-variant',choices=sorted(POSTGRES_VARIANTS),default='bookworm');parser.add_argument('--output',type=Path,default=ROOT/'candidate-results')
+    args=parser.parse_args();spec=load_spec(args.postgres_variant);selected=SERVICES if args.services=='all' else set(args.services.split(','));require(selected and selected<=SERVICES,'service_allowlist')
+    require(args.postgres_variant == 'bookworm' or selected == {'postgres'}, 'trixie_comparison_postgres_only')
     if not args.run:
         print(json.dumps({'status':'PLAN_ONLY','services':[r for r in spec['services'] if r['service'] in selected],'docker_or_network_calls':0,'remote_ci_required':True,'publish_images':False}));return 0
     return execute(spec,args.output.resolve(),selected)

@@ -1,7 +1,7 @@
 name: infrastructure-security-candidate
 on:
   push:
-    branches: ["fix/infrastructure-security-integration-20260907-01"]
+    branches: ["fix/infrastructure-security-integration-20260907-01", "fix/integration-postgres-trixie-security-20260907"]
   workflow_dispatch:
     inputs:
       services:
@@ -9,6 +9,12 @@ on:
         required: true
         default: all
         type: string
+      postgres_variant:
+        description: 'bookworm default or separate postgres-only trixie comparison'
+        required: true
+        default: bookworm
+        type: choice
+        options: [bookworm, trixie]
 permissions:
   contents: read
 concurrency:
@@ -32,7 +38,8 @@ jobs:
       - name: Exact scans, candidate builds and isolated restoration
         env:
           SELECTED_SERVICES: ${{ inputs.services }}
-        run: python3 scripts/scan-infrastructure-candidates.py --run --services "$SELECTED_SERVICES" --output "$RUNNER_TEMP/map-infrastructure-candidate"
+          POSTGRES_VARIANT: ${{ inputs.postgres_variant }}
+        run: python3 scripts/scan-infrastructure-candidates.py --run --services "$SELECTED_SERVICES" --postgres-variant "$POSTGRES_VARIANT" --output "$RUNNER_TEMP/map-infrastructure-candidate"
       - name: Preserve actual reports and exact candidate OCI archives
         if: always()
         uses: actions/upload-artifact@v4

@@ -120,5 +120,11 @@
     "osrm_image_id": "sha256:aa6a1de3a71dafffd0ba39340542524f66e6841fc19bf7874a0e6a7967837f56"
   },
   "candidate_security_approved": false,
-  "production_data_migration_approved": false
+  "production_data_migration_approved": false,
+  "postgres_alternatives": {
+    "trixie": {
+      "build": "postgres-trixie",
+      "candidate_selector": "postgres@sha256:d13db94ae661d517c5ed57c509a578d5ea64aae639871ba25294f4f42d83de28"
+    }
+  }
 }

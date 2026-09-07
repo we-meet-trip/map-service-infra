@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -60,6 +61,42 @@ META = """SELECT json_build_object('server',current_setting('server_version_num'
  'provider',datlocprovider,'declared_collation_version',datcollversion,
  'actual_collation_version',pg_database_collation_actual_version(oid))
  FROM pg_database WHERE datname=current_database();"""
+# Independent fixed geometry answers exercise SFCGAL across both library majors.
+# Extensions are loaded in a rolled-back transaction; the preserved dump contract
+# and its exact extension inventory remain unchanged.
+SFCGAL_PROBE = """BEGIN; SET LOCAL statement_timeout='10s';
+CREATE EXTENSION postgis_sfcgal;
+WITH cut AS (SELECT CG_3DIntersection(
+ 'LINESTRING Z (0 0 0,2 0 0)'::geometry,
+ 'LINESTRING Z (1 0 0,3 0 0)'::geometry) AS geom),
+solid AS (SELECT CG_MakeSolid(CG_Extrude(
+ 'POLYGON ((0 0,1 0,1 1,0 1,0 0))'::geometry,0,0,2)) AS geom)
+SELECT json_build_object('sfcgal_version',postgis_sfcgal_version(),
+ 'intersection_length',ST_3DLength(cut.geom),
+ 'intersection_dimension',ST_CoordDim(cut.geom),
+ 'intersection_min_x',ST_XMin(Box3D(cut.geom)),
+ 'intersection_max_x',ST_XMax(Box3D(cut.geom)),
+ 'intersection_min_z',ST_ZMin(Box3D(cut.geom)),
+ 'intersection_max_z',ST_ZMax(Box3D(cut.geom)),
+ 'solid_volume',CG_Volume(solid.geom)) FROM cut,solid;
+ROLLBACK;"""
+SFCGAL_ANSWERS = {'intersection_length': 1, 'intersection_dimension': 3,
+                  'intersection_min_x': 1, 'intersection_max_x': 2,
+                  'intersection_min_z': 0, 'intersection_max_z': 0,
+                  'solid_volume': 2}
+
+
+def validate_sfcgal(observed):
+    require(set(observed) == {'sfcgal_version', *SFCGAL_ANSWERS}, 'sfcgal_probe_fields')
+    require(isinstance(observed['sfcgal_version'], str)
+            and re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:[ +.-][A-Za-z0-9.+_-]+)?', observed['sfcgal_version']),
+            'sfcgal_runtime_version_missing')
+    for name, expected in SFCGAL_ANSWERS.items():
+        value = observed[name]
+        require(type(value) in (int, float) and math.isfinite(value)
+                and abs(value - expected) <= 1e-9, 'sfcgal_' + name + '_mismatch')
+
+
 EXPECTED_ACL = {'select': True, 'insert': True, 'schema_create': False, 'hub_schema': False,
                 'admin_schema': False, 'superuser': False, 'create_db': False,
                 'create_role': False, 'replication': False, 'bypass_rls': False}
@@ -197,6 +234,11 @@ class Fixture:
         meta['owners'] = dict(zip(OWNER_PATHS, owners))
         return meta
 
+    def sfcgal(self, name):
+        observed = json.loads(self.sql(name, SFCGAL_PROBE).stdout)
+        validate_sfcgal(observed)
+        return observed
+
     def collation(self, name):
         report = {'queries': {}, 'index_vs_sequential_verified': False}
         for key, where in QUERY_FILTERS.items():
@@ -220,7 +262,7 @@ class Fixture:
 
     def probe(self, name, stage, label, result):
         names = ['metadata', 'runtime_acl', 'runtime_ddl_denial', 'hub_denial', 'admin_denial',
-                 'unique_constraint', 'negative_probes_preserve_rows', 'btree_sequential_queries']
+                 'unique_constraint', 'negative_probes_preserve_rows', 'btree_sequential_queries', 'sfcgal_geometry_behavior']
         observation = {'checks': {check: 'NOT_RUN' for check in names}}
         result.setdefault('observations', {})[label] = observation
 
@@ -239,6 +281,8 @@ class Fixture:
             validate_runtime(meta, stage)
             return meta
         meta = observe('metadata', metadata)
+        observation['sfcgal'] = observe('sfcgal_geometry_behavior', lambda: self.sfcgal(name))
+        require(self.metadata(name)['extensions'] == meta['extensions'], 'sfcgal_transaction_changed_extension_inventory')
         snapshot = self.snapshot(name)
         observation.update(snapshot_sha256=digest(snapshot), rows=len(snapshot['rows']), text_rows=len(snapshot['text']))
         observe('runtime_acl', lambda: require(snapshot['runtime'] == EXPECTED_ACL, 'runtime_privilege_contract'))

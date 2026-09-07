@@ -178,7 +178,9 @@ class FailureSafetyTest(unittest.TestCase):
             fixture = pg.Fixture(Path(tmp)); result = {}
             snap = {'runtime': pg.EXPECTED_ACL, 'rows': [{}], 'text': corpus()}
             with patch.object(fixture, 'metadata', return_value=metadata()), patch.object(fixture, 'snapshot', return_value=snap), \
-                 patch.object(fixture, 'denied', side_effect=ValueError('expected_sqlstate_42501_missing')):
+                 patch.object(fixture, 'denied', side_effect=ValueError('expected_sqlstate_42501_missing')), \
+                 patch.object(fixture, 'sfcgal', return_value={'sfcgal_version': '1.4.1', **pg.SFCGAL_ANSWERS}), \
+                 patch.object(fixture, 'run', side_effect=AssertionError('unit fixture must not execute subprocess')):
                 with self.assertRaises(ValueError):
                     fixture.probe('synthetic', 'old', 'baseline', result)
             checks = result['observations']['baseline']['checks']
