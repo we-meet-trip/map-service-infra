@@ -27,6 +27,7 @@ EXPECTED = {
     "google.golang.org/grpc": "v1.83.1",
 }
 REQUIRED_MODULES = {"http.handlers.reverse_proxy", "tls.issuance.acme"}
+INTERNAL_CA_PATH = "/data/caddy/pki/authorities/local/root.crt"
 
 
 def require(condition, message):
@@ -131,18 +132,30 @@ CONFIG
 caddy run --config /tmp/Caddyfile --adapter caddyfile > /tmp/caddy.log 2>&1 &
 caddy_pid=$!
 trap 'kill "$caddy_pid" 2>/dev/null || true; wait "$caddy_pid" 2>/dev/null || true' EXIT
+root_ca=/data/caddy/pki/authorities/local/root.crt
 ready=0
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
-    if [ "$(curl -fsS --max-time 2 http://localhost:8080/healthz 2>/dev/null || true)" = ok ] &&
-       [ "$(curl -fkSs --max-time 2 https://localhost:8443/healthz 2>/dev/null || true)" = ok ]; then
+    if [ -s "$root_ca" ] &&
+       [ "$(curl -fsS --max-time 2 http://localhost:8080/healthz 2>/dev/null || true)" = ok ] &&
+       [ "$(curl -fsS --cacert "$root_ca" --max-time 2 https://localhost:8443/healthz 2>/dev/null || true)" = ok ]; then
         ready=1
         break
     fi
     sleep 1
 done
 test "$ready" = 1
+# Prove that success above depended on trusting this generated CA. Neither
+# skip_install_trust nor the image's OS trust store may silently bypass it.
+untrusted_status=0
+curl -fsS --max-time 2 https://localhost:8443/healthz >/dev/null 2>&1 || untrusted_status=$?
+test "$untrusted_status" = 60
+echo '{"http":"pass","tls":"pass","tls_trust":"explicit_internal_ca","root_ca_path":"/data/caddy/pki/authorities/local/root.crt","untrusted_root_rejected":true}'
 '''
-    run(isolated(image_id, "sh") + ["-c", boot], timeout=60)
+    result = json.loads(run(isolated(image_id, "sh") + ["-c", boot], timeout=60))
+    require(result == {"http": "pass", "tls": "pass", "tls_trust": "explicit_internal_ca",
+                       "root_ca_path": INTERNAL_CA_PATH, "untrusted_root_rejected": True},
+            "trusted TLS runtime evidence is incomplete")
+    return result
 
 
 def verify(args):
@@ -160,10 +173,11 @@ def verify(args):
     actual_hash = run(isolated(patched["id"], "sha256sum") + ["/usr/bin/caddy"]).split()[0]
     require(re.fullmatch(r"[a-f0-9]{64}", expected_hash) and expected_hash == actual_hash, "installed binary differs from build evidence")
     verify_report(json.loads(args.report.read_text()), patched["id"], patched["platform_image_id"])
-    runtime_checks(patched["id"])
+    runtime = runtime_checks(patched["id"])
     print(json.dumps({"status": "verified", "image_id": patched["id"], "platform_image_id": patched["platform_image_id"], "caddy": "v2.11.4", "go": GO_VERSION,
                       "module_count": len(new_modules), "high_critical": 0,
-                      "isolated_http": "pass", "isolated_tls": "pass", "public_config": "valid"}))
+                      "isolated_http": "pass", "isolated_tls": "pass", "public_config": "valid",
+                      "runtime_checks": runtime}))
 
 
 class EvidenceTests(unittest.TestCase):
@@ -244,6 +258,23 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(args[args.index(flag) + 1], value)
         self.assertNotIn("--volume", args)
         self.assertNotIn("-v", args)
+
+    def test_runtime_requires_explicit_CA_and_rejected_untrusted_root(self):
+        evidence = {"http": "pass", "tls": "pass", "tls_trust": "explicit_internal_ca",
+                    "root_ca_path": INTERNAL_CA_PATH, "untrusted_root_rejected": True}
+        calls = []
+        def execute(args, **kwargs):
+            calls.append(args)
+            return json.dumps(evidence)
+        with patch.dict(globals(), {"run": execute}):
+            self.assertEqual(runtime_checks(self.image_id), evidence)
+        script = calls[-1][-1]
+        self.assertIn('--cacert "$root_ca"', script)
+        self.assertIn('test "$untrusted_status" = 60', script)
+        self.assertNotIn('curl -k', script)
+        evidence['untrusted_root_rejected'] = False
+        with patch.dict(globals(), {"run": execute}), self.assertRaisesRegex(ValueError, 'evidence is incomplete'):
+            runtime_checks(self.image_id)
 
 
 def main():

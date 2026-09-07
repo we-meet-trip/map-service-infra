@@ -6,5 +6,6 @@
   "report_sha256": "72c78ece19691d1ed17bc44b41e44de90ad9173ce41229d2a819066b0c243c54",
   "image": "map-caddy-security:2.11.4-go1.26.8-20260906",
   "source_image_id": "sha256:a41831ba2e12a84e3b6a19b2cbf45e7c6ad268faf2996d9db2edd78c3a6fa3ca",
-  "platform_image_id": "sha256:5d27f970d3a1c93e77bd28089bf3294ef40b9f7832648419b8a3c2b43b4bc670"
+  "platform_image_id": "sha256:5d27f970d3a1c93e77bd28089bf3294ef40b9f7832648419b8a3c2b43b4bc670",
+  "config_image_id": "sha256:751250cd5a230dc11a3d62ebcfa8c094fca3621705526360d772ea26581ada57"
 }

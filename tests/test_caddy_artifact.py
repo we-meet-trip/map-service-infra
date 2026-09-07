@@ -1,8 +1,10 @@
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
+import tarfile
 import unittest
 from unittest.mock import patch
 
@@ -38,7 +40,7 @@ class CaddyArtifactTests(unittest.TestCase):
                 'report_sha256': hashlib.sha256(b'{}').hexdigest(),
                 'source_image_id': 'source', 'platform_image_id': 'platform',
             }))
-            with patch.object(installer, 'MANIFEST', manifest), patch.object(installer.security, 'verify_report'), patch.object(installer.security, 'run') as run:
+            with patch.object(installer, 'MANIFEST', manifest), patch.object(installer.security, 'verify_report'), patch.object(installer, 'verify_archive_identity'), patch.object(installer.security, 'run') as run:
                 installer.verify_files(archive, report)
                 archive.write_bytes(b'other')
                 with self.assertRaisesRegex(ValueError, 'archive checksum'):
@@ -54,7 +56,7 @@ class CaddyArtifactTests(unittest.TestCase):
             output = Path(temporary) / 'compose.yml'
             with patch.object(installer.security, 'run'), patch.object(installer.security, 'metadata', return_value={'platform_image_id': 'wrong'}):
                 with self.assertRaisesRegex(ValueError, 'loaded platform image mismatch'):
-                    installer.install(Path('image.tar'), {'image': 'reviewed', 'platform_image_id': 'right'}, output)
+                    installer.install(Path('image.tar'), {'image': 'reviewed', 'platform_image_id': 'right', 'config_image_id': 'config'}, output)
             self.assertFalse(output.exists())
 
     def test_installer_preserves_an_existing_override_before_import(self):
@@ -66,3 +68,43 @@ class CaddyArtifactTests(unittest.TestCase):
                     installer.install(Path('image.tar'), {}, output)
                 run.assert_not_called()
             self.assertEqual(output.read_text(), 'prior release')
+
+    def test_portable_identity_accepts_only_reviewed_manifest_or_config(self):
+        manifest = {'platform_image_id': 'manifest', 'config_image_id': 'config'}
+        for identity in ('manifest', 'config'):
+            self.assertTrue(installer.reviewed_identity({'platform_image_id': identity}, manifest))
+        self.assertFalse(installer.reviewed_identity({'platform_image_id': 'other'}, manifest))
+
+    def test_archive_hash_chain_binds_config_to_reviewed_platform(self):
+        documents = {}
+        def blob(value):
+            raw = json.dumps(value).encode()
+            digest = 'sha256:' + hashlib.sha256(raw).hexdigest()
+            documents[digest] = raw
+            return digest
+        config = blob({'os': 'linux', 'architecture': 'amd64'})
+        platform = blob({'config': {'digest': config}})
+        source = blob({'manifests': [{'digest': platform, 'platform': {'architecture': 'amd64', 'os': 'linux'}}]})
+        manifest = {'source_image_id': source, 'platform_image_id': platform, 'config_image_id': config}
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / 'image.tar'
+            def write_archive(corrupt=False, duplicate=False):
+                with tarfile.open(archive, 'w') as saved:
+                    for digest, raw in documents.items():
+                        if corrupt and digest == config:
+                            raw = b'{}'
+                        member = tarfile.TarInfo('blobs/' + digest.replace(':', '/'))
+                        member.size = len(raw)
+                        saved.addfile(member, io.BytesIO(raw))
+                        if duplicate and digest == config:
+                            saved.addfile(member, io.BytesIO(raw))
+            write_archive()
+            installer.verify_archive_identity(archive, manifest)
+            with self.assertRaisesRegex(ValueError, 'config not bound'):
+                installer.verify_archive_identity(archive, {**manifest, 'config_image_id': 'sha256:' + 'b' * 64})
+            write_archive(corrupt=True)
+            with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+                installer.verify_archive_identity(archive, manifest)
+            write_archive(duplicate=True)
+            with self.assertRaisesRegex(ValueError, 'unique bounded'):
+                installer.verify_archive_identity(archive, manifest)
