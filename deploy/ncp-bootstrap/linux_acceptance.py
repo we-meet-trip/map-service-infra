@@ -225,6 +225,7 @@ def run_fixture(args):
                             "data_uuid": filesystem_uuid, "docker_key_sha256": args.docker_key_sha256,
                             "fixture_only": True, "kind": "privileged-systemd-container-not-vm"})
         run(["docker", "run", "--detach", "--name", guest_name, "--hostname", guest_name, "--privileged", "--cgroupns=private",
+             "--device", device + ":" + device,
              "--network", "bridge", "--tmpfs", "/run", "--tmpfs", "/run/lock", "--tmpfs", "/tmp",
              "--env", "container=docker", "--env", "container_uuid=" + str(uuid.uuid4()),
              "--mount", f"type=bind,src={ROOT},dst=/opt/map,readonly",
@@ -299,10 +300,16 @@ def guest():
     try:
         key = Path("/fixture/assets/docker.asc")
         verify_assets(Path("/fixture/assets"), marker["docker_key_sha256"])
+        public_keys = Path("/etc/apt/keyrings")
+        public_keys.mkdir(mode=0o755, parents=True, exist_ok=True)
+        fixture_key = public_keys / "fixture-reviewed-docker.asc"
+        fixture_key.write_bytes(key.read_bytes())
+        fixture_key.chmod(0o644)
+        require(sha(fixture_key) == marker["docker_key_sha256"], "fixture public-key copy drift")
         # Resolve only the fixture's package versions through Docker's signed
         # official repository. This is not a production version recommendation.
         source = private / "docker.sources"
-        source.write_text("Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: /fixture/assets/docker.asc\n")
+        source.write_text("Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: " + str(fixture_key) + "\n")
         apt_options = ["-o", "Dir::Etc::sourcelist=" + str(source), "-o", "Dir::Etc::sourceparts=-", "-o", "APT::Get::List-Cleanup=0"]
         run(["apt-get", *apt_options, "update", "-qq"])
         packages = {}
@@ -340,6 +347,8 @@ def guest():
                                     "cgroup_and_proc_capacity_are_shared_kernel_observations": True}
         result["os_package_versions"] = {name: run(["dpkg-query", "-W", "-f=${Version}", name])
                                          for name in ("systemd", "cryptsetup-bin")}
+        result["mount_probe"] = json.loads(run(["findmnt", "--json", "--mountpoint", "/srv/map-prod", "--output", "SOURCE,UUID,FSTYPE,OPTIONS"]))
+        result["crypt_probe"] = run(["cryptsetup", "status", result["mount_probe"]["filesystems"][0]["source"]])
         result["preflight"] = host("preflight")
         pin = host("enrollment-hash")["sha256"]
         result["install"] = host("install", "--docker-key", key, "--approved-enrollment-sha256", pin)
