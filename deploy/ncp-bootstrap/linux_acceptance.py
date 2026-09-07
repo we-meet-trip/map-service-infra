@@ -58,7 +58,12 @@ def write_json(path, value):
 
 def run(argv, *, input=None, timeout=600, allowed=(0,), env=None):
     result = subprocess.run([str(arg) for arg in argv], input=input, capture_output=True, timeout=timeout, env=env)
-    require(result.returncode in allowed, "command failed: " + Path(str(argv[0])).name + " (exit " + str(result.returncode) + ")")
+    if result.returncode not in allowed:
+        tool = Path(str(argv[0])).name
+        # This fixture contains only synthetic data. Keep arguments and stdin
+        # private, and never include authenticated gh diagnostics.
+        detail = result.stderr.decode(errors="replace")[-4096:] if tool != "gh" and input is None else "suppressed"
+        raise ValueError("command failed: " + tool + " (exit " + str(result.returncode) + "): " + detail)
     return result.stdout.decode()
 
 
@@ -93,7 +98,7 @@ def download(args):
     require(sha(ANCHOR) == ANCHOR_SHA, "tracked Caddy trust anchor changed")
     args.assets.mkdir(mode=0o700, parents=False, exist_ok=False)
     anchor = json.loads(ANCHOR.read_text())
-    # Drafts need repository read permission. No publish/upload API is used.
+    # Draft visibility requires push access; isolated job uses GET APIs only.
     releases = json.loads(run(["gh", "api", f"repos/{REPOSITORY}/releases?per_page=100"]))
     matches = [release for release in releases if release.get("draft") is True and
                release.get("tag_name") == "caddy-security-20260906-v1"]
@@ -251,6 +256,9 @@ def run_fixture(args):
         report["failure"] = str(error) if isinstance(error, ValueError) else type(error).__name__
         raise
     finally:
+        guest_evidence = args.output / "guest.json"
+        if guest_evidence.is_file():
+            report["guest"] = json.loads(guest_evidence.read_text())
         # Exact resources created above only. Never prune the runner daemon or
         # scan, stop, format, or remove another job's devices/containers.
         for enabled, command in ((created, ["docker", "rm", "--force", guest_name]),
