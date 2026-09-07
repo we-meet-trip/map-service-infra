@@ -113,7 +113,9 @@ def build_candidate(row, base, output, source_sha):
         require('sha256:'+hashlib.sha256(config_bytes).hexdigest()==identity['config_digest'],'fixture_and_scan_image_config_mismatch')
     require(DIGEST.fullmatch(current['Id']),'loaded_runtime_image_identifier')
     identity['runtime_image_id']=current['Id'];identity['loaded_config_bytes_verified']=True
-    loaded.unlink();docker.unlink()  # Only duplicate archives created by this run.
+    identity['scan_archive_sha256']=sha(loaded)
+    identity['scan_archive_format']='docker-save'
+    docker.unlink()  # Keep the verified Docker save archive until Trivy reads it.
     write(output/'candidate-identity.json',identity)
     return current['Id'],identity
 
@@ -134,7 +136,23 @@ def scan(spec, output, cache, name, *, ref=None, archive=None, identity=None):
     args=['docker','run','--rm','--platform','linux/amd64','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges:true','--memory','2g','--cpus','2','--user',f'{os.getuid()}:{os.getgid()}','-v',str(cache)+':/cache','-v',str(output)+':/reports','-v',str(cache/'scratch')+':/tmp',spec['scanner'],'image','--cache-dir','/cache','--skip-db-update','--skip-java-db-update','--offline-scan','--timeout','15m','--no-progress','--scanners','vuln','--severity','HIGH,CRITICAL','--ignore-unfixed=false','--ignorefile','/dev/null','--list-all-pkgs','--exit-code','1','--format','json','--output','/reports/'+name+'.json']
     if archive:args.extend(['--input','/reports/'+archive.name])
     else:args.extend(['--image-src','remote','--platform','linux/amd64',ref])
-    rc=run(args,accepted=(0,1),timeout=1000).returncode
+    process=run(args,accepted=(0,1),timeout=1000)
+    rc=process.returncode
+    # Trivy uses exit 1 for both findings and fatal input errors. A missing report
+    # must remain an execution failure, never an empty vulnerability result.
+    write(output/(name+'-scanner-execution.json'),{
+        'exit_code':rc,'stderr_bytes':len(process.stderr),
+        'stderr_sha256':hashlib.sha256(process.stderr).hexdigest(),
+        'archive_format':'docker-save' if archive else None,
+        'report_created':(output/(name+'.json')).is_file()})
+    if not (output/(name+'.json')).is_file():
+        # These hosted scans have only public image refs and no credentials.
+        # Bound diagnostics and remove URL authentication/query material.
+        diagnostic=process.stderr.decode(errors='replace')[-12000:]
+        diagnostic=re.sub(r'(https?://)[^\s/@]+:[^\s/@]+@',r'\1[redacted]@',diagnostic)
+        diagnostic=re.sub(r'(https?://[^\s?]+)\?[^\s]+',r'\1?[redacted]',diagnostic)
+        (output/(name+'-scanner-error.txt')).write_text(diagnostic)
+        raise ValueError('scanner_report_missing_fatal_exit_'+str(rc))
     report=json.loads((output/(name+'.json')).read_text())
     require(report.get('Trivy',{}).get('Version')==spec['scanner_version'],'scanner_version')
     cfg=report.get('Metadata',{}).get('ImageConfig',{})
@@ -187,7 +205,8 @@ def execute(spec, output, selected):
             else:
                 base=resolve(row['candidate_selector'],directory/'candidate-resolution.json')
                 candidate,identity=build_candidate(row,base,directory,source_sha)
-                updated=scan(spec,directory,cache,'candidate',archive=directory/'candidate.oci.tar',identity=identity)
+                updated=scan(spec,directory,cache,'candidate',archive=directory/'loaded-runtime.docker.tar',identity=identity)
+                (directory/'loaded-runtime.docker.tar').unlink()  # Exact OCI remains preserved.
                 item.update(candidate_base=base,candidate_identity=identity,candidate_scan=updated)
                 key=lambda r:json.dumps(r,sort_keys=True)
                 old={key(x) for x in baseline['findings']};new={key(x) for x in updated['findings']}

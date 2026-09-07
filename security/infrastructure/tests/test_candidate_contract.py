@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import tarfile
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
@@ -63,6 +64,17 @@ class CandidateContract(unittest.TestCase):
             run.return_value.returncode = 2
             with self.assertRaisesRegex(ValueError, 'command_failed'):
                 c.run(['docker'], accepted=(0, 1))
+
+    def test_trivy_fatal_exit_one_without_report_is_not_a_finding_scan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output=Path(directory)
+            fatal=types.SimpleNamespace(returncode=1,stderr=b'FATAL unable to open archive',stdout=b'')
+            with patch.object(c,'run',return_value=fatal):
+                with self.assertRaisesRegex(ValueError,'scanner_report_missing_fatal_exit_1'):
+                    c.scan({'scanner':'synthetic'},output,output,'candidate',archive=output/'loaded-runtime.docker.tar')
+            receipt=json.loads((output/'candidate-scanner-execution.json').read_text())
+            self.assertFalse(receipt['report_created'])
+            self.assertEqual(receipt['archive_format'],'docker-save')
 
 
 if __name__ == '__main__': unittest.main()
