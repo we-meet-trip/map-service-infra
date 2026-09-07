@@ -1,0 +1,9 @@
+ARG BASE
+FROM ${BASE}
+ARG SOURCE_SHA
+ARG RUNTIME_USER=0
+USER 0
+# Update only the selected supported distribution; no sid/edge repository mixing.
+RUN set -eu; if command -v apk >/dev/null; then apk upgrade --no-cache; elif command -v apt-get >/dev/null; then apt-get update; DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends; rm -rf /var/lib/apt/lists/*; else echo "supported package manager required" >&2; exit 1; fi
+USER ${RUNTIME_USER}
+LABEL org.opencontainers.image.source="https://github.com/we-meet-trip/map-service-infra" org.opencontainers.image.revision="${SOURCE_SHA}" map.candidate-only="true"

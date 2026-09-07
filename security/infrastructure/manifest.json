@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "platform": "linux/amd64",
+  "baseline_observed_at": "2026-09-07T04:52:35.381540+00:00",
+  "base_infra_sha": "b958a948e4bacfc58c4332cd41358cd0b1b2eaf8",
+  "scanner": "aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969",
+  "scanner_version": "0.74.0",
+  "services": [
+    {
+      "service": "grafana",
+      "current": "grafana/grafana@sha256:f772d434e8fab0049deb2b1b30abd43342bcfca1537614aa8d36080232cf4283",
+      "candidate_selector": "grafana/grafana@sha256:1dec240d14e232597dce9bfa56dae55f4397b138cdc91e3ee92ac6b157e2fc49",
+      "build": "grafana-security",
+      "kind": "stateful",
+      "prior_counts": {
+        "CRITICAL": 3,
+        "HIGH": 159
+      },
+      "prior_counts_are_new_scan": false
+    },
+    {
+      "service": "prometheus",
+      "current": "prom/prometheus@sha256:f6639335d34a77d9d9db382b92eeb7fc00934be8eae81dbc03b31cfe90411a94",
+      "candidate_selector": "prom/prometheus@sha256:e906cef998316bbe319f98711e1b4d8613ad37e14b08ff831d7036e77b7464f9",
+      "build": "go-security",
+      "kind": "stateful",
+      "prior_counts": {
+        "CRITICAL": 8,
+        "HIGH": 96
+      },
+      "prior_counts_are_new_scan": false
+    },
+    {
+      "service": "node-exporter",
+      "current": "prom/node-exporter@sha256:4032c6d5bfd752342c3e631c2f1de93ba6b86c41db6b167b9a35372c139e7706",
+      "candidate_selector": "prom/node-exporter@sha256:da83fae85603c4e47e6c68369a7d746e2dda683dc35ea2e234b4f171e0d92798",
+      "build": "go-security",
+      "kind": "stateless",
+      "prior_counts": {
+        "CRITICAL": 2,
+        "HIGH": 43
+      },
+      "prior_counts_are_new_scan": false
+    },
+    {
+      "service": "postgres-exporter",
+      "current": "prometheuscommunity/postgres-exporter@sha256:38606faa38c54787525fb0ff2fd6b41b4cfb75d455c1df294927c5f611699b17",
+      "candidate_selector": "prometheuscommunity/postgres-exporter@sha256:4f3d82803c1f99ea5e767890de3557d2479ebbc711f63f2e04c663daa840057a",
+      "build": "go-security",
+      "kind": "stateless",
+      "prior_counts": {
+        "CRITICAL": 2,
+        "HIGH": 39
+      },
+      "prior_counts_are_new_scan": false
+    },
+    {
+      "service": "redis-exporter",
+      "current": "oliver006/redis_exporter@sha256:c5a968ba5f30bab5e12181cceb89c4ed37cb4fe4d85490b5b66c7cfe4750b5e8",
+      "candidate_selector": "oliver006/redis_exporter:v1.91.0",
+      "build": "upstream",
+      "kind": "stateless",
+      "prior_counts": {
+        "CRITICAL": 1,
+        "HIGH": 22
+      },
+      "prior_counts_are_new_scan": false
+    },
+    {
+      "service": "proxy",
+      "current": "nginx@sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3",
+      "candidate_selector": "nginx:1.30.4-alpine",
+      "build": "os-update",
+      "kind": "stateless",
+      "prior_counts": {
+        "CRITICAL": 0,
+        "HIGH": 7
+      },
+      "prior_counts_are_new_scan": false
+    },
+    {
+      "service": "dns",
+      "current": "curlimages/curl@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69",
+      "candidate_selector": "curlimages/curl:8.22.0",
+      "build": "os-update",
+      "kind": "stateless",
+      "prior_counts": {
+        "CRITICAL": 2,
+        "HIGH": 24
+      },
+      "prior_counts_are_new_scan": false
+    },
+    {
+      "service": "postgres",
+      "current": "postgis/postgis@sha256:01a6a70e41e6c4467c8f55f6063555ed72db2d6662cd0d571040d42eadaeb6f6",
+      "candidate_selector": "postgres@sha256:7bade6d532592ca8ce7ee32def7399dad2607c4ea5583839fc4352a095a11ea6",
+      "build": "postgres-debian",
+      "kind": "stateful",
+      "prior_counts": {
+        "CRITICAL": 25,
+        "HIGH": 206
+      },
+      "prior_counts_are_new_scan": false
+    },
+    {
+      "service": "redis",
+      "current": "redis@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+      "candidate_selector": "redis@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+      "build": "preserve",
+      "kind": "stateful",
+      "prior_counts": {
+        "CRITICAL": 0,
+        "HIGH": 0
+      },
+      "prior_counts_are_new_scan": false
+    }
+  ],
+  "preserve": {
+    "edge": "map-caddy-security@sha256:a41831ba2e12a84e3b6a19b2cbf45e7c6ad268faf2996d9db2edd78c3a6fa3ca",
+    "osrm_image_id": "sha256:aa6a1de3a71dafffd0ba39340542524f66e6841fc19bf7874a0e6a7967837f56"
+  },
+  "candidate_security_approved": false,
+  "production_data_migration_approved": false
+}

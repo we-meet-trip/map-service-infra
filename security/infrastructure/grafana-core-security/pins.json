@@ -1,0 +1,61 @@
+{
+  "expected_residual_plugin_findings_from_run_34089509166": {
+    "CRITICAL": 3,
+    "HIGH": 155
+  },
+  "go_builder": "golang@sha256:bc6beb46032d45f421cf400036bf031cdc64f683ba9cdc124e31d063e71670bd",
+  "go_version": "1.26.8",
+  "module_patches": {
+    "github.com/apache/thrift": {
+      "checksum_source": "https://sum.golang.org/lookup/github.com/apache/thrift@v0.24.0",
+      "go_mod_sum": "h1:zPt6WxgvTOM6hF92y8C+MkEM5LMxZuk4JcQOiU4Esvs=",
+      "origin": {
+        "Hash": "6d2ec95f450b4ce404afb8929ff479e68770141a",
+        "Ref": "refs/tags/v0.24.0",
+        "URL": "https://github.com/apache/thrift",
+        "VCS": "git"
+      },
+      "sum": "h1:zy31L1a49QTNB2bG1BBfMXol3yJrTH975G3pPubQVLQ=",
+      "version": "v0.24.0"
+    },
+    "google.golang.org/grpc": {
+      "checksum_source": "https://sum.golang.org/lookup/google.golang.org/grpc@v1.83.1",
+      "go_mod_sum": "h1:kDyl6SKsiHKt0uylY5gtn5cEjkrIOhQOGDgIc4JGwzQ=",
+      "origin": {
+        "Hash": "1550d9e0cddb30ce99e61a2102e8294a49461e5e",
+        "Ref": "refs/tags/v1.83.1",
+        "URL": "https://github.com/grpc/grpc-go",
+        "VCS": "git"
+      },
+      "sum": "h1:HIO0+BEtBP6soyqvqC8sNUjZ7bTs+0hFQuFF+RAy++Y=",
+      "version": "v1.83.1"
+    }
+  },
+  "original_go_mod_sha256": "9e48e06d5e844cf06cb67dc6b40c7e77a41123eb2a46df99a1270e3b1dd2b7ab",
+  "original_versions": {
+    "github.com/apache/thrift": "v0.23.1-0.20260429145742-d2acd3c49e58",
+    "google.golang.org/grpc": "v1.82.1"
+  },
+  "preserved_catalog_plugin_ids": [
+    "elasticsearch",
+    "prometheus",
+    "tempo",
+    "zipkin",
+    "opentsdb",
+    "stackdriver",
+    "mssql",
+    "jaeger",
+    "loki",
+    "mysql",
+    "influxdb",
+    "grafana-postgresql-datasource",
+    "grafana-pyroscope-datasource"
+  ],
+  "runtime_base": "grafana/grafana@sha256:1dec240d14e232597dce9bfa56dae55f4397b138cdc91e3ee92ac6b157e2fc49",
+  "schema_version": 1,
+  "security_approved": false,
+  "source_commit": "56cd3e9288d8255fecebe5d05b48d191f50674b5",
+  "source_repository": "https://github.com/grafana/grafana.git",
+  "source_tag": "v13.2.1",
+  "version": "13.2.1"
+}

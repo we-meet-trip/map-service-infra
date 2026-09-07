@@ -1,0 +1,31 @@
+{
+  "recorded_utc": "2026-09-07T06:34:59.694293+00:00",
+  "builder": "golang@sha256:bc6beb46032d45f421cf400036bf031cdc64f683ba9cdc124e31d063e71670bd",
+  "verified_layer_digest": "sha256:8cab6ce149c24516f80b26a762b6b9aaebcaf4fbe51d4c6844af7d7dbc372f2d",
+  "compressed_bytes": 64413065,
+  "registry_digest_verified": true,
+  "method": "Read-only streaming OCI layer tar; no extraction, daemon, binary execution or package install",
+  "files": [
+    {
+      "path": "usr/bin/python3",
+      "type": "symlink",
+      "mode": "0o777",
+      "size_bytes": 0,
+      "link": "python3.11"
+    },
+    {
+      "path": "usr/bin/python3.11",
+      "type": "regular",
+      "mode": "0o755",
+      "size_bytes": 6834488,
+      "link": null
+    }
+  ],
+  "dpkg_versions": {
+    "mercurial": "6.3.2-1+deb12u1",
+    "python3": "3.11.2-1+b1",
+    "python3-minimal": "3.11.2-1+b1",
+    "python3.11": "3.11.2-6+deb12u8",
+    "python3.11-minimal": "3.11.2-6+deb12u8"
+  }
+}

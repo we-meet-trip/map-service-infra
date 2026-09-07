@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "candidate_security_approved": false,
+  "platform": "linux/amd64",
+  "builder": {
+    "image": "golang@sha256:bc6beb46032d45f421cf400036bf031cdc64f683ba9cdc124e31d063e71670bd",
+    "go_version": "go1.26.8"
+  },
+  "source": {
+    "repository": "https://github.com/tianon/gosu.git",
+    "tag": "1.19",
+    "commit": "6456aaa0f3c854d199d0f037f068eb97515b7513",
+    "files": {
+      "Dockerfile": "5a88ccf130be30a78caa7e8831862b13c0e003929d1664c0398587b9aa285c9b",
+      "main.go": "5b51466d021951038377ce7d2405087588bf86fb321299e749c73a6777865584",
+      "setup-user.go": "8baa6800c3a43b34ca39cfd4ff2c27a9af015ec985f814d7b6cf2446eeed5fba",
+      "version.go": "4129772c7234743b3f45a3828d32040ac7462884d599bd22bdab2266588c619a",
+      "go.mod": "0475f1708db81d718b633faf2d9dd64695037eabdc8562125060607bcb01b2ba",
+      "go.sum": "2a8f3fb6adb84839bbb9999f12f1416fb86c184135aaa1c2e489b35203c08346"
+    }
+  },
+  "modules": {
+    "github.com/moby/sys/user": {
+      "version": "v0.1.0",
+      "sum": "h1:WmZ93f5Ux6het5iituh9x2zAG7NFY9Aqi49jjE1PaQg=",
+      "go_mod_sum": "h1:fKJhFOnsCN6xZ5gSfbM6zaHGgDJMrqt9/reuj4T7MmU="
+    },
+    "golang.org/x/sys": {
+      "version": "v0.1.0",
+      "sum": "h1:kunALQeHf1/185U1i0GOB/fy1IPRDDpuoOOqRReG57U=",
+      "go_mod_sum": "h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg="
+    }
+  },
+  "upstream_binary_provenance": {
+    "fingerprint": "B42F6819007F00F88E364FD4036A9C25BF357DD4",
+    "files": {
+      "gosu-amd64.asc": {
+        "name": "gosu-amd64.asc",
+        "url": "https://github.com/tianon/gosu/releases/download/1.19/gosu-amd64.asc",
+        "size": 566,
+        "sha256": "13962bd4bebc154d72170e717bce633cdf214852d5ad6e0053d4ec744d8f40d7"
+      },
+      "gosu-signing-key.asc": {
+        "name": "gosu-signing-key.asc",
+        "url": "https://keys.openpgp.org/vks/v1/by-fingerprint/B42F6819007F00F88E364FD4036A9C25BF357DD4",
+        "size": 34494,
+        "sha256": "1c4c20f7b2a036e7d1bd9a153342662896041d71b5c89e66fa47cef15e196a6b"
+      },
+      "upstream-gosu-amd64": {
+        "name": "upstream-gosu-amd64",
+        "url": "https://github.com/tianon/gosu/releases/download/1.19/gosu-amd64",
+        "size": 1769900,
+        "sha256": "52c8749d0142edd234e9d6bd5237dff2d81e71f43537e2f4f66f75dd4b243dd0"
+      }
+    },
+    "scope": "original release bytes only; detached upstream signature must never be attributed to the rebuilt binary"
+  },
+  "base_binary": {
+    "image": "postgres@sha256:7bade6d532592ca8ce7ee32def7399dad2607c4ea5583839fc4352a095a11ea6",
+    "go_version": "go1.24.6",
+    "sha256": "52c8749d0142edd234e9d6bd5237dff2d81e71f43537e2f4f66f75dd4b243dd0"
+  }
+}
