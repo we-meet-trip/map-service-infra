@@ -20,6 +20,8 @@ class Sandbox:
         self.containers, self.volumes, self.networks = [], [], []
         self.calls = []
         self.metadata = {}
+        self.origins = {}
+        self.use_internal_origins = False
         self.metrics = METRICS
         self.network_override = None
         self.origin_override = None
@@ -53,7 +55,16 @@ class Sandbox:
         self.metadata[name] = {'Name': '/' + name, 'Image': M.PG_CONFIG if image == M.PG_IMAGE else image,
             'Config': {'Labels': {'map.infra.fixture': self.token}}, 'Mounts': mounts,
             'NetworkSettings': {'Networks': {self.networks[0]: {}}}}
-        return name, self.origin_override or 'http://127.0.0.1:19000'
+        origin = (f'http://172.20.0.{len(self.containers) + 1}:{port}' if self.use_internal_origins
+                  else f'http://127.0.0.1:{19000 + len(self.containers)}')
+        self.origins[(name, port)] = self.origin_override or origin
+        return name, self.origins[(name, port)]
+
+    def origin(self, name, port):
+        return self.origins[(name, port)]
+
+    def owns_origin(self, origin):
+        return origin in self.origins.values()
 
     def run(self, args, **kwargs):
         self.calls.append((args, kwargs))
@@ -156,7 +167,7 @@ class ExporterFixtureTests(unittest.TestCase):
         with self.assertRaisesRegex(M.FixtureError, 'foreign_network'):
             M.check(self.s, IMAGE)
         self.s = Sandbox(); self.s.origin_override = 'http://map-production:9187'
-        with self.assertRaisesRegex(M.FixtureError, 'loopback_origin_required'):
+        with self.assertRaisesRegex(M.FixtureError, 'numeric_fixture_origin_required'):
             M.check(self.s, IMAGE)
         self.s = Sandbox(); self.s.existing_volume = b'existing-volume\n'
         with self.assertRaisesRegex(M.FixtureError, 'volume_already_exists'):
@@ -182,6 +193,50 @@ class ExporterFixtureTests(unittest.TestCase):
         with self.assertRaisesRegex(M.FixtureError, 'sandbox_network_contract_missing'):
             M.check(self.s, IMAGE)
         self.assertFalse(self.s.containers)
+
+    def test_owned_internal_bridge_endpoints_pass_without_published_ports(self):
+        self.s.use_internal_origins = True
+        result = M.check(self.s, IMAGE)
+        self.assertTrue(result['exact_current_sandbox_owned_origins'])
+        request_origins = [call[1] for call in self.s.calls if call[0] in ('wait', 'request')]
+        self.assertEqual(request_origins, ['http://172.20.0.3:9187'] * 2)
+
+    def test_private_unowned_and_cross_container_origins_rejected(self):
+        self.s.create_network('pg-exporter-db')
+        first, first_origin = self.s.create(IMAGE, 'first', 9187)
+        second, second_origin = self.s.create(IMAGE, 'second', 9187)
+        with self.assertRaisesRegex(M.FixtureError, 'origin_container_mismatch'):
+            M.origin_only(self.s, first_origin, second, 9187)
+        self.s.origins[(first, 9187)] = 'http://172.20.0.99:9187'
+        with patch.object(self.s, 'owns_origin', return_value=False):
+            with self.assertRaisesRegex(M.FixtureError, 'unowned_origin'):
+                M.origin_only(self.s, 'http://172.20.0.99:9187', first, 9187)
+        with patch.object(self.s, 'owns_origin', return_value=1):
+            with self.assertRaisesRegex(M.FixtureError, 'unowned_origin'):
+                M.origin_only(self.s, second_origin, second, 9187)
+
+    def test_metadata_reserved_and_noncanonical_numeric_urls_rejected(self):
+        urls = ['http://169.254.169.254:80', 'http://0.0.0.0:80', 'http://239.1.2.3:80',
+                'http://192.0.2.1:80', 'http://8.8.8.8:80', 'http://100.64.0.1:80',
+                'http://127.0.0.2:80', 'http://2130706433:80', 'http://127.1:80',
+                'http://localhost:80', 'http://127.0.0.1:080', ' http://127.0.0.1:80',
+                'http://127.0.0.1:80\n', 'http://127.0.0.1:80/', 'http://127.0.0.1:80?x=y',
+                'http://user@127.0.0.1:80', 'http://[::1]:80', 'http://%31%32%37.0.0.1:80']
+        for origin in urls:
+            with self.subTest(origin=origin), self.assertRaisesRegex(M.FixtureError, 'numeric_fixture_origin_required'):
+                M.origin_only(self.s, origin, 'unused', 9187)
+
+    def test_stale_origin_after_first_scrape_fails_before_second_http_request(self):
+        original_wait = self.s.wait
+        def change_origin(origin, path):
+            result = original_wait(origin, path)
+            key = next(key for key, value in self.s.origins.items() if value == origin)
+            self.s.origins[key] = 'http://172.20.0.55:9187'
+            return result
+        with patch.object(self.s, 'wait', side_effect=change_origin):
+            with self.assertRaisesRegex(M.FixtureError, 'origin_container_mismatch'):
+                M.check(self.s, IMAGE)
+        self.assertFalse(any(call[0] == 'request' for call in self.s.calls))
 
 
 if __name__ == '__main__':

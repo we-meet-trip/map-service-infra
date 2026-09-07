@@ -1,8 +1,8 @@
 """Hosted synthetic PG exporter fixture. Parent Sandbox owns all cleanup.
 
 Interface: check(existing_sandbox, exact_candidate_config_digest) -> JSON checks.
-Requires acad675-or-later Sandbox.create_network/networks/owned network cleanup;
-the parent dispatcher must call this helper for postgres-exporter.
+Requires Sandbox.create_network/networks/owned cleanup plus the root's subsequent
+origin/owns_origin ownership contract; the dispatcher must call this helper.
 No serving DB, existing volume, provider API, or credential input is accepted.
 The official PG17.11 helper is a test dependency, not a new release approval.
 
@@ -11,6 +11,7 @@ https://www.postgresql.org/docs/17/predefined-roles.html
 https://www.postgresql.org/docs/17/auth-password.html
 https://github.com/prometheus-community/postgres_exporter/blob/867fbcac31cd18c143e244190ea9168cca069827/collector/pg_stat_database.go
 """
+import ipaddress
 import json
 import math
 import os
@@ -28,6 +29,8 @@ OWNER = 'fixture_owner'
 MONITOR = 'map_metrics'
 PG_ALIAS = 'map-fixture-pg'
 DATA_PATH = '/var/lib/postgresql/data'
+INTERNAL_IPV4 = tuple(ipaddress.IPv4Network(net) for net in
+                      ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'))
 
 
 class FixtureError(ValueError):
@@ -53,16 +56,32 @@ def parsed(raw, phase):
         raise FixtureError('pg_exporter_invalid_json:' + phase) from None
 
 
-def origin_only(origin):
+def origin_only(s, origin, container, port):
+    """Accept an exact current owned endpoint, never a generic private address.
+
+    Moby v28.0.4 endpoint.go:658 skips ProgramExternalConnectivity for internal
+    networks. Root Sandbox.origin may therefore issue the owned bridge IP.
+    Root request must reject redirects and ignore ambient HTTP proxy settings.
+    """
     try:
         url = urlsplit(origin)
-        valid = (url.scheme == 'http' and url.hostname == '127.0.0.1' and
+        address = ipaddress.IPv4Address(url.hostname)
+        valid = (url.scheme == 'http' and
+                 (str(address) == '127.0.0.1' or any(address in net for net in INTERNAL_IPV4)) and
                  url.port is not None and 0 < url.port < 65536 and
                  not url.username and not url.password and not url.path and
-                 not url.query and not url.fragment)
+                 not url.query and not url.fragment and
+                 origin == f'http://{address}:{url.port}')
     except (ValueError, TypeError):
         valid = False
-    require(valid, 'pg_exporter_loopback_origin_required')
+    require(valid, 'pg_exporter_numeric_fixture_origin_required')
+    try:
+        current_origin = s.origin(container, port)
+        owned = s.owns_origin(origin)
+    except Exception:
+        raise FixtureError('pg_exporter_origin_ownership_check_failed') from None
+    require(current_origin == origin, 'pg_exporter_origin_container_mismatch')
+    require(owned is True, 'pg_exporter_unowned_origin')
 
 
 def owned_network(s, network):
@@ -187,7 +206,8 @@ def check(s, candidate):
             'pg_exporter_sandbox_token')
     require(isinstance(candidate, str) and re.fullmatch(r'sha256:[a-f0-9]{64}', candidate),
             'pg_exporter_exact_candidate_required')
-    require(all(callable(getattr(s, name, None)) for name in ('create_network', 'create', 'run', 'wait', 'request'))
+    require(all(callable(getattr(s, name, None)) for name in
+                ('create_network', 'create', 'run', 'wait', 'request', 'origin', 'owns_origin'))
             and all(isinstance(getattr(s, name, None), list) for name in ('networks', 'containers', 'volumes')),
             'pg_exporter_sandbox_network_contract_missing')
     network = s.create_network('pg-exporter-db')
@@ -205,7 +225,7 @@ def check(s, candidate):
                '-e', 'POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=trust')
     pg, pg_origin = s.create(PG_IMAGE, 'pg-exporter-db', 5432, DATA_PATH, extra=options,
                              command=('postgres', '-c', 'password_encryption=scram-sha-256'))
-    origin_only(pg_origin)
+    origin_only(s, pg_origin, pg, 5432)
     owned_container(s, pg, network, PG_CONFIG, volume)
     for attempt in range(60):
         try:
@@ -259,11 +279,12 @@ FROM (SELECT oid,rolname,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolby
     exporter, origin = s.create(candidate, 'pg-exporter-live', 9187,
         extra=('--network', network, '--read-only', '--cap-drop', 'ALL',
                '--security-opt', 'no-new-privileges:true', '-e', 'DATA_SOURCE_NAME=' + dsn))
-    origin_only(origin)
+    origin_only(s, origin, exporter, 9187)
     owned_container(s, exporter, network, candidate)
     try:
         first = s.wait(origin, '/metrics')
         first_metrics = metrics_checks(first)
+        origin_only(s, origin, exporter, 9187)
         second_metrics = metrics_checks(s.request(origin, '/metrics'))
     except FixtureError:
         raise
@@ -273,6 +294,7 @@ FROM (SELECT oid,rolname,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolby
         'actual_postgresql_scrape': True, 'monitor_scram_tcp_authenticated': True,
         'monitor_privileges_checked': True, 'monitor_table_and_schema_ddl_denied_sqlstate_42501': True,
         'fixture_network_internal': True, 'fresh_owned_postgres_volume': True,
+        'exact_current_sandbox_owned_origins': True,
         'postgres_helper_image': PG_IMAGE, 'postgres_server_version_num': admin['server_version_num'],
         'candidate_runtime_image_id': candidate, 'monitor_role': MONITOR,
         'monitor_direct_memberships': admin['direct_memberships'],
