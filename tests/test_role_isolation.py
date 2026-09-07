@@ -77,9 +77,11 @@ class DatasetWorkerTests(unittest.TestCase):
 
     def test_serving_secret_environment_is_rejected(self):
         self.job_path.write_text(json.dumps(self.job))
-        with patch.dict(os.environ, {"LOCATION_CRYPTO_KEYS":"synthetic-forbidden"}, clear=True):
-            with self.assertRaisesRegex(ValueError, "credentials forbidden"):
-                worker.run(self.job_path, self.root, self.output, self.program)
+        for key in ("LOCATION_CRYPTO_KEYS", "USER_ADMIN_INTERNAL_TOKEN"):
+            with patch.dict(os.environ, {key:"synthetic-forbidden"}, clear=True):
+                with self.assertRaisesRegex(ValueError, "credentials forbidden"):
+                    worker.run(self.job_path, self.root, self.output, self.program)
+            self.assertEqual(list(self.output.iterdir()), [])
 
 
 class RoleManifestTests(unittest.TestCase):
