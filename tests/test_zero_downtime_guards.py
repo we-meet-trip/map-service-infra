@@ -228,3 +228,43 @@ class InternalListenerPreflightTests(unittest.TestCase):
         body = (ROOT / 'scripts/cloud-up.sh').read_text()
         self.assertIn('require_internal_listener "$ENV_FILE" proxy/default.conf || exit 2', body)
         self.assertIn('# MAP_INTERNAL_ROUTING_VERSION=1', body)
+
+
+class EdgeConfigurationTests(unittest.TestCase):
+    """The entry point holds its configuration in a file it only reads on load.
+
+    Its retry window is what covers the proxy's brief restart, so it has to be
+    read in before the proxy is touched, and by a reload rather than a
+    replacement, because replacing it frees the public ports for that moment.
+    """
+
+    def block(self):
+        body = (ROOT / 'scripts/cloud-up.sh').read_text()
+        start = body.index('rollover_up() {')
+        return body[start:body.index('\n}\n', start)]
+
+    def test_the_entry_point_reads_its_new_configuration_before_the_proxy_moves(self):
+        block = self.block()
+        reload_at = block.index('caddy reload')
+        proxy_at = block.index('--wait-timeout 180 proxy')
+        switch_at = block.index('service-rollover.py')
+        self.assertLess(reload_at, proxy_at)
+        self.assertLess(proxy_at, switch_at)
+
+    def test_the_entry_point_is_not_replaced_before_the_switches(self):
+        block = self.block()
+        switch_at = block.index('service-rollover.py')
+        for line in block[:switch_at].splitlines():
+            self.assertNotIn(' edge dns', line)
+            if 'up -d' in line:
+                self.assertNotIn(' edge', line)
+
+    def test_the_retry_window_the_reload_delivers_is_configured(self):
+        caddyfile = (ROOT / 'edge/Caddyfile').read_text()
+        self.assertIn('lb_try_duration', caddyfile)
+        self.assertIn('lb_try_interval', caddyfile)
+
+    def test_a_reload_failure_stops_before_the_proxy_is_touched(self):
+        block = self.block()
+        window = block[block.index('caddy reload'):block.index('--wait-timeout 180 proxy')]
+        self.assertIn('return 1', window)
