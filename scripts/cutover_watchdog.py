@@ -18,9 +18,11 @@ import time
 
 PUBLIC = ("edge", "proxy", "user", "yolo")
 TERMINAL = ("complete", "rolled_back")
+# Phases where the containers that were already serving still are.
+SERVING = ("rollover", "rollover_failed_serving")
 # A replacement in progress is a state the supervisor waits out rather than
 # closes: the containers it would stop are the ones still serving.
-TOLERATED = TERMINAL + ("rollover",)
+TOLERATED = TERMINAL + SERVING
 UPSTREAMS = Path("/var/lib/map-deploy/upstreams")
 OVERRIDE = "services:\n" + "".join(f"  {s}:\n    restart: 'no'\n" for s in PUBLIC)
 RECEIVER_UNIT = "map-deploy-receive.service"
@@ -164,7 +166,7 @@ def recover_once(d):
             return "receiver_active"
         latch = d.load_cutover_latch()
         d.require(latch is not None, "cutover latch required")
-        if not maintenance(d) and latch["phase"] == "rollover":
+        if not maintenance(d) and latch["phase"] in SERVING:
             # Never read the ready receipt here: during a replacement the recorded
             # identities legitimately differ, and calling that a fault is what
             # closes an entry point that is still healthy.

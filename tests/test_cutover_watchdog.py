@@ -123,6 +123,27 @@ class WatchdogTests(unittest.TestCase):
         self.assertTrue(all(item["running"] for item in self.items.values()))
         self.assertTrue(any(c[:2] == ("docker", "exec") and c[-1] == "reload" for c in self.calls))
 
+    def test_a_failed_replacement_leaves_the_serving_containers_alone(self):
+        upstreams = Path(self.temp.name) / "upstreams"
+        upstreams.mkdir()
+        (upstreams / "user.conf").write_text("set $bff_upstream http://map-test-user-rollover:8080;\n")
+        self.write("security-cutover.json", {**self.latch, "phase": "rollover_failed_serving"})
+        self.calls.clear()
+        with patch.object(guard, "UPSTREAMS", upstreams):
+            self.assertEqual(guard.recover_once(self.d), "rollover_returned_to_canonical")
+        self.assertEqual(list(upstreams.iterdir()), [])
+        self.assertEqual(self.mutations(), [])
+        self.assertTrue(all(item["running"] for item in self.items.values()))
+
+    def test_a_failed_replacement_with_a_missing_container_still_closes_the_entry_points(self):
+        upstreams = Path(self.temp.name) / "upstreams"
+        upstreams.mkdir()
+        self.write("security-cutover.json", {**self.latch, "phase": "rollover_failed_serving"})
+        self.items["proxy"]["running"] = False
+        self.calls.clear()
+        with patch.object(guard, "UPSTREAMS", upstreams):
+            self.assertEqual(guard.recover_once(self.d), "public_quarantined")
+
     def test_a_replacement_with_a_missing_container_still_closes_the_entry_points(self):
         upstreams = Path(self.temp.name) / "upstreams"
         upstreams.mkdir()
