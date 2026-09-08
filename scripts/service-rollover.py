@@ -160,9 +160,21 @@ def upstream_body(service, target):
             'set $%s http://%s:%d;\n' % (variable, target, SERVICES[service]['port']))
 
 
+def upstream_source(cid):
+    """The host directory the proxy actually reads its overrides from."""
+    return inspect(cid, '{{range .Mounts}}{{if eq .Destination "/etc/nginx/upstreams"}}'
+                        '{{.Source}}{{end}}{{end}}').strip()
+
+
 def reload_proxy(project, upstreams, service, target):
     """Point one name at a different address and let nginx pick it up."""
     proxy = container_id(project, 'proxy')
+    # Writing where the proxy does not read leaves every reload successful and
+    # every request still on the container about to be replaced, which is the
+    # one outage this whole procedure exists to avoid.
+    mounted = upstream_source(proxy)
+    require(mounted and os.path.realpath(mounted) == os.path.realpath(str(upstreams)),
+            'proxy_reads_a_different_upstream_directory')
     path = upstreams / (service + '.conf')
     if target is None:
         if path.exists():

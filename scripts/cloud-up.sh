@@ -334,7 +334,9 @@ echo "[$LABEL] 4/4 애플리케이션 기동"
 # 동안 요청을 받아 줄 컨테이너가 항상 하나 있으므로 공개 요청이 끊기지
 # 않는다. 실패하면 임시 컨테이너만 지우고 상류는 원래 자리로 되돌린다.
 rollover_up() {
-  local upstreams=${PROXY_UPSTREAMS_DIR:-/var/lib/map-deploy/upstreams}
+  # 관문이 실제로 마운트하는 자리와 같아야 한다. 기본값을 두면 관문은
+  # checkout 안을 보고 여기는 상태 디렉터리에 쓰는 어긋남이 조용히 생긴다.
+  local upstreams=${PROXY_UPSTREAMS_DIR:?rollover requires the directory the proxy mounts}
   local origin=${ROLLOVER_PROBE_ORIGIN:?rollover requires the published proxy origin}
   local service receipt rc=0
   mkdir -p "$upstreams"
@@ -351,9 +353,12 @@ rollover_up() {
     echo 'internal listener did not answer from inside the network; replacement is unsafe' >&2
     return 1
   fi
-  local services=(hub agent)
+  # 부르는 쪽을 먼저 바꾼다. 불리는 쪽이 먼저 갈리면, 아직 예전 주소를 들고
+  # 있는 부르는 쪽의 호출이 그 컨테이너가 다시 서는 동안 끊긴다. yolo 는 user 를,
+  # user 는 agent 와 hub 를, agent 는 hub 를 부른다.
+  local services=()
   [ "$VISION" = 0 ] || services+=(yolo)
-  services+=(user)
+  services+=(user agent hub)
   for service in "${services[@]}"; do
     receipt="/var/lib/map-deploy/receipts/rollover-${service}-$(python3 -c 'import uuid; print(uuid.uuid4().hex)').json"
     mkdir -p /var/lib/map-deploy/receipts

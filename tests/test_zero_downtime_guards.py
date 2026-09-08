@@ -138,3 +138,43 @@ class ProbeTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RolloverOrderTests(unittest.TestCase):
+    """The replacement order has to follow the direction of internal calls.
+
+    A service keeps the address it was started with, so a service that is
+    replaced before the ones calling it loses those calls for as long as its
+    canonical container is being recreated.
+    """
+
+    # caller -> the services it opens connections to inside the network
+    CALLS = {'yolo': {'user'}, 'user': {'agent', 'hub'}, 'agent': {'hub'}, 'hub': set()}
+
+    def order(self):
+        body = (ROOT / 'scripts/cloud-up.sh').read_text()
+        start = body.index('rollover_up() {')
+        block = body[start:body.index('\n}\n', start)]
+        import re
+        sequence = []
+        for line in block.splitlines():
+            found = re.search(r'\b(?:local )?services(?:\+)?=\(([^)]*)\)', line)
+            if found:
+                sequence += found.group(1).split()
+        return sequence
+
+    def test_every_service_is_replaced_exactly_once(self):
+        sequence = self.order()
+        self.assertEqual(sorted(sequence), sorted(self.CALLS))
+
+    def test_a_caller_is_replaced_before_anything_it_calls(self):
+        position = {name: index for index, name in enumerate(self.order())}
+        for caller, callees in self.CALLS.items():
+            for callee in callees:
+                with self.subTest(caller=caller, callee=callee):
+                    self.assertLess(position[caller], position[callee])
+
+    def test_the_replacement_directory_has_no_default(self):
+        body = (ROOT / 'scripts/cloud-up.sh').read_text()
+        self.assertIn('PROXY_UPSTREAMS_DIR:?', body)
+        self.assertNotIn('PROXY_UPSTREAMS_DIR:-', body)

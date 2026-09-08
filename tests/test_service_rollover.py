@@ -63,6 +63,7 @@ class ProxyTests(unittest.TestCase):
                 stdout = ''
             return Result()
         with tempfile.TemporaryDirectory() as d, patch.object(roll, 'container_id', return_value=PROXY), \
+                patch.object(roll, 'upstream_source', return_value=d), \
                 patch.object(roll.subprocess, 'run', side_effect=run):
             with self.assertRaisesRegex(roll.RolloverError, 'proxy_configuration_rejected'):
                 roll.reload_proxy('map-test', Path(d), 'hub', 'map-test-hub-rollover')
@@ -71,6 +72,7 @@ class ProxyTests(unittest.TestCase):
 
     def test_returning_traffic_removes_the_override_file(self):
         with tempfile.TemporaryDirectory() as d, patch.object(roll, 'container_id', return_value=PROXY), \
+                patch.object(roll, 'upstream_source', return_value=d), \
                 patch.object(roll, 'docker', return_value=''), \
                 patch.object(roll.subprocess, 'run', return_value=type('R', (), {'returncode': 0, 'stdout': ''})()):
             path = Path(d)/'hub.conf'
@@ -78,6 +80,32 @@ class ProxyTests(unittest.TestCase):
             self.assertTrue(path.exists())
             roll.reload_proxy('map-test', Path(d), 'hub', None)
             self.assertFalse(path.exists())
+
+    def test_a_proxy_reading_another_directory_stops_before_anything_moves(self):
+        with tempfile.TemporaryDirectory() as ours, tempfile.TemporaryDirectory() as theirs, \
+                patch.object(roll, 'container_id', return_value=PROXY), \
+                patch.object(roll, 'upstream_source', return_value=theirs), \
+                patch.object(roll.subprocess, 'run') as run:
+            with self.assertRaisesRegex(roll.RolloverError, 'proxy_reads_a_different_upstream_directory'):
+                roll.reload_proxy('map-test', Path(ours), 'hub', 'map-test-hub-rollover')
+            self.assertEqual(list(Path(ours).iterdir()), [])
+            run.assert_not_called()
+
+    def test_a_proxy_without_the_mount_stops_the_switch(self):
+        with tempfile.TemporaryDirectory() as d, patch.object(roll, 'container_id', return_value=PROXY), \
+                patch.object(roll, 'upstream_source', return_value=''), \
+                patch.object(roll.subprocess, 'run') as run:
+            with self.assertRaises(roll.RolloverError):
+                roll.reload_proxy('map-test', Path(d), 'hub', 'map-test-hub-rollover')
+            run.assert_not_called()
+
+    def test_the_mount_is_read_from_the_upstream_destination(self):
+        seen = []
+        with patch.object(roll, 'inspect', side_effect=lambda cid, template: seen.append(template) or '/host/dir'):
+            self.assertEqual(roll.upstream_source(PROXY), '/host/dir')
+        self.assertIn('/etc/nginx/upstreams', seen[0])
+        self.assertIn('.Mounts', seen[0])
+        self.assertIn('.Source', seen[0])
 
 
 class RolloverTests(unittest.TestCase):
@@ -115,6 +143,7 @@ class RolloverTests(unittest.TestCase):
                              side_effect=lambda p, s: PROXY if s == 'proxy' else self.canonical), \
                 patch.object(roll, 'state', side_effect=lambda cid: self.states[cid]), \
                 patch.object(roll, 'inspect', return_value='map-test_default'), \
+                patch.object(roll, 'upstream_source', side_effect=lambda cid: str(self.upstreams)), \
                 patch.object(roll, 'address', return_value='10.0.0.5'), \
                 patch.object(roll, 'admission', return_value={'ok': True}), \
                 patch.object(roll, 'probe', return_value=probe_status), \
