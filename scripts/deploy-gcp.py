@@ -975,6 +975,8 @@ def receive(raw):
                         "release lacks public restart supervisor contract")
                 require("# MAP_USER_STANDALONE_MIGRATION_VERSION=1" in (REPO / "scripts/cloud-up.sh").read_text().splitlines(),
                         "release lacks standalone User migration contract")
+                require("# MAP_SERVICE_MIGRATION_VERSION=1" in (REPO / "scripts/cloud-up.sh").read_text().splitlines(),
+                        "release lacks per-service isolated migration contract")
                 preflight(new_bundle, candidate_env, env)
                 infrastructure = history / "infrastructure"
                 evidence = prepare_infrastructure(infrastructure, new_bundle, candidate_env, captured_infrastructure, env)

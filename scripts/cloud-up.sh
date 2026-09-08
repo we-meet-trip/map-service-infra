@@ -287,10 +287,34 @@ if [ "$TARGET_ONLY" = 0 ]; then
     postgres bash /docker-entrypoint-initdb.d/10-admin.sh
 fi
 
-echo "[$LABEL] 3/4 hub 표 만들기"
+echo "[$LABEL] 3/4 스키마 이전"
+# MAP_USER_STANDALONE_MIGRATION_VERSION=1
+# MAP_SERVICE_MIGRATION_VERSION=1
+# The helper consumes rendered configuration privately, extracts only the exact
+# image and runtime contract of the one service it is told to migrate, and never
+# forwards serving environment to the job. Each service brings its own migrator
+# credential file and its own private, database-only network. Role and owner
+# provisioning and its verified backup are separate prerequisites.
+run_service_migration() {
+  local service=$1 credentials=$2 receipt
+  receipt="/var/lib/map-deploy/${service}-migration-$(python3 -c 'import uuid; print(uuid.uuid4().hex)').json"
+  if ! dc "${PROFILES[@]}" config --format json | python3 scripts/service-migration-job.py \
+      --service "$service" --credentials "$credentials" \
+      --operation migrate --receipt "$receipt"; then
+    echo "${service} standalone migration failed; application startup is blocked" >&2
+    return 1
+  fi
+}
+run_service_migration user \
+  "${USER_MIGRATION_CREDENTIALS_FILE:-/etc/map-deploy/user-migration.env}" || exit 1
+run_service_migration hub \
+  "${HUB_MIGRATION_CREDENTIALS_FILE:-/etc/map-deploy/hub-migration.env}" || exit 1
+run_service_migration agent \
+  "${AGENT_MIGRATION_CREDENTIALS_FILE:-/etc/map-deploy/agent-migration.env}" || exit 1
+
 # shellcheck source=scripts/lib/migrations.sh
 source ./scripts/lib/migrations.sh
-verify_hub_migration || exit 1
+verify_hub_revision || exit 1
 
 tables=$(dc exec -T postgres psql -U "$db_user" -d "$db_name" -tAc \
   "select count(*) from information_schema.tables where table_schema='hub_data'" | tr -d '[:space:]')
@@ -299,18 +323,6 @@ if [ "${tables:-0}" -lt 1 ]; then
   exit 1
 fi
 echo "     hub_data 표 ${tables}개"
-
-# MAP_USER_STANDALONE_MIGRATION_VERSION=1
-# The helper consumes rendered configuration privately, extracts only the exact
-# User image/runtime contract, and never forwards serving environment to the job.
-# Role/owner provisioning and its verified backup are separate prerequisites.
-user_migration_receipt="/var/lib/map-deploy/user-migration-$(python3 -c 'import uuid; print(uuid.uuid4().hex)').json"
-if ! dc "${PROFILES[@]}" config --format json | python3 scripts/user-migration-job.py \
-    --credentials "${USER_MIGRATION_CREDENTIALS_FILE:-/etc/map-deploy/user-migration.env}" \
-    --operation migrate --receipt "$user_migration_receipt"; then
-  echo 'User standalone migration failed; application startup is blocked' >&2
-  exit 1
-fi
 
 echo "[$LABEL] 4/4 애플리케이션 기동"
 # 상태가 정상이 될 때까지 기다린다. 기다리지 않으면 표 손질에 실패해 뜨다

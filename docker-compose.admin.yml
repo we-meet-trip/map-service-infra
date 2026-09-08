@@ -244,7 +244,9 @@ services:
           cpus: "0.25"
           memory: 64m
     environment:
-      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      # Metrics need pg_monitor only, so this login carries no table privileges
+      # and is never the database container's operator account.
+      DATA_SOURCE_NAME: ${POSTGRES_EXPORTER_DSN:?dedicated pg_monitor login required}
 
   # redis-exporter — Redis 메트릭(메모리/클라이언트/키스페이스).
   redis-exporter:

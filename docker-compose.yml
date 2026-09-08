@@ -392,9 +392,12 @@ services:
       PERSONALIZATION_ENABLED:
       POSTGRES_DB:
       POSTGRES_HOST:
-      POSTGRES_PASSWORD:
+      # Serving connects with its own restricted checkpoint login. The bare
+      # POSTGRES_USER/POSTGRES_PASSWORD pair belongs to the database container's
+      # operator, so inheriting it here would hand this service that account.
+      POSTGRES_PASSWORD: ${AGENT_DATABASE_PASSWORD:?agent runtime database password required}
       POSTGRES_PORT:
-      POSTGRES_USER:
+      POSTGRES_USER: ${AGENT_DATABASE_USER:?agent runtime database role required}
       REDIS_DB_RATELIMIT:
       REDIS_DB_STREAMS:
       REDIS_URL:

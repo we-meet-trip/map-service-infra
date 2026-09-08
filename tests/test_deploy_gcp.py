@@ -573,7 +573,8 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
         repo.mkdir()
         (repo / "scripts").mkdir()
         (repo / "scripts/cloud-up.sh").write_text("# MAP_CUTOVER_SUPERVISOR_VERSION=1\n" +
-            ("" if failure == "missing_migrator" else "# MAP_USER_STANDALONE_MIGRATION_VERSION=1\n"))
+            ("" if failure == "missing_migrator" else "# MAP_USER_STANDALONE_MIGRATION_VERSION=1\n") +
+            ("" if failure == "missing_service_migrator" else "# MAP_SERVICE_MIGRATION_VERSION=1\n"))
         env_path = repo / ".env.test"
         original = b"MAP_STACK_ENV=test\nIMAGE_TAG=old\nPOSTGRES_PASSWORD=synthetic-private\n"
         env_path.write_bytes(original)
@@ -729,9 +730,13 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
         self.assertFalse(any("scripts/cloud-up.sh" in c for c in self.calls))
 
     def test_old_infra_without_standalone_migration_is_rejected_before_backup_or_app_start(self):
-        output = self.scenario("missing_migrator")
-        self.assertIn("predeploy_state_restored", output)
-        self.assertFalse(any("scripts/cloud-up.sh" in c or "scripts/pg-backup.sh" in c for c in self.calls))
+        for failure in ("missing_migrator", "missing_service_migrator"):
+            with self.subTest(failure=failure):
+                self.setUp()
+                output = self.scenario(failure)
+                self.assertIn("predeploy_state_restored", output)
+                self.assertFalse(any("scripts/cloud-up.sh" in c or "scripts/pg-backup.sh" in c
+                                     for c in self.calls))
 
     def test_failed_prebackup_never_starts_application(self):
         self.scenario("backup")
