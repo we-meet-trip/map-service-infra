@@ -92,6 +92,7 @@ set_kv HUB_DATABASE_URL   "postgresql+psycopg://map:${TEST_PW}@postgres:5432/map
 set_kv MAP_ADMIN_PASSWORD "$TEST_PW"
 set_kv ADMIN_DATABASE_URL "postgresql+psycopg://map_admin:${TEST_PW}@postgres:5432/map_test"
 set_kv INTERNAL_SERVICE_TOKEN test-internal-token-not-a-real-secret-value
+set_kv USER_ADMIN_INTERNAL_TOKEN test-admin-user-token-independent-not-real
 set_kv ADMIN_BOOTSTRAP_PASSWORD "$TEST_PW"
 set_kv GF_SECURITY_ADMIN_PASSWORD "$TEST_PW"
 vision_token=$(prev VISION_INTERNAL_TOKEN)

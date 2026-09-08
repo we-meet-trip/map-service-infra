@@ -1,0 +1,2 @@
+Kept empty on purpose. A deployment writes one file here per service it is
+replacing and removes it when the canonical container is serving again.

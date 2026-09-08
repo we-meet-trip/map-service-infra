@@ -61,6 +61,19 @@ done
 docker buildx version >/dev/null 2>&1 || {
   echo "docker buildx 가 필요하다" >&2; exit 1; }
 
+reuse_dir=""
+cleanup_reuse() { if [ -n "$reuse_dir" ]; then rm -rf -- "$reuse_dir"; fi; }
+trap cleanup_reuse EXIT
+if [ -n "${RELEASE_REUSE_BUNDLE:-}" ]; then
+  [ "$PLATFORM" = linux/amd64 ] || { echo 'Verified reuse requires linux/amd64' >&2; exit 2; }
+  [ "$IMAGE_REGISTRY" = ghcr.io/we-meet-trip ] || { echo 'Verified reuse requires the release registry' >&2; exit 2; }
+  # This UUID temp directory is created by this process and contains only the
+  # generated one-line Dockerfiles and public provenance, never serving data.
+  reuse_dir=$(mktemp -d)
+  python3 scripts/prepare-image-reuse.py --bundle "$RELEASE_REUSE_BUNDLE" \
+    --source-root .. --output "$reuse_dir/plan"
+fi
+
 for svc in $SERVICES; do
   ref="$IMAGE_REGISTRY/map-service-$svc:$IMAGE_TAG"
   echo "== $svc → $ref ($PLATFORM)"
@@ -75,11 +88,15 @@ for svc in $SERVICES; do
   rev_dir=${REV_DIR[$svc]:-${CONTEXT[$svc]}}
   rev=$(git -C "$rev_dir" rev-parse HEAD 2>/dev/null || echo unknown)
   src=$(git -C "$rev_dir" remote get-url origin 2>/dev/null || echo unknown)
+  build_context=${CONTEXT[$svc]}
+  if [ -n "$reuse_dir" ] && [ -f "$reuse_dir/plan/$svc/Dockerfile" ]; then
+    build_context="$reuse_dir/plan/$svc"
+  fi
   docker buildx build --platform "$PLATFORM" -t "$ref" \
     --label "org.opencontainers.image.revision=$rev" \
     --label "org.opencontainers.image.version=$IMAGE_TAG" \
     --label "org.opencontainers.image.source=$src" \
-    --push "${CONTEXT[$svc]}"
+    --push "$build_context"
 done
 
 echo

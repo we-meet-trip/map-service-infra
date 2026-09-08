@@ -1,0 +1,47 @@
+# Runs on the application host. Central Prometheus reaches a separately reviewed
+# private TLS/auth gateway; these raw exporter ports remain loopback-only.
+name: map-admin-test
+services:
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.17.1
+    restart: unless-stopped
+    profiles: [monitoring]
+    mem_limit: 64m
+    cpus: 0.25
+    environment:
+      DATA_SOURCE_NAME: ${TARGET_POSTGRES_EXPORTER_DSN:?dedicated pg_monitor login required}
+    ports: ['127.0.0.1:19187:9187']
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0
+    restart: unless-stopped
+    profiles: [monitoring]
+    mem_limit: 64m
+    cpus: 0.25
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      REDIS_USER: ${TARGET_REDIS_EXPORTER_USER:?dedicated Redis metrics ACL user required}
+      REDIS_PASSWORD: ${TARGET_REDIS_EXPORTER_PASSWORD:?dedicated Redis metrics credential required}
+    ports: ['127.0.0.1:19121:9121']
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    restart: unless-stopped
+    profiles: [monitoring]
+    mem_limit: 64m
+    cpus: 0.25
+    command: [--path.rootfs=/host]
+    pid: host
+    volumes: ['/:/host:ro']
+    ports: ['127.0.0.1:19100:9100']
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+networks:
+  default:
+    name: map-test-net
+    external: true

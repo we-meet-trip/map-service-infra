@@ -1,0 +1,118 @@
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import tarfile
+import tempfile
+import types
+import unittest
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[3]
+spec = importlib.util.spec_from_file_location('candidate', ROOT / 'scripts/scan-infrastructure-candidates.py')
+c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
+f_spec = importlib.util.spec_from_file_location('fixtures', ROOT / 'security/infrastructure/fixtures.py')
+f = importlib.util.module_from_spec(f_spec); f_spec.loader.exec_module(f)
+
+
+class CandidateContract(unittest.TestCase):
+    def test_manifest_keeps_exact_nine_and_preserved_security_images(self):
+        data = c.load_spec()
+        self.assertEqual(9, len(data['services']))
+        self.assertEqual(596, sum(r['prior_counts']['HIGH'] for r in data['services']))
+        self.assertEqual(43, sum(r['prior_counts']['CRITICAL'] for r in data['services']))
+        self.assertIn('edge', data['preserve']); self.assertIn('osrm_image_id', data['preserve'])
+
+    def test_postgres_repository_exception_is_exact_and_cannot_expand(self):
+        original=c.load_spec()
+        for service,selector in [('postgres','postgres:17'),('proxy',c.POSTGRES_DEBIAN_BASE)]:
+            data=json.loads(json.dumps(original))
+            row=next(x for x in data['services'] if x['service']==service)
+            row.update(build='postgres-debian',candidate_selector=selector)
+            original_read=Path.read_text
+            def read(path,*args,**kwargs):
+                return json.dumps(data) if path==c.SPEC else original_read(path,*args,**kwargs)
+            with patch.object(Path,'read_text',read):
+                with self.assertRaisesRegex(ValueError,'pinned_postgres_debian_contract'):
+                    c.load_spec()
+
+    def test_unfixed_critical_findings_are_counted_and_linked(self):
+        actual = c.findings({'Results': [{'Target': 'binary', 'Packages': [{'Name': 'stdlib', 'Version': 'go1.25.1'}],
+            'Vulnerabilities': [{'VulnerabilityID': 'CVE-fixture', 'Severity': 'CRITICAL', 'Status': 'affected',
+                                'PkgName': 'stdlib', 'InstalledVersion': 'go1.25.1', 'PrimaryURL': 'https://go.dev/security/'}]}]})
+        self.assertEqual({'HIGH': 0, 'CRITICAL': 1}, actual['counts'])
+        self.assertIsNone(actual['findings'][0]['FixedVersion'])
+        self.assertEqual('stdlib', actual['packages'][0]['name'])
+
+    def test_no_local_execution_or_docker_calls(self):
+        with patch.dict(os.environ, {}, clear=True), patch.object(c, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'remote_hosted_ci_only'):
+                c.execute(c.load_spec(), Path('/never-created'), c.SERVICES)
+            run.assert_not_called()
+        with patch.dict(os.environ, {}, clear=True), patch.object(f.subprocess, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'remote_hosted_ci_only'):
+                f.check('proxy', 'ignored', 'ignored', Path('/never-created'))
+            run.assert_not_called()
+
+    def test_tampered_oci_metadata_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'bad.tar'
+            with tarfile.open(path, 'w') as archive:
+                index = json.dumps({'manifests': [{'digest': 'sha256:' + 'a' * 64}]}).encode()
+                for name, raw in [('index.json', index), ('blobs/sha256/' + 'a' * 64, b'{}')]:
+                    member = tarfile.TarInfo(name); member.size = len(raw); archive.addfile(member, io.BytesIO(raw))
+            with self.assertRaisesRegex(ValueError, 'oci_blob_checksum'):
+                c.oci_identity(path)
+
+    def test_cleanup_rejects_foreign_container(self):
+        sandbox = f.Sandbox(Path('/unused')); sandbox.containers = ['foreign']
+        with patch.object(sandbox, 'run', return_value=json.dumps([{'Config': {'Labels': {}}}]).encode()) as run:
+            with self.assertRaisesRegex(ValueError, 'container_owner_mismatch'):
+                sandbox.clean()
+            self.assertEqual(1, run.call_count)
+
+    def test_network_cleanup_requires_owner_and_runs_after_containers(self):
+        sandbox=f.Sandbox(Path('/unused')); sandbox.containers=['own-container']; sandbox.networks=['own-network']
+        calls=[]
+        def run(args):
+            calls.append(args)
+            if args[1:2]==['inspect']:
+                return json.dumps([{'Config':{'Labels':{'map.infra.fixture':sandbox.token}}}]).encode()
+            if args[1:3]==['network','inspect']:
+                return json.dumps([{'Labels':{'map.infra.fixture':sandbox.token}}]).encode()
+            return b''
+        with patch.object(sandbox,'run',side_effect=run):sandbox.clean()
+        self.assertLess(calls.index(['docker','rm','-f','-v','own-container']),calls.index(['docker','network','rm','own-network']))
+        with patch.object(sandbox,'run',return_value=json.dumps([{'Labels':{}}]).encode()) as mocked:
+            sandbox.containers=[]
+            with self.assertRaisesRegex(ValueError,'network_owner_mismatch'):sandbox.clean()
+            self.assertEqual(mocked.call_count,1)
+
+    def test_fixture_network_is_internal_and_uniquely_owned(self):
+        sandbox=f.Sandbox(Path('/unused'))
+        with patch.object(sandbox,'run',return_value=b'') as run:
+            name=sandbox.create_network('grafana-plugin')
+        self.assertEqual(sandbox.networks,[name])
+        self.assertIn(sandbox.token,name)
+        self.assertEqual(run.call_args.args[0],['docker','network','create','--internal','--label','map.infra.fixture='+sandbox.token,name])
+
+    def test_unexpected_scan_exit_is_not_zero_findings(self):
+        with patch.object(c.subprocess, 'run') as run:
+            run.return_value.returncode = 2
+            with self.assertRaisesRegex(ValueError, 'command_failed'):
+                c.run(['docker'], accepted=(0, 1))
+
+    def test_trivy_fatal_exit_one_without_report_is_not_a_finding_scan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output=Path(directory)
+            fatal=types.SimpleNamespace(returncode=1,stderr=b'FATAL unable to open archive',stdout=b'')
+            with patch.object(c,'run',return_value=fatal):
+                with self.assertRaisesRegex(ValueError,'scanner_report_missing_fatal_exit_1'):
+                    c.scan({'scanner':'synthetic'},output,output,'candidate',archive=output/'loaded-runtime.docker.tar')
+            receipt=json.loads((output/'candidate-scanner-execution.json').read_text())
+            self.assertFalse(receipt['report_created'])
+            self.assertEqual(receipt['archive_format'],'docker-save')
+
+
+if __name__ == '__main__': unittest.main()

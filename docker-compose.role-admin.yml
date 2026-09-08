@@ -1,0 +1,102 @@
+# Independent central host only. Existing co-host stacks are not mutated by this file.
+name: map-central-admin
+services:
+  control-postgres:
+    image: ${ADMIN_CONTROL_POSTGRES_IMAGE:?digest-pinned PostgreSQL image required}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: admin_control
+      POSTGRES_USER: admin_provisioner
+      POSTGRES_PASSWORD_FILE: /run/secrets/control_provisioner_password
+    secrets: [control_provisioner_password]
+    volumes:
+      - control_pgdata:/var/lib/postgresql/data
+    networks: [control_state]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U admin_provisioner -d admin_control']
+      interval: 10s
+      timeout: 3s
+      retries: 10
+  admin-migrate:
+    image: ${ADMIN_API_IMAGE:?digest-pinned Admin image required}
+    profiles: [migration]
+    restart: 'no'
+    entrypoint: [alembic, upgrade, head]
+    env_file: ['${ADMIN_MIGRATION_ENV_FILE:?private migration-only env file required}']
+    read_only: true
+    user: '10001:10001'
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [control_state]
+    depends_on:
+      control-postgres: {condition: service_healthy}
+  admin-api:
+    image: ${ADMIN_API_IMAGE:?digest-pinned Admin image required}
+    restart: unless-stopped
+    env_file: ['${ADMIN_RUNTIME_ENV_FILE:?private runtime-only env file required}']
+    environment:
+      ADMIN_RUN_MIGRATIONS: 'false'
+      ADMIN_DATABASE_URL: ''
+      ADMIN_REDIS_URL: ''
+    read_only: true
+    user: '10001:10001'
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:rw,noexec,nosuid,size=32m]
+    ports: ['127.0.0.1:8002:8000']
+    networks:
+      control_state: {}
+      management:
+        aliases: [admin]
+    depends_on:
+      control-postgres: {condition: service_healthy}
+  admin-web:
+    # Stock nginx master needs setuid/setgid/chown until a nonroot web image is validated.
+    security_opt: [no-new-privileges:true]
+    image: ${ADMIN_WEB_IMAGE:?digest-pinned Admin Web image required}
+    restart: unless-stopped
+    ports: ['127.0.0.1:5174:80']
+    networks: [management]
+    # Existing nginx config addresses `admin`; this alias is local to this host only.
+    depends_on: [admin-api]
+  prometheus:
+    image: ${ADMIN_PROMETHEUS_IMAGE:?digest-pinned Prometheus image required}
+    restart: unless-stopped
+    command: [--config.file=/etc/prometheus/prometheus.yml, --storage.tsdb.path=/prometheus]
+    volumes:
+      - ${ADMIN_MONITORING_CONFIG_DIR:?verified private scrape/config bundle required}:/etc/prometheus:ro
+      - prometheus_data:/prometheus
+    ports: ['127.0.0.1:9090:9090']
+    networks: [management]
+  grafana:
+    image: ${ADMIN_GRAFANA_IMAGE:?digest-pinned Grafana image required}
+    restart: unless-stopped
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: 'false'
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_bootstrap_password
+    secrets: [grafana_bootstrap_password]
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ${ADMIN_GRAFANA_PROVISIONING_DIR:?reviewed Grafana provisioning required}:/etc/grafana/provisioning:ro
+    ports: ['127.0.0.1:3000:3000']
+    networks: [management]
+networks:
+  control_state: {internal: true}
+  management:
+    driver: bridge
+volumes:
+  control_pgdata:
+    external: true
+    name: ${ADMIN_CONTROL_VOLUME:?preprovisioned dedicated central volume required}
+  prometheus_data:
+    external: true
+    name: ${ADMIN_PROMETHEUS_VOLUME:?preprovisioned central metrics volume required}
+  grafana_data:
+    external: true
+    name: ${ADMIN_GRAFANA_VOLUME:?preprovisioned central Grafana volume required}
+secrets:
+  grafana_bootstrap_password:
+    file: ${ADMIN_GRAFANA_PASSWORD_FILE:?private Grafana bootstrap password file required}
+  control_provisioner_password:
+    file: ${ADMIN_CONTROL_PROVISIONER_PASSWORD_FILE:?private bootstrap secret file required}

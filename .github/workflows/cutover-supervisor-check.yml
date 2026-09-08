@@ -1,0 +1,75 @@
+name: GCP supervisor forced SSH check
+on:
+  # Register the workflow on the reviewed work branch; only manual runs execute.
+  push:
+    branches: [integrate/gcp-mobile-final-20260907]
+    paths: [.github/workflows/cutover-supervisor-check.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: deploy-gcp-test
+  cancel-in-progress: false
+jobs:
+  rejected-transport:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'we-meet-trip/map-service-infra' &&
+      (startsWith(github.ref, 'refs/heads/integrate/') || github.ref == 'refs/heads/develop')
+    runs-on: ubuntu-24.04
+    environment: gcp-test
+    timeout-minutes: 5
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          project_id: mapcenter-b59ca
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: mapcenter-b59ca
+      - name: Submit only an invalid constant through the actual restricted key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          python3 - <<'PY'
+          import datetime, hashlib, json, os, pathlib, subprocess, tempfile
+          payload=b'{}'
+          result={'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                  'source_sha':os.environ['GITHUB_SHA'], 'run_id':os.environ['GITHUB_RUN_ID'],
+                  'payload_sha256':hashlib.sha256(payload).hexdigest(),
+                  'payload_bytes':len(payload), 'valid_release_payload_sent':False}
+          os.umask(0o077)
+          try:
+              with tempfile.TemporaryDirectory(prefix='map-supervisor-check-',dir=os.environ['RUNNER_TEMP']) as d:
+                  root=pathlib.Path(d); key=root/'key'; hosts=root/'known-hosts'
+                  for p,name in ((key,'DEPLOY_SSH_KEY'),(hosts,'DEPLOY_SSH_KNOWN_HOSTS')):
+                      value=os.environ.pop(name)
+                      if not value.strip():raise ValueError('missing')
+                      p.write_text(value+'\n'); p.chmod(0o600)
+                  proxy='gcloud compute start-iap-tunnel map-test 22 --listen-on-stdin --project=mapcenter-b59ca --zone=us-central1-a --verbosity=error'
+                  process=subprocess.run(['ssh','-T','-i',str(key),'-o','IdentitiesOnly=yes','-o','BatchMode=yes',
+                      '-o','StrictHostKeyChecking=yes','-o','UserKnownHostsFile='+str(hosts),'-o','HostKeyAlias=map-test-deploy',
+                      '-o','ConnectTimeout=30','-o','ServerAliveInterval=15','-o','ServerAliveCountMax=2',
+                      '-o','ProxyCommand='+proxy,'mapdeploy@map-test','map-supervisor-invalid-probe'],
+                      input=payload,capture_output=True,timeout=90)
+                  records=[]
+                  for line in process.stderr.splitlines():
+                      try:records.append(json.loads(line))
+                      except (ValueError,UnicodeDecodeError):pass
+                  accepted=process.returncode==1 and {'status':'failed','error_type':'DeployError'} in records
+                  result.update(status='PASS' if accepted else 'FAIL',ssh_exit=process.returncode,
+                      bounded_receiver_rejection=accepted,raw_transport_output_suppressed=True)
+          except Exception as e:
+              result.update(status='FAIL',error_kind=type(e).__name__,raw_transport_output_suppressed=True)
+          pathlib.Path('supervisor-ssh-check.json').write_text(json.dumps(result,indent=2)+'\n')
+          print(json.dumps(result))
+          raise SystemExit(0 if result['status']=='PASS' else 1)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: supervisor-forced-ssh-check
+          path: supervisor-ssh-check.json
+          if-no-files-found: error
+          retention-days: 14
