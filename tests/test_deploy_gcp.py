@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import ssl
 import stat
 import sys
 import tempfile
@@ -15,6 +16,7 @@ import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import urllib.error
 import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -478,9 +480,9 @@ class PublicReadinessTests(unittest.TestCase):
             self.assertEqual(clock.now, 3)
 
     def test_tls_404_redirect_and_unknown_transport_fail_without_sleep(self):
+        # A plain handshake failure is waited out instead; it is covered separately.
         cases = [(404, b""), (301, b""),
                  deploy.urllib.error.URLError(deploy.ssl.SSLCertVerificationError(1, "private certificate detail")),
-                 deploy.urllib.error.URLError(deploy.ssl.SSLError(1, "private TLS detail")),
                  deploy.urllib.error.URLError("private unclassified detail")]
         for response in cases:
             kwargs = {"side_effect": response} if isinstance(response, Exception) else {"return_value": response}
@@ -511,6 +513,40 @@ class PublicReadinessTests(unittest.TestCase):
                  self.assertRaises(deploy.PublicProbeError):
                 deploy.wait_public_readiness(deploy.time.monotonic() + 90)
             sleep.assert_not_called()
+
+    def test_a_handshake_that_fails_while_the_entry_point_is_starting_is_waited_out(self):
+        # A freshly started entry point answers its first requests with a
+        # handshake failure. Treating that as final ended a healthy deployment
+        # and closed the public entry points with most of the budget unused.
+        error = urllib.error.URLError(ssl.SSLError(1, "record layer failure"))
+        responses = [error, error, (200, b"ok"), (200, b'{"status":"UP"}'), (401, b"")]
+        output = io.StringIO()
+        with patch.object(deploy, "http_response", side_effect=responses), \
+             patch.object(deploy.time, "sleep") as sleep, contextlib.redirect_stdout(output):
+            deploy.wait_public_readiness(deploy.time.monotonic() + 90)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertIn("public_probe_retry", output.getvalue())
+        self.assertIn("tls_error", output.getvalue())
+        self.assertNotIn("record layer", output.getvalue())
+
+    def test_a_certificate_that_does_not_identify_this_host_still_fails_at_once(self):
+        error = urllib.error.URLError(ssl.SSLCertVerificationError(1, "hostname mismatch"))
+        with patch.object(deploy, "http_response", side_effect=[error]), \
+             patch.object(deploy.time, "sleep") as sleep, contextlib.redirect_stdout(io.StringIO()), \
+             self.assertRaises(deploy.PublicProbeError) as raised:
+            deploy.wait_public_readiness(deploy.time.monotonic() + 90)
+        self.assertEqual(raised.exception.kind, "tls_verification")
+        self.assertFalse(raised.exception.retryable)
+        sleep.assert_not_called()
+
+    def test_a_listener_that_never_completes_a_handshake_still_ends_the_deployment(self):
+        error = urllib.error.URLError(ssl.SSLError(1, "record layer failure"))
+        output = io.StringIO()
+        with patch.object(deploy, "http_response", side_effect=error), \
+             patch.object(deploy.time, "sleep"), contextlib.redirect_stdout(output), \
+             self.assertRaises(deploy.SmokeDeadline):
+            deploy.wait_public_readiness(deploy.time.monotonic() - 1)
+        self.assertIn("deadline", output.getvalue())
 
     def test_timeout_retries_inside_same_deadline(self):
         clock = self.Clock()
