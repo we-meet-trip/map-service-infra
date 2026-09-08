@@ -66,7 +66,7 @@ class DrainTests(unittest.TestCase):
         self.assertEqual(roll.stop_seconds({'stop_grace_period': '5s'}), roll.STOP_SECONDS)
 
     def test_an_unreadable_grace_stops_the_replacement(self):
-        with self.assertRaisesRegex(roll.RolloverError, 'stop_grace_period_unreadable'):
+        with self.assertRaisesRegex(roll.RolloverError, 'duration_unreadable'):
             roll.stop_seconds({'stop_grace_period': 'a while'})
 
     def test_the_temporary_container_is_created_with_that_wait(self):
@@ -118,6 +118,70 @@ class AdmissionTests(unittest.TestCase):
             with self.assertRaisesRegex(roll.RolloverError, 'insufficient_memory_for_second_container'):
                 roll.admission(BLUE)
 
+
+
+class ReadinessTests(unittest.TestCase):
+    """The copy has to be judged by the same test as the container it replaces."""
+
+    CHECK = {'test': ['CMD-SHELL', 'wget -qO- http://localhost:8080/actuator/health | grep -q UP'],
+             'interval': '15s', 'timeout': '3s', 'retries': 5, 'start_period': '40s'}
+
+    def test_the_configured_test_is_carried_over_with_its_timings(self):
+        args = roll.health_args({'healthcheck': self.CHECK})
+        self.assertEqual(args[args.index('--health-cmd') + 1], self.CHECK['test'][1])
+        self.assertEqual(args[args.index('--health-interval') + 1], '15s')
+        self.assertEqual(args[args.index('--health-timeout') + 1], '3s')
+        self.assertEqual(args[args.index('--health-start-period') + 1], '40s')
+        self.assertEqual(args[args.index('--health-retries') + 1], '5')
+
+    def test_a_service_without_one_carries_nothing(self):
+        self.assertEqual(roll.health_args({}), [])
+        self.assertEqual(roll.health_args({'healthcheck': {'test': ['NONE']}}), ['--no-healthcheck'])
+        self.assertEqual(roll.health_args({'healthcheck': {'test': ['CMD-SHELL', 'x'],
+                                                           'disable': True}}), [])
+
+    def test_a_test_that_cannot_be_reproduced_is_refused(self):
+        for test in (['CMD', 'wget', '-q', 'http://x'], ['CMD-SHELL'], ['CMD-SHELL', 1]):
+            with self.subTest(test=test), self.assertRaisesRegex(
+                    roll.RolloverError, 'healthcheck_cannot_be_reproduced'):
+                roll.health_args({'healthcheck': {'test': test}})
+
+    def test_the_temporary_container_is_created_with_it(self):
+        entry, image = roll.service_config(config(), 'hub')
+        entry['healthcheck'] = self.CHECK
+        args = roll.create_args('map-test-hub-rollover', 'map-test', 'hub', image, entry,
+                                ['map-test_default'])
+        self.assertIn('--health-cmd', args)
+
+    def test_a_copy_that_is_still_starting_is_given_time_to_answer(self):
+        answers = [0, 0, 200]
+        opened = []
+
+        class Response:
+            status = 200
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def urlopen(url, timeout=None):
+            opened.append(url)
+            value = answers.pop(0)
+            if value != 200:
+                raise OSError('not yet')
+            return Response()
+
+        with patch.object(roll.urllib.request, 'urlopen', side_effect=urlopen), \
+                patch.object(roll.time, 'sleep'):
+            self.assertEqual(roll.probe('10.0.0.5', 'hub', seconds=60), 200)
+        self.assertEqual(len(opened), 3)
+
+    def test_a_copy_that_never_answers_is_reported_as_such(self):
+        clock = iter([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 99, 99, 99])
+        with patch.object(roll.urllib.request, 'urlopen', side_effect=OSError('no')), \
+                patch.object(roll.time, 'sleep'), \
+                patch.object(roll.time, 'monotonic', side_effect=lambda: next(clock)):
+            self.assertEqual(roll.probe('10.0.0.5', 'hub', seconds=5), 0)
 
 
 class ProxyTests(unittest.TestCase):
