@@ -134,15 +134,26 @@ def export_build_evidence(row, image, identity, output):
     if not path:return
     token=uuid.uuid4().hex
     name='map-build-evidence-'+token[:16]
+    volumes=identity.get('runtime_config',{}).get('Volumes') or {}
+    require(isinstance(volumes,dict) and len(volumes)<=8,'build_evidence_volume_inventory')
+    for target in volumes:
+        require(re.fullmatch(r'/[A-Za-z0-9_./-]+',target) and '..' not in Path(target).parts
+                and not Path(path).is_relative_to(target),'build_evidence_unsafe_volume_target')
+    tmpfs={target:'rw,noexec,nosuid,size=1048576' for target in sorted(volumes)}
     def owned_unstarted(actual):
         require(actual['Config']['Labels'].get('map.build.evidence')==token,'build_evidence_owner')
         require(actual['Image']==image,'build_evidence_image')
+        require(not any(m.get('Type') in ('volume','bind') for m in actual.get('Mounts',[])), 'build_evidence_persistent_mount')
+        require((actual.get('HostConfig',{}).get('Tmpfs') or {})==tmpfs,'build_evidence_tmpfs_mismatch')
         state=actual['State']
         require(state['Status']=='created' and state['Running'] is False
                 and state['StartedAt'].startswith('0001-01-01T00:00:00'),'build_evidence_not_unstarted')
     try:
         # Never start this container or attach an existing data/host volume.
-        run(['docker','create','--name',name,'--label','map.build.evidence='+token,image],timeout=60)
+        args=['docker','create','--name',name,'--label','map.build.evidence='+token,
+              '--network','none','--memory','32m','--cpus','0.1','--pids-limit','16','--log-driver','none']
+        for target,options in tmpfs.items():args.extend(['--tmpfs',target+':'+options])
+        run(args+[image],timeout=60)
         owned_unstarted(json.loads(run(['docker','inspect',name],timeout=30).stdout)[0])
         raw=run(['docker','cp',name+':'+path+'/.','-'],timeout=120).stdout
         require(len(raw)<64*1024*1024,'bounded_build_evidence_archive')
@@ -166,7 +177,7 @@ def export_build_evidence(row, image, identity, output):
         require(bool(files),'build_evidence_empty')
         write(output/'build-evidence-receipt.json',{'runtime_image_id':image,
               'config_digest':identity['config_digest'],'archive_sha256':sha(archive_path),
-              'source_sha':identity['source_sha'],'container_started':False,'files':files})
+              'source_sha':identity['source_sha'],'container_started':False,'persistent_mounts':False,'volume_overrides':tmpfs,'files':files})
     finally:
         process=run(['docker','inspect',name],accepted=(0,1),timeout=30)
         if process.returncode!=0:
@@ -174,7 +185,7 @@ def export_build_evidence(row, image, identity, output):
         if process.returncode==0:
             actual=json.loads(process.stdout)[0]
             owned_unstarted(actual)
-            run(['docker','rm','-v',name],timeout=60)
+            run(['docker','rm',name],timeout=60)
 
 
 def build_candidate(row, base, output, source_sha):
@@ -220,6 +231,18 @@ def build_candidate(row, base, output, source_sha):
     return current['Id'],identity
 
 
+def stop_owned_pg_builder(output):
+    expected='map-security-'+os.environ.get('GITHUB_RUN_ID','')+'-'+os.environ.get('GITHUB_RUN_ATTEMPT','')
+    builder=os.environ.get('MAP_SECURITY_BUILDER','')
+    require(re.fullmatch(r'map-security-[0-9]+-[0-9]+',builder) and builder==expected,'dedicated_pg_builder_required')
+    run(['docker','buildx','stop',builder],timeout=120)
+    actual=run(['docker','buildx','inspect',builder],timeout=30).stdout.decode()
+    names=re.findall(r'^Name:\s+(\S+)\s*$',actual,re.M)
+    statuses=re.findall(r'^Status:\s+(\S+)\s*$',actual,re.M)
+    require(names and names[0]==builder and statuses==['inactive'],'dedicated_pg_builder_not_stopped')
+    write(output/'builder-stopped-before-scan.json',{'builder':builder,'status':'PASS','node_statuses':statuses,'inspect_sha256':hashlib.sha256(actual.encode()).hexdigest()})
+
+
 def findings(report):
     counts=Counter();records=[];packages=[]
     for result in report.get('Results',[]):
@@ -233,8 +256,10 @@ def findings(report):
 
 
 def scan(spec, output, cache, name, *, ref=None, archive=None, identity=None):
-    args=['docker','run','--rm','--platform','linux/amd64','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges:true','--memory','2g','--cpus','2','--user',f'{os.getuid()}:{os.getgid()}','-v',str(cache)+':/cache','-v',str(output)+':/reports','-v',str(cache/'scratch')+':/tmp',spec['scanner'],'image','--cache-dir','/cache','--skip-db-update','--skip-java-db-update','--offline-scan','--timeout','15m','--no-progress','--scanners','vuln','--severity','HIGH,CRITICAL','--ignore-unfixed=false','--ignorefile','/dev/null','--list-all-pkgs','--exit-code','1','--format','json','--output','/reports/'+name+'.json']
-    if archive:args.extend(['--input','/reports/'+archive.name])
+    args=['docker','run','--rm','--platform','linux/amd64','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges:true','--memory','2g','--memory-swap','2g','--pids-limit','128','--log-driver','json-file','--log-opt','max-size=10m','--log-opt','max-file=3','--label','map.security.scan='+os.environ.get('GITHUB_RUN_ID','offline'),'--cpus','2','--user',f'{os.getuid()}:{os.getgid()}','-v',str(cache)+':/cache','-v',str(output)+':/reports','-v',str(cache/'scratch')+':/tmp',spec['scanner'],'image','--cache-dir','/cache','--skip-db-update','--skip-java-db-update','--offline-scan','--timeout','15m','--no-progress','--scanners','vuln','--severity','HIGH,CRITICAL','--ignore-unfixed=false','--ignorefile','/dev/null','--list-all-pkgs','--exit-code','1','--format','json','--output','/reports/'+name+'.json']
+    if archive:
+        args[2:2]=['--network','none']
+        args.extend(['--input','/reports/'+archive.name])
     else:args.extend(['--image-src','remote','--platform','linux/amd64',ref])
     process=run(args,accepted=(0,1),timeout=1000)
     rc=process.returncode
@@ -291,7 +316,7 @@ def execute(spec, output, selected):
         'buildx':run(['docker','buildx','version']).stdout.decode().strip(),
         'python':sys.version,'source_sha':source_sha})
     run(['docker','pull',spec['scanner']],timeout=600)
-    run(['docker','run','--rm','--user',f'{os.getuid()}:{os.getgid()}','-v',str(cache)+':/cache',spec['scanner'],'image','--cache-dir','/cache','--download-db-only'],timeout=600)
+    run(['docker','run','--rm','--memory','768m','--memory-swap','768m','--cpus','1','--pids-limit','64','--log-driver','json-file','--log-opt','max-size=10m','--log-opt','max-file=3','--label','map.security.db='+os.environ.get('GITHUB_RUN_ID','offline'),'--user',f'{os.getuid()}:{os.getgid()}','-v',str(cache)+':/cache',spec['scanner'],'image','--cache-dir','/cache','--download-db-only'],timeout=600)
     db=json.loads((cache/'db/metadata.json').read_text())
     updated=datetime.fromisoformat(db['UpdatedAt'].replace('Z','+00:00'))
     require(timedelta(0)<=datetime.now(timezone.utc)-updated<=timedelta(hours=48),'fresh_scanner_database_required')
@@ -309,6 +334,7 @@ def execute(spec, output, selected):
             else:
                 base=resolve(row['candidate_selector'],directory/'candidate-resolution.json')
                 candidate,identity=build_candidate(row,base,directory,source_sha)
+                if selected=={'postgres'}:stop_owned_pg_builder(directory)
                 updated=scan(spec,directory,cache,'candidate',archive=directory/'loaded-runtime.docker.tar',identity=identity)
                 (directory/'loaded-runtime.docker.tar').unlink()  # Exact OCI remains preserved.
                 item.update(candidate_base=base,candidate_identity=identity,candidate_scan=updated)

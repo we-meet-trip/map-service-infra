@@ -161,7 +161,8 @@ class FailureSafetyTest(unittest.TestCase):
         self.assertTrue(outcomes['foreign'].startswith('FAIL'))
         self.assertEqual(outcomes['owned'], 'PASS')
         self.assertNotIn(['docker', 'rm', '-f', '-v', 'foreign'], calls)
-        self.assertIn(['docker', 'rm', '-f', '-v', 'owned'], calls)
+        self.assertIn(['docker', 'stop', '--time', '30', 'owned'], calls)
+        self.assertIn(['docker', 'rm', 'owned'], calls)
 
     def test_timeout_preserves_bounded_synthetic_diagnostic(self):
         fixture = pg.Fixture(Path('/unused'))
@@ -181,6 +182,7 @@ class FailureSafetyTest(unittest.TestCase):
                  patch.object(fixture, 'denied', side_effect=ValueError('expected_sqlstate_42501_missing')), \
                  patch.object(fixture, 'sfcgal', return_value={'sfcgal_version': '1.4.1', **pg.SFCGAL_ANSWERS}), \
                  patch.object(fixture, 'raster', return_value={'synthetic_test_double': True}), \
+                 patch.object(fixture, 'ciphertext', return_value={'synthetic_test_double': True}), \
                  patch.object(fixture, 'run', side_effect=AssertionError('unit fixture must not execute subprocess')):
                 with self.assertRaises(ValueError):
                     fixture.probe('synthetic', 'old', 'baseline', result)
@@ -189,6 +191,31 @@ class FailureSafetyTest(unittest.TestCase):
             self.assertEqual(checks['runtime_acl'], 'PASS')
             self.assertEqual(checks['runtime_ddl_denial'], 'FAIL')
             self.assertEqual(checks['unique_constraint'], 'NOT_RUN')
+
+
+class CiphertextContractTest(unittest.TestCase):
+    def test_actual_ciphertext_validator_rejects_missing_plaintext_or_wrong_decrypt(self):
+        good = {'rows': 2, 'decrypt_matches': True, 'not_plaintext': True, 'symmetric_packet': True, 'ciphertext_sha256': 'a'*64}
+        pg.validate_ciphertext(good)
+        for key, value in [('rows', 0), ('decrypt_matches', False), ('not_plaintext', False), ('symmetric_packet', False), ('ciphertext_sha256', '')]:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                pg.validate_ciphertext(good | {key: value})
+
+    def test_named_volume_ownership_is_required_and_force_removal_forbidden(self):
+        fixture = pg.Fixture(Path('/unused')); fixture.volumes = ['mine', 'foreign']
+        calls = []
+        def run(args, **kwargs):
+            calls.append(args)
+            if args[1:3] == ['volume', 'inspect']:
+                owner = fixture.token if args[3] == 'mine' else 'other'
+                return subprocess.CompletedProcess(args, 0, json.dumps([{'Labels': {'map.infra.fixture': owner}}]).encode(), b'')
+            return subprocess.CompletedProcess(args, 0, b'', b'')
+        with patch.object(fixture, 'run', side_effect=run):
+            result = fixture.cleanup()
+        self.assertEqual(result['mine'], 'PASS')
+        self.assertTrue(result['foreign'].startswith('FAIL'))
+        self.assertNotIn(['docker', 'volume', 'rm', 'foreign'], calls)
+        self.assertNotIn('-f', [arg for call in calls for arg in call])
 
 
 class FakeFixture(pg.Fixture):
@@ -213,6 +240,7 @@ class FakeFixture(pg.Fixture):
         return subprocess.CompletedProcess([], 0, b'', b'')
 
     def stop(self, name): self.events.append(('stop', name))
+    def retire(self, name): self.stop(name); self.events.append(('retire', name))
     def run(self, args, **kwargs): return subprocess.CompletedProcess(args, 0, b'', b'')
     def ready(self, *args): pass
 
@@ -254,6 +282,8 @@ class RecoveryOrchestrationTest(unittest.TestCase):
             self.assertFalse(result['physical_existing_volume_reuse_tested'])
             self.assertFalse(result['production_collation_compatibility_verified'])
             self.assertIn(('restore', 'new-data-old'), fixture.events)
+            self.assertLess(fixture.events.index(('retire', 'old')), fixture.events.index(('start', 'new')))
+            self.assertLess(fixture.events.index(('retire', 'old-backup')), fixture.events.index(('start', 'new-data-old')))
             self.assertEqual(set(result['retained_backups']), {'pre-upgrade', 'post-upgrade'})
 
     def test_forward_failure_still_recovers_old_backup_and_retains_diagnostics(self):
@@ -298,6 +328,8 @@ class RecoveryOrchestrationTest(unittest.TestCase):
             self.assertTrue(result['collation_comparisons']['forward_collation_unchanged']['same_corpus'])
             self.assertIn(('restore', 'old-backup'), fixture.events)
             self.assertIn(('restore', 'new-data-old'), fixture.events)
+            self.assertLess(fixture.events.index(('retire', 'old')), fixture.events.index(('start', 'new')))
+            self.assertLess(fixture.events.index(('retire', 'old-backup')), fixture.events.index(('start', 'new-data-old')))
 
 
 if __name__ == '__main__':

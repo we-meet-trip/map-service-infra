@@ -30,7 +30,37 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Record and require bounded hosted candidate capacity
+        env:
+          SELECTED_SERVICES: ${{ inputs.services }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, pathlib, shutil, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'map-infrastructure-resource-proof'
+          root.mkdir()
+          free = shutil.disk_usage(root).free
+          memory = dict(line.split(':', 1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines())
+          proof = {'free_bytes': free, 'additional_peak_bytes': 20*1024**3,
+                   'protected_bytes': 10*1024**3, 'required_free_bytes': 35*1024**3,
+                   'mem_available_bytes': int(memory['MemAvailable'].split()[0])*1024,
+                   'services': os.environ['SELECTED_SERVICES'], 'environment': 'github-hosted-linux',
+                   'fixture': {'running_pg_max': 1, 'pg_cpu': 1, 'pg_memory_mib': 768,
+                               'pg_pids': 128, 'pg_logs_mib': 30, 'ttl_minutes': 150,
+                               'data': 'fresh explicitly labelled synthetic volumes'},
+                   'buildkit': {'cpu': 2, 'memory_gib': 5}, 'production_data': False}
+          (root / 'resource-preflight.json').write_text(json.dumps(proof, indent=2)+'\n')
+          assert free >= proof['required_free_bytes'], 'hosted_candidate_disk_budget_failed'
+          assert proof['mem_available_bytes'] >= 6*1024**3, 'hosted_candidate_memory_budget_failed'
+          PYCODE
       - uses: docker/setup-buildx-action@v3
+        id: buildx
+        with:
+          name: map-security-${{ github.run_id }}-${{ github.run_attempt }}
+          driver-opts: |
+            memory=5g
+            memory-swap=5g
+            cpu-quota=200000
+            cpu-period=100000
       - name: Offline contract tests
         run: |
           python3 -m unittest discover -s security/infrastructure/tests -v
@@ -39,7 +69,15 @@ jobs:
         env:
           SELECTED_SERVICES: ${{ inputs.services }}
           POSTGRES_VARIANT: ${{ inputs.postgres_variant }}
+          MAP_SECURITY_BUILDER: ${{ steps.buildx.outputs.name }}
         run: python3 scripts/scan-infrastructure-candidates.py --run --services "$SELECTED_SERVICES" --postgres-variant "$POSTGRES_VARIANT" --output "$RUNNER_TEMP/map-infrastructure-candidate"
+      - name: Preserve final resource state
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/map-infrastructure-resource-proof"
+          df -B1 "$RUNNER_TEMP" > "$RUNNER_TEMP/map-infrastructure-resource-proof/disk-after.txt"
+          docker system df > "$RUNNER_TEMP/map-infrastructure-resource-proof/docker-disk-after.txt"
+          docker ps -a --format '{{.ID}} {{.Status}} {{.Label "map.infra.fixture"}}' > "$RUNNER_TEMP/map-infrastructure-resource-proof/containers-after.txt"
       - name: Preserve actual reports and exact candidate OCI archives
         if: always()
         uses: actions/upload-artifact@v4
@@ -51,3 +89,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
           compression-level: 1
+      - name: Preserve hosted resource proof separately
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: infrastructure-resources-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/map-infrastructure-resource-proof/**
+          if-no-files-found: warn
+          retention-days: 14

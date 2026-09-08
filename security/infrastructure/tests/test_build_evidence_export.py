@@ -49,12 +49,14 @@ class DockerDouble:
         self.archive, self.mutate, self.missing_cleanup = archive, mutate, missing_cleanup
         self.calls, self.inspect_count = [], 0
         self.name, self.token = None, None
+        self.tmpfs = {}
 
     def run(self, args, **kwargs):
         self.calls.append(list(args))
         if args[:2] == ['docker', 'create']:
             self.name = args[args.index('--name') + 1]
             self.token = args[args.index('--label') + 1].split('=', 1)[1]
+            self.tmpfs = dict(args[i+1].split(':',1) for i,arg in enumerate(args) if arg=='--tmpfs')
             if any(flag in args for flag in ('--mount', '-v', '--volume')):
                 raise AssertionError('Evidence collection must not attach volumes')
             return subprocess.CompletedProcess(args, 0, self.name.encode(), b'')
@@ -63,7 +65,7 @@ class DockerDouble:
             if self.missing_cleanup and self.inspect_count > 1:
                 error = b'Cannot connect to Docker daemon' if self.missing_cleanup == 'daemon' else b'Error: No such object: ' + self.name.encode()
                 return subprocess.CompletedProcess(args, 1, b'', error)
-            meta = {'Image': IMAGE, 'Config': {'Labels': {'map.build.evidence': self.token}},
+            meta = {'Mounts': [], 'HostConfig': {'Tmpfs': self.tmpfs}, 'Image': IMAGE, 'Config': {'Labels': {'map.build.evidence': self.token}},
                     'State': {'Status': 'created', 'Running': False, 'StartedAt': '0001-01-01T00:00:00Z'}}
             if self.mutate: self.mutate(meta, self.inspect_count)
             return subprocess.CompletedProcess(args, 0, json.dumps([meta]).encode(), b'')
@@ -102,6 +104,36 @@ class BuildEvidenceExportTest(unittest.TestCase):
             self.assertIs(receipt['container_started'], False)
         self.assertEqual(docker.operations(), ['create', 'inspect', 'cp', 'inspect', 'rm'])
         self.assertIn(docker.name + ':/usr/share/map-security/go/.', next(c for c in docker.calls if c[1] == 'cp'))
+
+    def test_declared_image_volumes_are_replaced_without_creating_anonymous_data(self):
+        docker = DockerDouble(make_tar([('proof', b'synthetic', tarfile.REGTYPE)]))
+        identity = deepcopy(IDENTITY) | {'runtime_config': {'Volumes': {'/var/lib/postgresql/data': {}}}}
+        with tempfile.TemporaryDirectory() as temp, patch.object(scanner, 'run', side_effect=docker.run):
+            scanner.export_build_evidence({'build': 'postgres-trixie-no-mysql'}, IMAGE, identity, Path(temp))
+        self.assertEqual(docker.tmpfs, {'/var/lib/postgresql/data': 'rw,noexec,nosuid,size=1048576'})
+        self.assertNotIn('-v', [arg for call in docker.calls for arg in call])
+        for field in ('Mounts', 'HostConfig'):
+            def mutate(meta, count):
+                if field == 'Mounts': meta['Mounts'] = [{'Type': 'volume'}]
+                else: meta['HostConfig']['Tmpfs'] = {'/foreign': 'rw'}
+            docker = DockerDouble(make_tar([('proof', b'synthetic', tarfile.REGTYPE)]), mutate)
+            with tempfile.TemporaryDirectory() as temp, self.assertRaises(ValueError):
+                self.invoke(docker, Path(temp))
+            self.assertNotIn('cp', docker.operations())
+            self.assertNotIn('rm', docker.operations())
+
+    def test_only_current_jobs_dedicated_builder_can_stop_before_pg_scan(self):
+        env = {'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1', 'MAP_SECURITY_BUILDER': 'map-security-123-1'}
+        def run(args, **kwargs):
+            data = 'Name: map-security-123-1\nNodes:\nName: map-security-123-10\nStatus: inactive\n'
+            return subprocess.CompletedProcess(args, 0, data.encode(), b'')
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, env), patch.object(scanner, 'run', side_effect=run) as called:
+            scanner.stop_owned_pg_builder(Path(temp))
+            self.assertEqual(called.call_args_list[0].args[0], ['docker', 'buildx', 'stop', 'map-security-123-1'])
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, env | {'MAP_SECURITY_BUILDER': 'foreign'}), patch.object(scanner, 'run') as called:
+            with self.assertRaisesRegex(ValueError, 'dedicated_pg_builder_required'):
+                scanner.stop_owned_pg_builder(Path(temp))
+            called.assert_not_called()
 
     def test_source_recipe_paths_are_explicit_and_other_recipes_do_nothing(self):
         for build, path in [('postgres-debian', '/usr/share/map-candidate'), ('postgres-trixie', '/usr/share/map-candidate'), ('grafana-security', '/usr/share/map-security/grafana-core')]:
