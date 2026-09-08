@@ -1,0 +1,135 @@
+{
+  "schema": "map-r3-hosted-exact-scan-plan-v1",
+  "targets": [
+    {
+      "service": "proxy",
+      "kind": "artifact_member",
+      "artifact": {
+        "id": 10006401872,
+        "digest": "sha256:e3abb102ef7dad5e89700bdd29db02481769bd82763893ec7f913dc1b78f13dc",
+        "size_in_bytes": 655170295
+      },
+      "member": "proxy/candidate.oci.tar",
+      "bytes": 28816384,
+      "sha256": "dea6b01487a7bf01b3e39867599ce139702e9ea6770116828df52a4c0b8a8dec",
+      "config_digest": "sha256:0da0745d5341d69d022e8b644febdb7ce4eed140eb05717a62dd486ad1f409ef",
+      "manifest_digest": "sha256:0335cc8d8fd6ce6326f15702ab1b9cbb0122947e847bc5472fd1e937ba0250a9",
+      "source_sha": "bb9c63398295c3b8fd3e33f97235d3588c5c7fce",
+      "original_run_id": "34089509166",
+      "old_reference": "nginx@sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3"
+    },
+    {
+      "service": "dns",
+      "kind": "artifact_member",
+      "artifact": {
+        "id": 10006401872,
+        "digest": "sha256:e3abb102ef7dad5e89700bdd29db02481769bd82763893ec7f913dc1b78f13dc",
+        "size_in_bytes": 655170295
+      },
+      "member": "dns/candidate.oci.tar",
+      "bytes": 10702848,
+      "sha256": "12e287aaf4abda7a4f333cf4a74c91e72e41c9a9831f907a4ecc6e60b366f51e",
+      "config_digest": "sha256:4461d8bb18d1239f6afcc46dbe3307c06056db373b19700e7093e3665c6598a1",
+      "manifest_digest": "sha256:14f870e48f3b239ddf0090132ae2d22fc702005851c5140297910d6217c0ffb7",
+      "source_sha": "bb9c63398295c3b8fd3e33f97235d3588c5c7fce",
+      "original_run_id": "34089509166",
+      "old_reference": "curlimages/curl@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69"
+    },
+    {
+      "service": "redis-exporter",
+      "kind": "artifact_member",
+      "artifact": {
+        "id": 10006401872,
+        "digest": "sha256:e3abb102ef7dad5e89700bdd29db02481769bd82763893ec7f913dc1b78f13dc",
+        "size_in_bytes": 655170295
+      },
+      "member": "redis-exporter/candidate.oci.tar",
+      "bytes": 4683776,
+      "sha256": "c586cf20571748fed7f25076ecbfbece51eb56aa9e447140175d99645396e51d",
+      "config_digest": "sha256:0c831b1a693c49c4c55bd3cbe52e7c1608ac3de9a7071de0daf1ae50e25d35f6",
+      "manifest_digest": "sha256:d75ee742aebb8b502823d037a9f65582960bc3a2a41e567861d8c7ebb0f9ac08",
+      "source_sha": "bb9c63398295c3b8fd3e33f97235d3588c5c7fce",
+      "original_run_id": "34089509166",
+      "old_reference": "oliver006/redis_exporter@sha256:c5a968ba5f30bab5e12181cceb89c4ed37cb4fe4d85490b5b66c7cfe4750b5e8"
+    },
+    {
+      "service": "prometheus",
+      "kind": "artifact_member",
+      "artifact": {
+        "id": 10007858612,
+        "digest": "sha256:1b967d266b4e9a8ef7f8bbfcf232b97572667c219993c4dff2bb66c5bd52f0f0",
+        "size_in_bytes": 184903308
+      },
+      "member": "prometheus/candidate.oci.tar",
+      "bytes": 167462400,
+      "sha256": "2c9f8125e68f606062ff43df8c5de7f6f137ac96a753bde2bbe43058889e7795",
+      "config_digest": "sha256:70a095cbf8d922313a5725ae97ec72c2723307f8c881e98c3a3583e7b016b19d",
+      "manifest_digest": "sha256:098a5d402b5f86abf305efe4b26c1d3c8cec52abcba3ecec1efb94ff70409634",
+      "source_sha": "acad675473805e39c8a591d0e6df684b63b3d59e",
+      "original_run_id": "34093162175",
+      "old_reference": "prom/prometheus@sha256:f6639335d34a77d9d9db382b92eeb7fc00934be8eae81dbc03b31cfe90411a94"
+    },
+    {
+      "service": "node-exporter",
+      "kind": "artifact_member",
+      "artifact": {
+        "id": 10008567448,
+        "digest": "sha256:6006956cb4caf5664ee6c87eb2905b3ebe92d71d57acd995dcb20cae536f7f7f",
+        "size_in_bytes": 20485276
+      },
+      "member": "node-exporter/candidate.oci.tar",
+      "bytes": 19972096,
+      "sha256": "f4f60de2d2120fdc1686eb4e7d64addb654413bb39afa770e9882c3bbd9b4341",
+      "config_digest": "sha256:c803bdf4621688c3db85e8fea92e70034df44e87224c30ba48cf0d37681c2569",
+      "manifest_digest": "sha256:6f5f0fd05393d0f0f1e84c26cba191902b87c41e1b37b6165c2ff58bf11392f7",
+      "source_sha": "c9ecfcce0bd37cc48bbeac83042a02367d0a0bd4",
+      "original_run_id": "34095574951",
+      "old_reference": "prom/node-exporter@sha256:4032c6d5bfd752342c3e631c2f1de93ba6b86c41db6b167b9a35372c139e7706"
+    },
+    {
+      "service": "postgres-exporter",
+      "kind": "artifact_member",
+      "artifact": {
+        "id": 10009460195,
+        "digest": "sha256:b2b4184fceb80e7605c2c1e6e6abc5db5ab8c1b3280c885b41c6500c6440c1d9",
+        "size_in_bytes": 945338216
+      },
+      "member": "postgres-exporter/candidate.oci.tar",
+      "bytes": 17415680,
+      "sha256": "39af99192f3272879ae3ed310dccaa2ec4cb16a7a472539c91f066078be29237",
+      "config_digest": "sha256:b34ece859e6a1f82e16102050a4393001716bcef3ffa9086696ac898f02d45a8",
+      "manifest_digest": "sha256:b4a1d251f38f215d2019a268a3ac68d00816586a28562ae56356e5babb249d0b",
+      "source_sha": "11e4c140c291536dd24cd6860e753c3165120422",
+      "original_run_id": "34096994701",
+      "old_reference": "prometheuscommunity/postgres-exporter@sha256:38606faa38c54787525fb0ff2fd6b41b4cfb75d455c1df294927c5f611699b17"
+    },
+    {
+      "service": "redis",
+      "kind": "registry_exact",
+      "reference": "redis@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf"
+    },
+    {
+      "service": "osrm",
+      "kind": "registry_exact",
+      "reference": "ghcr.io/project-osrm/osrm-backend@sha256:aa6a1de3a71dafffd0ba39340542524f66e6841fc19bf7874a0e6a7967837f56"
+    },
+    {
+      "service": "caddy",
+      "kind": "release_asset",
+      "asset_id": 547942386,
+      "bytes": 68931584,
+      "sha256": "c85c7192e92644fccd75d86bdfca599425603a647e77183b29effaddfe697fcc",
+      "config_digest": "sha256:751250cd5a230dc11a3d62ebcfa8c094fca3621705526360d772ea26581ada57",
+      "manifest_digest": "sha256:5d27f970d3a1c93e77bd28089bf3294ef40b9f7832648419b8a3c2b43b4bc670",
+      "runtime_image_id": "sha256:a41831ba2e12a84e3b6a19b2cbf45e7c6ad268faf2996d9db2edd78c3a6fa3ca"
+    }
+  ],
+  "peak_extra_disk_bytes": 3221225472,
+  "protected_runner_free_bytes": 10737418240,
+  "cpu": 2,
+  "memory_bytes": 2147483648,
+  "swap_bytes": 0,
+  "max_containers": 1,
+  "budget_minutes": 40,
+  "legacy_current_rescans": "NOT_RUN; preserve prior exact reports. Current mutable tags not resolved or judged."
+}

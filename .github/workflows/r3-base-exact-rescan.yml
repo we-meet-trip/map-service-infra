@@ -1,0 +1,32 @@
+name: r3-base-exact-rescan
+on:
+  push:
+    branches: [fix/r3-base-exact-rescan-20260908]
+    paths: [security/r3-base-rescan/EXECUTE.json]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+  packages: read
+concurrency:
+  group: r3-base-exact-rescan
+  cancel-in-progress: false
+jobs:
+  exact-rescan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate scanner helper without Docker
+        run: python3 security/r3-base-rescan/check_scan.py
+      - name: Scan retained exact candidates under R0 lease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 security/r3-base-rescan/scan.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r3-base-exact-rescan-${{ github.sha }}
+          path: r3-base-results/
+          if-no-files-found: error
+          retention-days: 90
