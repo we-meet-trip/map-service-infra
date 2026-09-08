@@ -355,6 +355,17 @@ rollover_up() {
   # 앞선 실행이 중간에 죽으면 이제 없는 컨테이너를 가리키는 파일이 남는다.
   # 그대로 두면 새로 뜬 관문이 그 파일을 읽어 모든 요청이 502 가 된다.
   rm -f "$upstreams"/*.conf
+  # 앞단은 설정을 파일로 물고 있어 컨테이너를 그대로 두면 새 내용을 읽지
+  # 않는다. 관문이 잠깐 다시 서는 동안 요청을 붙들어 두는 것이 그 설정에
+  # 들어 있으므로, 관문에 손대기 전에 먼저 읽힌다. 다시 만들면 그 사이
+  # 바깥 포트가 비므로 다시 만들지 않고 설정만 갈아 끼운다.
+  if [ "$EDGE" != 0 ]; then
+    if ! dc "${PROFILES[@]}" exec -T edge caddy reload --config /etc/caddy/Caddyfile \
+        --adapter caddyfile; then
+      echo 'the entry point did not accept its new configuration; replacement is unsafe' >&2
+      return 1
+    fi
+  fi
   # 관문 자체를 먼저 최신으로 둔다. 상류를 갈아 끼울 자리가 여기에 있다.
   dc "${PROFILES[@]}" up -d --no-deps --wait --wait-timeout 180 proxy
   # 서비스끼리는 이제 관문의 내부 창구를 거친다. 그 창구가 이 네트워크의
