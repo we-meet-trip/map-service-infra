@@ -121,6 +121,13 @@ def admission(cid):
     return report
 
 
+def duration(raw):
+    found = DURATION.fullmatch(str(raw).strip())
+    require(found is not None and any(found.groups()), 'duration_unreadable')
+    hours, minutes, seconds = (float(part or 0) for part in found.groups())
+    return int(hours * 3600 + minutes * 60 + seconds)
+
+
 def stop_seconds(entry):
     """How long this service is given to finish what it is doing.
 
@@ -130,10 +137,7 @@ def stop_seconds(entry):
     raw = entry.get('stop_grace_period')
     if not raw:
         return STOP_SECONDS
-    found = DURATION.fullmatch(str(raw).strip())
-    require(found is not None and any(found.groups()), 'stop_grace_period_unreadable')
-    hours, minutes, seconds = (float(part or 0) for part in found.groups())
-    return max(STOP_SECONDS, int(hours * 3600 + minutes * 60 + seconds))
+    return max(STOP_SECONDS, duration(raw))
 
 
 def service_config(config, service):
@@ -151,6 +155,32 @@ def service_config(config, service):
     return entry, image
 
 
+def health_args(entry):
+    """Give the temporary copy the same readiness test as the original.
+
+    Compose holds this test, not the image, so a copy created without it is
+    called ready the moment it starts and is asked for an answer it cannot give
+    yet. A test this cannot reproduce exactly is refused rather than dropped.
+    """
+    check = entry.get('healthcheck') or {}
+    test = check.get('test')
+    if not test or check.get('disable'):
+        return []
+    require(isinstance(test, list) and test and test[0] in ('CMD-SHELL', 'NONE'),
+            'healthcheck_cannot_be_reproduced')
+    if test[0] == 'NONE':
+        return ['--no-healthcheck']
+    require(len(test) == 2 and isinstance(test[1], str), 'healthcheck_cannot_be_reproduced')
+    args = ['--health-cmd', test[1]]
+    for key, flag in (('interval', '--health-interval'), ('timeout', '--health-timeout'),
+                      ('start_period', '--health-start-period')):
+        if check.get(key):
+            args += [flag, '%ds' % duration(check[key])]
+    if check.get('retries'):
+        args += ['--health-retries', str(int(check['retries']))]
+    return args
+
+
 def create_args(name, project, service, image, entry, networks, stop=STOP_SECONDS):
     """Build the temporary container from the same rendered configuration.
 
@@ -162,7 +192,7 @@ def create_args(name, project, service, image, entry, networks, stop=STOP_SECOND
             '--stop-timeout', str(stop),
             '--label', f'{LABEL}=1', '--label', f'kr.mapservice.project={project}',
             '--label', f'kr.mapservice.service={service}', '--log-driver=none',
-            '--network', networks[0]]
+            '--network', networks[0], *health_args(entry)]
     for key, value in sorted((entry.get('environment') or {}).items()):
         args += ['--env', f'{key}={value}' if value is not None else key]
     limits = ((entry.get('deploy') or {}).get('resources') or {}).get('limits') or {}
@@ -234,15 +264,20 @@ def wait_healthy(cid, seconds):
     raise RolloverError('rollover_container_never_became_healthy')
 
 
-def probe(host, service, timeout=5):
+def probe(host, service, timeout=5, seconds=0):
     url = 'http://%s:%d%s' % (host, SERVICES[service]['port'], SERVICES[service]['path'])
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
-            return response.status
-    except urllib.error.HTTPError as error:
-        return error.code
-    except Exception:
-        return 0
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response:
+                status = response.status
+        except urllib.error.HTTPError as error:
+            status = error.code
+        except Exception:
+            status = 0
+        if status == 200 or time.monotonic() >= deadline:
+            return status
+        time.sleep(2)
 
 
 def public_ok(probes):
@@ -294,7 +329,7 @@ def rollover(config, project, service, upstreams, probes, recreate, *,
 
         health = wait_healthy(green, health_seconds)
         report['steps'].append({'step': 'green_healthy', 'health': health['health']})
-        status = probe(address(green), service)
+        status = probe(address(green), service, seconds=health_seconds)
         require(status == 200, 'rollover_container_did_not_answer')
         report['steps'].append({'step': 'green_answered', 'status': status})
 
@@ -314,7 +349,8 @@ def rollover(config, project, service, upstreams, probes, recreate, *,
         after = state(canonical)
         require(after['image'] == image_id, 'canonical_image_mismatch')
         wait_healthy(canonical, health_seconds)
-        require(probe(address(canonical), service) == 200, 'canonical_did_not_answer')
+        require(probe(address(canonical), service, seconds=health_seconds) == 200,
+                'canonical_did_not_answer')
         report['canonical'] = canonical[:12]
         report['steps'].append({'step': 'canonical_healthy'})
 
