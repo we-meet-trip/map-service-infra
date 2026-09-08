@@ -649,7 +649,12 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
         def fake_command(args, **_kwargs):
             self.calls.append(tuple(args))
             if args[:2] == ["docker", "ps"]:
-                service = next(value.split("=", 2)[-1] for value in args if value.startswith("label=com.docker.compose.service="))
+                labels = [value for value in args if value.startswith("label=com.docker.compose.service=")]
+                if not labels:
+                    # Any other filter, such as the label a replacement puts on the
+                    # temporary copies it creates, matches nothing here.
+                    return ""
+                service = labels[0].split("=", 2)[-1]
                 return ids[service] if service in known and ("-a" in args or service in self.running) else ""
             if args[:2] == ["docker", "inspect"] or args[:3] == ["docker", "image", "inspect"]:
                 return "sha256:" + "e" * 64
@@ -672,7 +677,7 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
                 self.running |= set(deploy.release.SERVICES) | {"proxy"}
                 if failure == "interrupt":
                     raise KeyboardInterrupt()
-                if failure in ("admin", "cloud-up"):
+                if failure in ("admin", "cloud-up", "traffic_return"):
                     raise deploy.DeployError("synthetic-private")
             if args[:2] == ["docker", "compose"] and "up" in args:
                 selected = args[args.index("--wait-timeout") + 2:]
@@ -741,6 +746,8 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
                         patch.object(deploy.cutover_guard, "require_enrolled"),
                         patch.object(deploy.cutover_guard, "write_ready_receipt"),
                         patch.object(deploy.cutover_guard, "require_public_restart"),
+                        patch.object(deploy.cutover_guard, "return_to_canonical",
+                                     return_value=None if failure == "traffic_return" else {"removed": []}),
                         contextlib.redirect_stdout(output)):
                     stack.enter_context(patched)
                 if failure == "interrupt":
@@ -785,6 +792,26 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
         self.assertIn("deploy_private_started", output)
         self.assertNotIn("rollover_started", output)
         self.assertIsNone(self.deployment_env.get("CUTOVER_ROLLOVER"))
+
+    def test_a_failed_replacement_keeps_the_version_that_was_serving(self):
+        # Nothing stopped serving during a replacement, so closing the public
+        # entry points here would be the outage rather than the protection.
+        output = self.scenario("cloud-up", verified=False, rollover=True)
+        self.assertIn("rollover_failed_serving", output)
+        self.assertNotIn('"quarantined"', output)
+        for service in ("edge", "proxy", "user", "yolo"):
+            self.assertIn(service, self.running)
+        self.assertFalse(any(c[:2] == ("docker", "stop") for c in self.calls))
+
+    def test_a_failed_replacement_that_cannot_return_traffic_closes_the_entry_points(self):
+        output = self.scenario("traffic_return", verified=False, rollover=True)
+        self.assertIn('"quarantined"', output)
+
+    def test_a_failed_replacement_removes_the_temporary_copies(self):
+        self.scenario("cloud-up", verified=False, rollover=True)
+        self.assertTrue(any(c[:2] == ("docker", "ps")
+                            and any("kr.mapservice.rollover=1" in value for value in c)
+                            for c in self.calls))
 
     def test_a_console_only_failure_does_not_close_the_entry_points(self):
         output = self.scenario(console_exit=3)

@@ -95,8 +95,9 @@ def guard_context():
 
 
 PUBLIC_SERVICES = ("edge", "proxy", "user", "yolo")
-CUTOVER_PHASES = {"starting_private", "rollover", "private_ready", "opening_ingress", "complete",
-                  "quarantined", "quarantine_failed", "rolled_back", "rollback_failed_quarantined"}
+CUTOVER_PHASES = {"starting_private", "rollover", "rollover_failed_serving", "private_ready",
+                  "opening_ingress", "complete", "quarantined", "quarantine_failed",
+                  "rolled_back", "rollback_failed_quarantined"}
 
 
 def validate_host_metadata(info):
@@ -238,6 +239,20 @@ def running_service_ids(service, env):
     ids = command(["docker", "ps", "-q", "--filter", "label=com.docker.compose.project=map-test",
                    "--filter", f"label=com.docker.compose.service={service}"], env=env, cwd=STATE).splitlines()
     require(all(re.fullmatch(r"[a-f0-9]{12,64}", item) for item in ids), "invalid ingress container ID")
+    return ids
+
+
+def remove_rollover_containers(env):
+    """Take away every temporary copy a replacement may have left behind.
+
+    Only containers a replacement created carry this label, so nothing that was
+    already serving can be matched here.
+    """
+    ids = command(["docker", "ps", "-aq", "--no-trunc", "--filter", "label=kr.mapservice.rollover=1"],
+                  env=env, timeout=60, cwd=STATE).split()
+    for identifier in ids:
+        require(re.fullmatch(r"[a-f0-9]{64}", identifier), "unexpected container identity")
+        command(["docker", "rm", "-f", identifier], env=env, timeout=90, cwd=STATE)
     return ids
 
 
@@ -1116,6 +1131,30 @@ def receive(raw):
                             status(latch["phase"])
                             raise DeployError("deployment and verified rollback failed; ingress quarantine attempted") from None
                     else:
+                        if rollover:
+                            # Replacement never stopped the containers that were
+                            # serving, so closing the public entry points here would
+                            # create the outage this path exists to prevent. Traffic
+                            # goes back to them and anything temporary is removed;
+                            # only a host that is genuinely not answering is closed.
+                            latch["phase"] = "rollover_failed_serving"
+                            serving = cutover_guard.return_to_canonical(guard_context()) is not None
+                            try:
+                                remove_rollover_containers(env)
+                            except Exception:
+                                serving = False
+                            if serving:
+                                try:
+                                    smoke()
+                                except Exception:
+                                    serving = False
+                            if serving:
+                                atomic_state(STATE / "security-cutover.json", latch)
+                                atomic_state(history / "result.json",
+                                             {"status": latch["phase"], "run_id": data["github_run_id"],
+                                              "infra_sha": data["infra_sha"], "candidate_preserved": True})
+                                status(latch["phase"])
+                                raise DeployError("replacement failed; the version that was serving still is") from None
                         # Keep candidate source/env/bundle; never restart unsafe prior code.
                         latch["phase"] = "quarantined"
                         try:

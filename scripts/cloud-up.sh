@@ -345,10 +345,22 @@ echo "[$LABEL] 4/4 애플리케이션 기동"
 # 그쪽으로 돌리고, 그다음에 원래 컨테이너를 새 판으로 다시 만든다. 바꾸는
 # 동안 요청을 받아 줄 컨테이너가 항상 하나 있으므로 공개 요청이 끊기지
 # 않는다. 실패하면 임시 컨테이너만 지우고 상류는 원래 자리로 되돌린다.
+# 상류를 갈아 끼우는 자리. compose 는 이 값을 env 파일에서 읽고 이 스크립트는
+# 그 파일을 자기 환경으로 들이지 않으므로, 같은 자리에서 같은 값을 직접 찾는다.
+# 두 곳이 어긋나면 파일은 써지는데 관문은 읽지 않아 교체가 조용히 헛돈다.
+upstream_directory() {
+  local value=${PROXY_UPSTREAMS_DIR:-}
+  [ -n "$value" ] || value=$(sed -n 's/^PROXY_UPSTREAMS_DIR=//p' "$1" | tail -1)
+  [ -n "$value" ] || return 1
+  printf '%s\n' "$value"
+}
+
 rollover_up() {
-  # 관문이 실제로 마운트하는 자리와 같아야 한다. 기본값을 두면 관문은
-  # checkout 안을 보고 여기는 상태 디렉터리에 쓰는 어긋남이 조용히 생긴다.
-  local upstreams=${PROXY_UPSTREAMS_DIR:?rollover requires the directory the proxy mounts}
+  local upstreams
+  if ! upstreams=$(upstream_directory "$ENV_FILE"); then
+    echo 'replacement needs PROXY_UPSTREAMS_DIR in the environment file the proxy is built from' >&2
+    return 1
+  fi
   local origin=${ROLLOVER_PROBE_ORIGIN:?rollover requires the published proxy origin}
   local service receipt rc=0
   mkdir -p "$upstreams"
@@ -358,10 +370,12 @@ rollover_up() {
   # 앞단은 설정을 파일로 물고 있어 컨테이너를 그대로 두면 새 내용을 읽지
   # 않는다. 관문이 잠깐 다시 서는 동안 요청을 붙들어 두는 것이 그 설정에
   # 들어 있으므로, 관문에 손대기 전에 먼저 읽힌다. 다시 만들면 그 사이
-  # 바깥 포트가 비므로 다시 만들지 않고 설정만 갈아 끼운다.
-  if [ "$EDGE" != 0 ]; then
-    if ! dc "${PROFILES[@]}" exec -T edge caddy reload --config /etc/caddy/Caddyfile \
-        --adapter caddyfile; then
+  # 바깥 포트가 비므로 다시 만들지 않고 설정만 갈아 끼운다. 배포는 앞단을
+  # 자기 목록에 넣지 않으므로 compose 가 아니라 도는 컨테이너를 직접 찾는다.
+  local entry
+  entry=$(docker ps -q --filter label=com.docker.compose.service=edge | head -1)
+  if [ -n "$entry" ]; then
+    if ! docker exec "$entry" caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile; then
       echo 'the entry point did not accept its new configuration; replacement is unsafe' >&2
       return 1
     fi

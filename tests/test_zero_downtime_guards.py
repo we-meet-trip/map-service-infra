@@ -174,10 +174,35 @@ class RolloverOrderTests(unittest.TestCase):
                 with self.subTest(caller=caller, callee=callee):
                     self.assertLess(position[caller], position[callee])
 
-    def test_the_replacement_directory_has_no_default(self):
+    def function(self, name):
         body = (ROOT / 'scripts/cloud-up.sh').read_text()
-        self.assertIn('PROXY_UPSTREAMS_DIR:?', body)
-        self.assertNotIn('PROXY_UPSTREAMS_DIR:-', body)
+        start = body.index(name + '() {')
+        return body[start:body.index('\n}\n', start) + 3]
+
+    def resolve(self, env_body, exported=None):
+        """Run the real shell function against a file shaped like the host's."""
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            env = Path(d) / '.env.test'
+            env.write_text(env_body)
+            script = '%s\nupstream_directory %s\n' % (self.function('upstream_directory'), env)
+            return subprocess.run(['bash', '-c', script], capture_output=True, text=True,
+                                  env={'PATH': '/usr/bin:/bin', **(exported or {})})
+
+    def test_the_directory_comes_from_the_file_the_proxy_is_built_from(self):
+        # The deployment does not read this file into its own environment, so a
+        # value that only lives there still has to be found.
+        result = self.resolve('A=1\nPROXY_UPSTREAMS_DIR=/var/lib/map-deploy/upstreams\nB=2\n')
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), '/var/lib/map-deploy/upstreams')
+
+    def test_an_exported_value_wins_over_the_file(self):
+        result = self.resolve('PROXY_UPSTREAMS_DIR=/from/file\n',
+                              exported={'PROXY_UPSTREAMS_DIR': '/from/environment'})
+        self.assertEqual(result.stdout.strip(), '/from/environment')
+
+    def test_a_missing_value_stops_the_replacement(self):
+        self.assertNotEqual(self.resolve('A=1\n').returncode, 0)
 
 
 class InternalListenerPreflightTests(unittest.TestCase):
