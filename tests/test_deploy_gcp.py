@@ -718,21 +718,31 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
         output = io.StringIO()
         old_umask = os.umask(0o077)
         try:
-            with patch.object(deploy, "REPO", repo), patch.object(deploy, "STATE", state), \
-                 patch.object(deploy, "validate_host_metadata"), patch.object(deploy, "validate_state_directory"), \
-                 patch.object(deploy, "verify_instance"), patch.object(deploy, "backup_environment", return_value={}), \
-                 patch.object(deploy, "git", side_effect=fake_git), patch.object(deploy, "command", side_effect=fake_command), \
-                 patch.object(deploy, "command_status",
-                              side_effect=lambda args, **kw: (console_exit, fake_command(args, **{k: v for k, v in kw.items() if k != "accept"}))), \
-                 patch.object(deploy, "preflight", side_effect=fake_preflight), patch.object(deploy, "smoke", side_effect=fake_smoke), \
-                 patch.object(deploy, "capture_infrastructure", side_effect=fake_capture), \
-                 patch.object(deploy, "prepare_infrastructure", side_effect=fake_prepare), \
-                 patch.object(deploy, "verify_infrastructure_images", side_effect=fake_verify), \
-                 patch.object(deploy.cutover_guard, "require_receiver_scope"), \
-                 patch.object(deploy.cutover_guard, "require_enrolled"), \
-                 patch.object(deploy.cutover_guard, "write_ready_receipt"), \
-                 patch.object(deploy.cutover_guard, "require_public_restart"), \
-                 contextlib.redirect_stdout(output):
+            # A single with-statement over this many context managers exceeds
+            # CPython's nested-block limit, so they are entered one at a time.
+            with contextlib.ExitStack() as stack:
+                for patched in (
+                        patch.object(deploy, "REPO", repo), patch.object(deploy, "STATE", state),
+                        patch.object(deploy, "validate_host_metadata"),
+                        patch.object(deploy, "validate_state_directory"),
+                        patch.object(deploy, "verify_instance"),
+                        patch.object(deploy, "backup_environment", return_value={}),
+                        patch.object(deploy, "git", side_effect=fake_git),
+                        patch.object(deploy, "command", side_effect=fake_command),
+                        patch.object(deploy, "command_status",
+                                     side_effect=lambda args, **kw: (console_exit, fake_command(
+                                         args, **{k: v for k, v in kw.items() if k != "accept"}))),
+                        patch.object(deploy, "preflight", side_effect=fake_preflight),
+                        patch.object(deploy, "smoke", side_effect=fake_smoke),
+                        patch.object(deploy, "capture_infrastructure", side_effect=fake_capture),
+                        patch.object(deploy, "prepare_infrastructure", side_effect=fake_prepare),
+                        patch.object(deploy, "verify_infrastructure_images", side_effect=fake_verify),
+                        patch.object(deploy.cutover_guard, "require_receiver_scope"),
+                        patch.object(deploy.cutover_guard, "require_enrolled"),
+                        patch.object(deploy.cutover_guard, "write_ready_receipt"),
+                        patch.object(deploy.cutover_guard, "require_public_restart"),
+                        contextlib.redirect_stdout(output)):
+                    stack.enter_context(patched)
                 if failure == "interrupt":
                     with self.assertRaises(deploy.DeployError):
                         deploy.receive(json.dumps(self.payload).encode())
