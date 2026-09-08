@@ -788,9 +788,15 @@ def http_status(url, expected, *, deadline=None):
 def network_failure(error):
     reason = error.reason if isinstance(error, urllib.error.URLError) else error
     if isinstance(reason, ssl.SSLCertVerificationError):
+        # A certificate that does not identify this host is never a timing
+        # problem, so it fails immediately and is not waited out.
         return "tls_verification", False
     if isinstance(reason, ssl.SSLError):
-        return "tls_error", False
+        # A handshake that fails without a certificate verdict is what a freshly
+        # started entry point answers for its first fraction of a second. Waiting
+        # costs nothing: a genuinely broken listener keeps failing and still ends
+        # the deployment when the readiness deadline expires.
+        return "tls_error", True
     if isinstance(reason, (TimeoutError, socket.timeout)):
         return "timeout", True
     if isinstance(reason, socket.gaierror):
