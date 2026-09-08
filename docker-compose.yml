@@ -663,6 +663,10 @@ services:
       - user
     volumes:
       - ./proxy/default.conf:/etc/nginx/conf.d/default.conf:ro
+      # 상류를 잠시 갈아 끼우는 자리. 배포 중에만 파일이 생기고, 끝나면
+      # 비워진다. 서버에서는 checkout 밖의 상태 디렉터리를 가리켜, 소스를
+      # 되감아도 이 자리가 함께 되감기지 않게 한다.
+      - ${PROXY_UPSTREAMS_DIR:-./proxy/upstreams}:/etc/nginx/upstreams:ro
     ports:
       - "127.0.0.1:8090:80"
     # 127.0.0.1 을 직접 쓴다. localhost 는 IPv6 로 풀릴 수 있는데 nginx 는

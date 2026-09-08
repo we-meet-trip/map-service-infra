@@ -328,8 +328,43 @@ echo "[$LABEL] 4/4 애플리케이션 기동"
 # 상태가 정상이 될 때까지 기다린다. 기다리지 않으면 표 손질에 실패해 뜨다
 # 죽기를 반복하는 상태에서도 이 스크립트가 성공으로 끝나고, 바로 아래 목록은
 # 아직 기동 중이라 그 실패와 구분되지 않는다.
+# MAP_ROLLOVER_VERSION=1
+# 한 서비스씩 바꾼다. 새 판을 옆에 먼저 세워 정상이 된 뒤에 관문의 상류를
+# 그쪽으로 돌리고, 그다음에 원래 컨테이너를 새 판으로 다시 만든다. 바꾸는
+# 동안 요청을 받아 줄 컨테이너가 항상 하나 있으므로 공개 요청이 끊기지
+# 않는다. 실패하면 임시 컨테이너만 지우고 상류는 원래 자리로 되돌린다.
+rollover_up() {
+  local upstreams=${PROXY_UPSTREAMS_DIR:-/var/lib/map-deploy/upstreams}
+  local origin=${ROLLOVER_PROBE_ORIGIN:-http://127.0.0.1:8090}
+  local service receipt rc=0
+  mkdir -p "$upstreams"
+  # 관문 자체를 먼저 최신으로 둔다. 상류를 갈아 끼울 자리가 여기에 있다.
+  dc "${PROFILES[@]}" up -d --no-deps --wait --wait-timeout 180 proxy
+  local services=(hub agent)
+  [ "$VISION" = 0 ] || services+=(yolo)
+  services+=(user)
+  for service in "${services[@]}"; do
+    receipt="/var/lib/map-deploy/receipts/rollover-${service}-$(python3 -c 'import uuid; print(uuid.uuid4().hex)').json"
+    mkdir -p /var/lib/map-deploy/receipts
+    if ! dc "${PROFILES[@]}" config --format json | python3 scripts/service-rollover.py \
+        --service "$service" --project "$(dc "${PROFILES[@]}" config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')" \
+        --upstreams "$upstreams" --receipt "$receipt" \
+        --probe "$origin/healthz=200" --probe "$origin/healthz/app=200" \
+        --probe "$origin/api/v1/users/me=401" \
+        --compose "docker compose --env-file $ENV_FILE ${FILES[*]} ${PROFILES[*]}"; then
+      echo "${service} rollover failed; the previous container keeps serving" >&2
+      rc=1
+      break
+    fi
+  done
+  [ "$EDGE" = 0 ] || dc "${PROFILES[@]}" up -d --no-deps --wait --wait-timeout 180 edge dns
+  return $rc
+}
+
 application_up() {
-  if [ -n "${INFRA_IMAGE_BUNDLE:-}" ]; then
+  if [ -n "${CUTOVER_ROLLOVER:-}" ] && [ -n "${INFRA_IMAGE_BUNDLE:-}" ]; then
+    rollover_up
+  elif [ -n "${INFRA_IMAGE_BUNDLE:-}" ]; then
     # PostgreSQL/Redis were checked above. Updating applications must not recreate
     # their containers merely because the image spelling changed from tag to ID.
     local services=(user agent hub proxy)
