@@ -178,3 +178,53 @@ class RolloverOrderTests(unittest.TestCase):
         body = (ROOT / 'scripts/cloud-up.sh').read_text()
         self.assertIn('PROXY_UPSTREAMS_DIR:?', body)
         self.assertNotIn('PROXY_UPSTREAMS_DIR:-', body)
+
+
+class InternalListenerPreflightTests(unittest.TestCase):
+    """Internal addresses that point at the proxy need that listener to exist.
+
+    Extracts the shell function from the deployment script and runs it, so the
+    check tested here is the one the deployment actually runs.
+    """
+
+    ROUTED = 'HUB_BASE_URL=http://proxy:8081/hub\n'
+    DIRECT = 'HUB_BASE_URL=http://hub:8000\n'
+    LISTENER = 'server {\n    listen 8081;\n}\n'
+    NO_LISTENER = 'server {\n    listen 80;\n}\n'
+
+    def function(self):
+        body = (ROOT / 'scripts/cloud-up.sh').read_text()
+        start = body.index('require_internal_listener() {')
+        return body[start:body.index('\n}\n', start) + 3]
+
+    def check(self, env_body, conf_body):
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            env = Path(d) / '.env.test'
+            env.write_text(env_body)
+            conf = Path(d) / 'default.conf'
+            conf.write_text(conf_body)
+            script = '%s\nrequire_internal_listener %s %s\n' % (self.function(), env, conf)
+            return subprocess.run(['bash', '-c', script], capture_output=True, text=True)
+
+    def test_routed_addresses_without_the_listener_stop_the_deployment(self):
+        result = self.check(self.ROUTED, self.NO_LISTENER)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('internal listener', result.stderr)
+
+    def test_routed_addresses_with_the_listener_are_allowed(self):
+        self.assertEqual(self.check(self.ROUTED, self.LISTENER).returncode, 0)
+
+    def test_direct_addresses_are_left_alone(self):
+        self.assertEqual(self.check(self.DIRECT, self.NO_LISTENER).returncode, 0)
+
+    def test_every_routed_name_is_covered(self):
+        for key in ('HUB_BASE_URL', 'AGENT_BASE_URL', 'USER_BASE_URL', 'USER_SERVICE_BASE_URL'):
+            with self.subTest(key=key):
+                body = '%s=http://proxy:8081/x\n' % key
+                self.assertEqual(self.check(body, self.NO_LISTENER).returncode, 2)
+
+    def test_the_deployment_actually_calls_the_check(self):
+        body = (ROOT / 'scripts/cloud-up.sh').read_text()
+        self.assertIn('require_internal_listener "$ENV_FILE" proxy/default.conf || exit 2', body)
+        self.assertIn('# MAP_INTERNAL_ROUTING_VERSION=1', body)
