@@ -84,7 +84,11 @@ def contract(config, credentials):
             and str(environment.get('POSTGRES_PORT', '5432')) == '5432',
             'serving_database_target_mismatch')
     # Spring/JVM arguments can otherwise override the reviewed datasource target.
-    require(not any(k.startswith(('SPRING_', 'JAVA_', 'JDK_', '_JAVA_', 'LOADER_'))
+    # Spring binds the environment loosely: spring.datasource.url,
+    # SPRING.DATASOURCE.URL and spring_datasource_url all reach the same
+    # property, so the names are folded to one spelling before the check.
+    require(not any(k.upper().replace('.', '_').replace('-', '_')
+                     .startswith(('SPRING_', 'JAVA_', 'JDK_', '_JAVA_', 'LOADER_'))
                     for k in environment if k != 'JAVA_TOOL_OPTIONS')
             and environment.get('JAVA_TOOL_OPTIONS', '-XX:MaxRAMPercentage=70') == '-XX:MaxRAMPercentage=70'
             and not service.get('command') and not service.get('entrypoint'),

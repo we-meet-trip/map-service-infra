@@ -42,7 +42,13 @@ class ContractTests(unittest.TestCase):
                            ('SPRING_APPLICATION_JSON','{"spring":{"datasource":{}}}'),
                            ('JAVA_TOOL_OPTIONS','-Dspring.datasource.url=foreign'),
                            ('JDK_JAVA_OPTIONS','-Dspring.datasource.username=map'),
-                           ('LOADER_MAIN','another.Main')]:
+                           ('LOADER_MAIN','another.Main'),
+                           ('spring.datasource.url','jdbc:postgresql://foreign.invalid/db'),
+                           ('SPRING.DATASOURCE.URL','jdbc:postgresql://foreign.invalid/db'),
+                           ('spring_datasource_url','jdbc:postgresql://foreign.invalid/db'),
+                           ('Spring-Datasource-Url','jdbc:postgresql://foreign.invalid/db'),
+                           ('java_tool_options','-Dspring.datasource.url=foreign'),
+                           ('loader.main','another.Main')]:
             c=config();c['services']['user']['environment'][key]=value
             with self.subTest(key=key),self.assertRaises(job.JobError):job.contract(c,credentials())
         for key in ('command','entrypoint'):
