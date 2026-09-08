@@ -124,6 +124,18 @@ elif [ -n "${CUTOVER_SUPERVISED:-}" ]; then
   exit 2
 fi
 
+# MAP_INTERNAL_ROUTING_VERSION=1
+# 서비스끼리 관문의 내부 창구를 거치도록 주소를 돌려 두었는데 이 관문 설정에
+# 그 창구가 없으면, 컨테이너가 새로 뜨는 순간 서로를 전혀 부르지 못한다.
+# 두 자리가 어긋나면 아무것도 바꾸지 않고 멈춘다.
+require_internal_listener() {
+  grep -qE '^(HUB|AGENT|USER|USER_SERVICE)_BASE_URL=.*proxy:8081' "$1" 2>/dev/null || return 0
+  grep -q 'listen 8081;' "$2" 2>/dev/null && return 0
+  echo 'internal base URLs point at the proxy but this proxy configuration has no internal listener' >&2
+  return 2
+}
+require_internal_listener "$ENV_FILE" proxy/default.conf || exit 2
+
 # 작은 서버 덧칠은 1GB 급을 겨냥한다. 카메라 인식은 모델을 들고 있어 그 위에
 # 더 얹을 자리가 없다 — 재 보니 나머지 여섯만으로 부하 중 838 MiB 였고 거기에
 # 279 MiB 가 더 붙는다. 뜨기는 하다가 무엇이 먼저 죽을지 모르는 상태가 된다.
