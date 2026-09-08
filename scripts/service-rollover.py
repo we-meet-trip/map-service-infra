@@ -37,6 +37,8 @@ IMAGE = re.compile(r'ghcr\.io/we-meet-trip/map-service-[a-z]+@sha256:[a-f0-9]{64
 ID = re.compile(r'[a-f0-9]{64}')
 NAME = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}')
 PROTECTED_RESERVE = 512 * 1024 ** 2
+DURATION = re.compile(r'(?:([0-9]+)h)?(?:([0-9]+)m)?(?:([0-9.]+)s)?')
+STOP_SECONDS = 30
 DISK_FLOOR = 2 * 1024 ** 3
 ENV = {'PATH': '/usr/bin:/bin:/usr/local/bin', 'DOCKER_HOST': 'unix:///var/run/docker.sock',
        'DOCKER_CONFIG': '/var/empty'}
@@ -93,25 +95,45 @@ def memory_available():
     raise RolloverError('memory_reading_unavailable')
 
 
+SCALE = {'B': 1, 'KIB': 1024, 'MIB': 1024 ** 2, 'GIB': 1024 ** 3,
+         'KB': 1000, 'MB': 1000 ** 2, 'GB': 1000 ** 3}
+
+
 def working_set(cid):
     raw = docker(['stats', '--no-stream', '--format', '{{.MemUsage}}', cid])
-    value, _, unit = re.match(r'([0-9.]+)\s*([A-Za-z]+)', raw.split('/')[0].strip()).groups() + ('',)
-    scale = {'B': 1, 'KIB': 1024, 'MIB': 1024 ** 2, 'GIB': 1024 ** 3,
-             'KB': 1000, 'MB': 1000 ** 2, 'GB': 1000 ** 3}
-    require(unit.upper() in scale, 'memory_usage_unreadable')
-    return int(float(value) * scale[unit.upper()])
+    found = re.match(r'([0-9.]+)\s*([A-Za-z]+)', raw.split('/')[0].strip())
+    require(found is not None, 'memory_usage_unreadable')
+    value, unit = found.groups()
+    require(unit.upper() in SCALE, 'memory_usage_unreadable')
+    return int(float(value) * SCALE[unit.upper()])
 
 
 def admission(cid):
     """Refuse to start a second copy when the host cannot hold one."""
-    needed = int(working_set(cid) * 1.5) + PROTECTED_RESERVE
+    used = working_set(cid)
+    needed = int(used * 1.5) + PROTECTED_RESERVE
     available = memory_available()
     free = shutil.disk_usage('/').free
-    report = {'working_set_bytes': working_set(cid), 'required_bytes': needed,
+    report = {'working_set_bytes': used, 'required_bytes': needed,
               'memory_available_bytes': available, 'disk_free_bytes': free}
     require(available >= needed, 'insufficient_memory_for_second_container')
     require(free >= DISK_FLOOR, 'insufficient_disk')
     return report
+
+
+def stop_seconds(entry):
+    """How long this service is given to finish what it is doing.
+
+    A service that is allowed minutes to drain must get those minutes as the
+    temporary copy goes away, or the requests still running on it are cut.
+    """
+    raw = entry.get('stop_grace_period')
+    if not raw:
+        return STOP_SECONDS
+    found = DURATION.fullmatch(str(raw).strip())
+    require(found is not None and any(found.groups()), 'stop_grace_period_unreadable')
+    hours, minutes, seconds = (float(part or 0) for part in found.groups())
+    return max(STOP_SECONDS, int(hours * 3600 + minutes * 60 + seconds))
 
 
 def service_config(config, service):
@@ -121,10 +143,15 @@ def service_config(config, service):
     except (KeyError, TypeError):
         raise RolloverError('service_missing_from_configuration') from None
     require(isinstance(image, str) and IMAGE.fullmatch(image), 'service_image_not_pinned')
+    # The temporary copy is started from the image, so a service whose process is
+    # named in the configuration rather than the image would quietly run
+    # something else. Refuse instead of replacing it with the wrong program.
+    require(not entry.get('entrypoint') and not entry.get('command'),
+            'service_overrides_its_own_process')
     return entry, image
 
 
-def create_args(name, project, service, image, entry, networks):
+def create_args(name, project, service, image, entry, networks, stop=STOP_SECONDS):
     """Build the temporary container from the same rendered configuration.
 
     Published ports are deliberately dropped: the canonical container owns them
@@ -132,6 +159,7 @@ def create_args(name, project, service, image, entry, networks):
     """
     require(NAME.fullmatch(name), 'rollover_name_invalid')
     args = ['create', '--pull=never', '--name', name, '--restart=no', '--init',
+            '--stop-timeout', str(stop),
             '--label', f'{LABEL}=1', '--label', f'kr.mapservice.project={project}',
             '--label', f'kr.mapservice.service={service}', '--log-driver=none',
             '--network', networks[0]]
@@ -235,6 +263,7 @@ def rollover(config, project, service, upstreams, probes, recreate, *,
              health_seconds=180, settle=10, report=None):
     require(service in SERVICES, 'unknown_service')
     entry, image = service_config(config, service)
+    drain = stop_seconds(entry)
     image_id = docker(['image', 'inspect', '--format', '{{.Id}}', image])
     require(re.fullmatch(r'sha256:[a-f0-9]{64}', image_id), 'service_image_identity_invalid')
 
@@ -244,7 +273,7 @@ def rollover(config, project, service, upstreams, probes, recreate, *,
     report = {} if report is None else report
     report.update({'service': service, 'image': image, 'image_id': image_id,
                    'blue': blue[:12], 'started_at': datetime.now(timezone.utc).isoformat(),
-                   'admission': admission(blue), 'steps': []})
+                   'admission': admission(blue), 'drain_seconds': drain, 'steps': []})
     networks = [n for n in inspect(blue, '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}').split()]
     require(networks, 'container_has_no_network')
 
@@ -255,7 +284,7 @@ def rollover(config, project, service, upstreams, probes, recreate, *,
     green = None
     switched = False
     try:
-        green = docker(create_args(name, project, service, image, entry, networks), timeout=120)
+        green = docker(create_args(name, project, service, image, entry, networks, drain), timeout=120)
         require(ID.fullmatch(green), 'rollover_container_id_invalid')
         for extra in networks[1:]:
             docker(['network', 'connect', extra, green])
@@ -314,7 +343,7 @@ def rollover(config, project, service, upstreams, probes, recreate, *,
         if green is not None and ID.fullmatch(green):
             try:
                 if state(green)['running']:
-                    docker(['stop', '--time', '30', green], timeout=60)
+                    docker(['stop', '--time', str(drain), green], timeout=drain + 60)
                 docker(['rm', green])
                 report['steps'].append({'step': 'green_removed'})
             except Exception:

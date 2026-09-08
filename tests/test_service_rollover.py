@@ -52,6 +52,74 @@ class ArgumentTests(unittest.TestCase):
         self.assertIn('$vision_upstream', roll.upstream_body('yolo', 'x'))
 
 
+class DrainTests(unittest.TestCase):
+    """A service allowed minutes to finish must get them as its copy goes away."""
+
+    def test_the_configured_grace_is_read_in_the_forms_compose_writes(self):
+        for raw, expected in (('5m20s', 320), ('2m', 120), ('90s', 90), ('1h', 3600),
+                              ('1h2m3s', 3723)):
+            with self.subTest(raw=raw):
+                self.assertEqual(roll.stop_seconds({'stop_grace_period': raw}), expected)
+
+    def test_a_service_without_one_keeps_the_ordinary_wait(self):
+        self.assertEqual(roll.stop_seconds({}), roll.STOP_SECONDS)
+        self.assertEqual(roll.stop_seconds({'stop_grace_period': '5s'}), roll.STOP_SECONDS)
+
+    def test_an_unreadable_grace_stops_the_replacement(self):
+        with self.assertRaisesRegex(roll.RolloverError, 'stop_grace_period_unreadable'):
+            roll.stop_seconds({'stop_grace_period': 'a while'})
+
+    def test_the_temporary_container_is_created_with_that_wait(self):
+        entry, image = roll.service_config(config(), 'hub')
+        args = roll.create_args('map-test-hub-rollover', 'map-test', 'hub', image, entry,
+                                ['map-test_default'], 320)
+        self.assertEqual(args[args.index('--stop-timeout') + 1], '320')
+
+    def test_a_service_that_names_its_own_process_is_refused(self):
+        for key in ('command', 'entrypoint'):
+            broken = config()
+            broken['services']['hub'][key] = ['sh', '-c', 'something else']
+            with self.subTest(key=key), self.assertRaisesRegex(
+                    roll.RolloverError, 'service_overrides_its_own_process'):
+                roll.service_config(broken, 'hub')
+
+
+class AdmissionTests(unittest.TestCase):
+    """The reading the admission check depends on has to survive real output."""
+
+    REAL = {'259MiB / 3GiB': 259 * 1024 ** 2,
+            '1.5GiB / 3GiB': int(1.5 * 1024 ** 3),
+            '54.32MiB / 384MiB': int(54.32 * 1024 ** 2),
+            '812KiB / 64MiB': 812 * 1024,
+            '512B / 64MiB': 512}
+
+    def test_every_size_docker_prints_is_read_back(self):
+        for raw, expected in self.REAL.items():
+            with self.subTest(raw=raw), patch.object(roll, 'docker', return_value=raw):
+                self.assertEqual(roll.working_set(BLUE), expected)
+
+    def test_an_unreadable_reading_stops_the_replacement(self):
+        for raw in ('', '-- / --', 'plenty / 3GiB', '259 Zib / 3GiB'):
+            with self.subTest(raw=raw), patch.object(roll, 'docker', return_value=raw):
+                with self.assertRaisesRegex(roll.RolloverError, 'memory_usage_unreadable'):
+                    roll.working_set(BLUE)
+
+    def test_a_host_with_room_admits_and_reports_what_it_measured(self):
+        with patch.object(roll, 'docker', return_value='259MiB / 3GiB'), \
+                patch.object(roll, 'memory_available', return_value=2 * 1024 ** 3):
+            report = roll.admission(BLUE)
+        self.assertEqual(report['working_set_bytes'], 259 * 1024 ** 2)
+        self.assertEqual(report['required_bytes'],
+                         int(259 * 1024 ** 2 * 1.5) + roll.PROTECTED_RESERVE)
+
+    def test_a_host_without_room_is_refused_on_the_measured_size(self):
+        with patch.object(roll, 'docker', return_value='1.5GiB / 3GiB'), \
+                patch.object(roll, 'memory_available', return_value=600 * 1024 ** 2):
+            with self.assertRaisesRegex(roll.RolloverError, 'insufficient_memory_for_second_container'):
+                roll.admission(BLUE)
+
+
+
 class ProxyTests(unittest.TestCase):
     def test_a_rejected_configuration_is_removed_before_any_reload(self):
         calls = []
