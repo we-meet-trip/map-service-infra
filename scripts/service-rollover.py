@@ -311,8 +311,11 @@ def rollover(config, project, service, upstreams, probes, recreate, *,
 
 
 def compose_recreate(compose, service):
+    # Compose leaves a container alone when it decides nothing changed, and the
+    # caller then finds the canonical container was never replaced. Asking for it
+    # explicitly also makes a same-image rehearsal possible.
     subprocess.run([*compose, 'up', '-d', '--no-deps', '--no-build', '--pull', 'never',
-                    '--wait', '--wait-timeout', '180', service],
+                    '--force-recreate', '--wait', '--wait-timeout', '180', service],
                    env={**os.environ, **ENV}, check=True, timeout=600)
 
 

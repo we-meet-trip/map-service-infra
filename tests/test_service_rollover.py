@@ -199,5 +199,17 @@ class RolloverTests(unittest.TestCase):
                 roll.rollover(config(), 'map-test', 'hub', self.upstreams, PROBES, self.recreate)
 
 
+    def test_the_canonical_container_is_always_actually_replaced(self):
+        # Compose leaves a container alone when it sees no change, and the caller
+        # then reports that the canonical container was never replaced.
+        seen = []
+        with patch.object(roll.subprocess, 'run', side_effect=lambda args, **kw: seen.append(args)):
+            roll.compose_recreate(['docker', 'compose'], 'hub')
+        self.assertIn('--force-recreate', seen[0])
+        self.assertIn('--no-deps', seen[0])
+        self.assertIn('never', seen[0])
+        self.assertEqual(seen[0][-1], 'hub')
+
+
 if __name__ == '__main__':
     unittest.main()

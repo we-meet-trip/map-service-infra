@@ -54,6 +54,10 @@ ZONE = "us-central1-a"
 INSTANCE = "map-test"
 INSTANCE_ID = "2327348931395410137"
 PUBLIC_URL = "https://mapapptest.duckdns.org"
+# The published proxy port on this host. The private smoke and the
+# rollover probes must name the same origin or one of them is checking
+# something that is not there.
+PRIVATE_ORIGIN = "http://127.0.0.1:8290"
 MAX_PAYLOAD = 256 * 1024
 PROCESS_TERM_GRACE_SECONDS = 5
 ARTIFACT_FILES = (*release.FILES, "SHA256SUMS")
@@ -91,7 +95,7 @@ def guard_context():
 
 
 PUBLIC_SERVICES = ("edge", "proxy", "user", "yolo")
-CUTOVER_PHASES = {"starting_private", "private_ready", "opening_ingress", "complete",
+CUTOVER_PHASES = {"starting_private", "rollover", "private_ready", "opening_ingress", "complete",
                   "quarantined", "quarantine_failed", "rolled_back", "rollback_failed_quarantined"}
 
 
@@ -150,6 +154,24 @@ def load_rollback_policy(candidate):
     require(bool(policy["candidate_allowed"]) and exact_image_tuple(candidate) in policy["candidate_allowed"],
             "candidate is not explicitly allowed")
     return policy
+
+
+def load_rollover_policy():
+    """Whether this host replaces one service at a time instead of recreating all.
+
+    A root-owned file is the switch, so turning it on is an operator act and
+    removing the file is the complete undo. An absent file means the ordinary
+    recreate path, which is what every earlier deployment used.
+    """
+    path = STATE / "rollover.json"
+    if not path.exists() and not path.is_symlink():
+        return False
+    data = read_host_json(path)
+    require(isinstance(data, dict) and set(data) == {"schema_version", "instance_id", "enabled"}
+            and type(data["schema_version"]) is int and data["schema_version"] == 1
+            and data["instance_id"] == INSTANCE_ID and type(data["enabled"]) is bool,
+            "invalid rollover policy")
+    return data["enabled"]
 
 
 def load_cutover_latch():
@@ -329,7 +351,12 @@ def stop_process_group(process):
     process.communicate()
 
 
-def command(args, *, env=None, timeout=300, cwd=REPO, umask=-1):
+def command_status(args, *, env=None, timeout=300, cwd=REPO, umask=-1, accept=(0,)):
+    """Run one child and return its exit code with its output.
+
+    A caller that can act on a particular non-zero code lists it in accept;
+    everything else still ends the deployment exactly as before.
+    """
     # A timed-out shell must not leave its compose/backup children racing rollback.
     process = subprocess.Popen(args, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, start_new_session=True, umask=umask)
@@ -341,8 +368,12 @@ def command(args, *, env=None, timeout=300, cwd=REPO, umask=-1):
     except BaseException:
         stop_process_group(process)
         raise
-    require(process.returncode == 0, "subprocess failed")
-    return output.strip()
+    require(process.returncode in accept, "subprocess failed")
+    return process.returncode, output.strip()
+
+
+def command(args, **kwargs):
+    return command_status(args, **kwargs)[1]
 
 
 def git(*args):
@@ -860,7 +891,7 @@ def wait_public_readiness(deadline):
 def smoke(*, include_public=True):
     deadline = time.monotonic() + PUBLIC_SMOKE_DEADLINE_SECONDS if include_public else None
     def check():
-        base = "http://127.0.0.1:8290"
+        base = PRIVATE_ORIGIN
         http_status(base + "/healthz", 200, deadline=deadline)
         body = http_status(base + "/healthz/app", 200, deadline=deadline)
         require(json.loads(body).get("status") == "UP", "BFF readiness failed")
@@ -934,14 +965,18 @@ def receive(raw):
             candidate = candidate_images(data)
             policy = load_rollback_policy(candidate)
             prior_latch = load_cutover_latch()
+            rollover = load_rollover_policy()
             interrupted = prior_latch is not None and prior_latch["phase"] not in ("complete", "rolled_back")
             env = backup_environment()
             verify_detached_services(env)
             if interrupted:
                 # Recover even the kill windows before the first edge stop or after
                 # edge reopening. Never treat a pending attempt as a verified prior.
-                stop_public_services(env)
-                status("interrupted_cutover_closed")
+                if prior_latch["phase"] == "rollover" and cutover_guard.return_to_canonical(guard_context()):
+                    status("interrupted_rollover_returned")
+                else:
+                    stop_public_services(env)
+                    status("interrupted_cutover_closed")
             git("diff", "--quiet", "--")
             git("diff", "--cached", "--quiet", "--")
             old_sha = git("rev-parse", "HEAD")
@@ -983,31 +1018,56 @@ def receive(raw):
                         "release lacks standalone User migration contract")
                 require("# MAP_SERVICE_MIGRATION_VERSION=1" in (REPO / "scripts/cloud-up.sh").read_text().splitlines(),
                         "release lacks per-service isolated migration contract")
+                if rollover:
+                    require("# MAP_ROLLOVER_VERSION=1" in (REPO / "scripts/cloud-up.sh").read_text().splitlines(),
+                            "release lacks the one-service-at-a-time replacement contract")
                 preflight(new_bundle, candidate_env, env)
                 infrastructure = history / "infrastructure"
                 evidence = prepare_infrastructure(infrastructure, new_bundle, candidate_env, captured_infrastructure, env)
                 preflight(new_bundle, candidate_env, env, infrastructure=infrastructure)
                 verify_admin_rollback_compatibility(new_bundle, active, env)
+                if rollover:
+                    # The entry point keeps serving throughout, so a release that would
+                    # replace it needs the separate procedure. Refuse before anything
+                    # on the machine has changed.
+                    planned_edge = (evidence["projects"].get("map-test") or {}).get("edge")
+                    running_edge = (captured_infrastructure.get("map-test") or {}).get("edge") or {}
+                    require(planned_edge is None
+                            or running_edge.get("image_id") == planned_edge.get("image_id"),
+                            "edge replacement requires the separate approved procedure")
                 status("prebackup")
                 # Verified new backup implementation reads the unchanged prior test environment.
                 command(["bash", "scripts/pg-backup.sh", "--test"], env=env, timeout=1800)
                 replace_environment(env_path, candidate_env.read_bytes(), env_metadata)
-                latch = {"schema_version": 1, "instance_id": INSTANCE_ID, "phase": "starting_private",
+                latch = {"schema_version": 1, "instance_id": INSTANCE_ID,
+                         "phase": "rollover" if rollover else "starting_private",
                          "run_id": data["github_run_id"], "infra_sha": data["infra_sha"], "bundle": str(new_bundle),
                          "candidate": candidate, "prior_rollback_compatible": rollback_allowed}
                 atomic_state(STATE / "security-cutover.json", latch)
                 started = True
                 # The latch precedes the first serving mutation. A pending latch on
                 # retry never authorizes rollback, including a partially started candidate.
-                stop_public_services(env, ("edge",))
-                status("deploy_private_started")
+                if not rollover:
+                    stop_public_services(env, ("edge",))
+                status("rollover_started" if rollover else "deploy_private_started")
                 role_args = ["--target-exporters"] if ADMIN_DETACHED else ["--admin", "--monitoring"]
                 # cloud-up's explicit application list omits edge/dns without --edge.
                 # Existing DNS remains running; all database/infrastructure pins remain.
-                command(["bash", "scripts/cloud-up.sh", "--test", "--registry", "--vision", *role_args],
-                        env={**env, "RELEASE_BUNDLE": str(new_bundle), "INFRA_IMAGE_BUNDLE": str(infrastructure),
-                             "CUTOVER_SUPERVISED": "1"}, timeout=2400)
-                verify_edge_closed(env)
+                child = {**env, "RELEASE_BUNDLE": str(new_bundle), "INFRA_IMAGE_BUNDLE": str(infrastructure),
+                         "CUTOVER_SUPERVISED": "1"}
+                if rollover:
+                    child["CUTOVER_ROLLOVER"] = "1"
+                    child["ROLLOVER_PROBE_ORIGIN"] = PRIVATE_ORIGIN
+                code, _ = command_status(["bash", "scripts/cloud-up.sh", "--test", "--registry", "--vision", *role_args],
+                                         env=child, timeout=2400, accept=(0, 3))
+                if code == 3:
+                    # The service stack is up; only the console stack failed. Losing a
+                    # dashboard must not close the public entry points.
+                    status("console_degraded")
+                if rollover:
+                    require(running_service_ids("edge", env), "entry point must keep serving during replacement")
+                else:
+                    verify_edge_closed(env)
                 cutover_guard.require_public_restart(guard_context())
                 private_evidence = {**evidence, "projects": {
                     project: {service: entry for service, entry in entries.items() if service != "edge"}
@@ -1019,15 +1079,17 @@ def receive(raw):
                 atomic_state(STATE / "security-cutover.json", latch)
                 latch["phase"] = "opening_ingress"
                 atomic_state(STATE / "security-cutover.json", latch)
-                command(compose_command(bundle=new_bundle, infrastructure=infrastructure)
-                        + ["up", "-d", "--no-deps", "--no-build", "--pull", "never", "--wait", "--wait-timeout", "180", "edge"],
-                        env=env, timeout=300)
+                if not rollover:
+                    command(compose_command(bundle=new_bundle, infrastructure=infrastructure)
+                            + ["up", "-d", "--no-deps", "--no-build", "--pull", "never", "--wait", "--wait-timeout", "180", "edge"],
+                            env=env, timeout=300)
                 verify_infrastructure_images(evidence, env)
                 status("smoke")
                 smoke()
                 cutover_guard.write_ready_receipt(guard_context(), latch, "complete")
                 atomic_state(history / "result.json", {"status": "complete", "run_id": data["github_run_id"],
-                             "infra_sha": data["infra_sha"], "prior_rollback_compatible": rollback_allowed})
+                             "infra_sha": data["infra_sha"], "prior_rollback_compatible": rollback_allowed,
+                             "rollover": rollover, "console": "degraded" if code == 3 else "ok"})
                 atomic_state(STATE / "current.json", {"bundle": str(new_bundle), "infrastructure": str(infrastructure), "run_id": data["github_run_id"]})
                 latch["phase"] = "complete"
                 atomic_state(STATE / "security-cutover.json", latch)

@@ -64,6 +64,10 @@ class WatchdogTests(unittest.TestCase):
             return json.dumps(next(x for x in self.items.values() if x["id"] == args[-1]))
         if args[:3] == ["docker", "image", "inspect"]:
             return args[-1].split("@")[-1]
+        if args[:2] == ["docker", "exec"]:
+            self.assertIn(args[3], ("nginx",))
+            self.assertIn(args[4], ("-t", "-s"))
+            return ""
         if args[:2] in (["docker", "start"], ["docker", "stop"], ["docker", "update"]):
             item = next(x for x in self.items.values() if x["id"] == args[-1])
             if args[1] == "update":
@@ -96,7 +100,7 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(self.mutations(), [])
 
     def test_all_nonterminal_phases_stop_four_and_preserve_other_services(self):
-        for phase in self.d.CUTOVER_PHASES - set(guard.TERMINAL):
+        for phase in self.d.CUTOVER_PHASES - set(guard.TOLERATED):
             with self.subTest(phase=phase):
                 self.write("security-cutover.json", {**self.latch, "phase": phase})
                 for item in self.items.values():
@@ -105,6 +109,28 @@ class WatchdogTests(unittest.TestCase):
                 self.assertEqual(guard.recover_once(self.d), "public_quarantined")
                 self.assertEqual([x[-1] for x in self.mutations()], [self.items[s]["id"] for s in guard.PUBLIC])
                 self.assertTrue(all(self.items[s]["running"] for s in set(self.items) - set(guard.PUBLIC)))
+
+    def test_a_replacement_in_progress_returns_traffic_instead_of_closing_anything(self):
+        upstreams = Path(self.temp.name) / "upstreams"
+        upstreams.mkdir()
+        (upstreams / "hub.conf").write_text("set $hub_upstream http://map-test-hub-rollover:8000;\n")
+        self.write("security-cutover.json", {**self.latch, "phase": "rollover"})
+        self.calls.clear()
+        with patch.object(guard, "UPSTREAMS", upstreams):
+            self.assertEqual(guard.recover_once(self.d), "rollover_returned_to_canonical")
+        self.assertEqual(list(upstreams.iterdir()), [])
+        self.assertEqual(self.mutations(), [])
+        self.assertTrue(all(item["running"] for item in self.items.values()))
+        self.assertTrue(any(c[:2] == ("docker", "exec") and c[-1] == "reload" for c in self.calls))
+
+    def test_a_replacement_with_a_missing_container_still_closes_the_entry_points(self):
+        upstreams = Path(self.temp.name) / "upstreams"
+        upstreams.mkdir()
+        self.write("security-cutover.json", {**self.latch, "phase": "rollover"})
+        self.items["user"]["running"] = False
+        self.calls.clear()
+        with patch.object(guard, "UPSTREAMS", upstreams):
+            self.assertEqual(guard.recover_once(self.d), "public_quarantined")
 
     def test_stopped_pending_never_restarts_on_boot(self):
         self.write("security-cutover.json", {**self.latch, "phase": "opening_ingress"})

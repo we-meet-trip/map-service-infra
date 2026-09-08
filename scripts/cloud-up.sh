@@ -335,11 +335,22 @@ echo "[$LABEL] 4/4 애플리케이션 기동"
 # 않는다. 실패하면 임시 컨테이너만 지우고 상류는 원래 자리로 되돌린다.
 rollover_up() {
   local upstreams=${PROXY_UPSTREAMS_DIR:-/var/lib/map-deploy/upstreams}
-  local origin=${ROLLOVER_PROBE_ORIGIN:-http://127.0.0.1:8090}
+  local origin=${ROLLOVER_PROBE_ORIGIN:?rollover requires the published proxy origin}
   local service receipt rc=0
   mkdir -p "$upstreams"
+  # 앞선 실행이 중간에 죽으면 이제 없는 컨테이너를 가리키는 파일이 남는다.
+  # 그대로 두면 새로 뜬 관문이 그 파일을 읽어 모든 요청이 502 가 된다.
+  rm -f "$upstreams"/*.conf
   # 관문 자체를 먼저 최신으로 둔다. 상류를 갈아 끼울 자리가 여기에 있다.
   dc "${PROFILES[@]}" up -d --no-deps --wait --wait-timeout 180 proxy
+  # 서비스끼리는 이제 관문의 내부 창구를 거친다. 그 창구가 이 네트워크의
+  # 주소를 받아 주지 않으면 교체가 끝난 뒤에야 전부 403 으로 드러난다.
+  # 아직 아무것도 바꾸지 않은 지금 한 번 물어본다.
+  if ! dc "${PROFILES[@]}" exec -T agent python3 -c \
+      "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://proxy:8081/hub/health/ready',timeout=5).status==200 else 1)"; then
+    echo 'internal listener did not answer from inside the network; replacement is unsafe' >&2
+    return 1
+  fi
   local services=(hub agent)
   [ "$VISION" = 0 ] || services+=(yolo)
   services+=(user)
@@ -404,6 +415,9 @@ if [ "$ADMIN" = 1 ] || [ "$TARGET_ONLY" = 1 ]; then
     echo "콘솔이 정해진 시간 안에 정상이 되지 않았다." >&2
     echo "서비스 스택은 이미 서 있다 — 콘솔만 다시 보면 된다:" >&2
     echo "  docker compose --env-file $ENV_FILE ${ADMIN_FILES[*]} logs admin" >&2
+    # 서비스 스택은 이미 서 있다. 콘솔만의 실패를 서비스 실패와 같은 값으로
+    # 돌려주면 수령자가 공개 진입점을 닫는다. 다른 값으로 구분해서 알린다.
+    exit 3
     dca ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}' >&2
     exit 1
   fi

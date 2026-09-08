@@ -604,13 +604,14 @@ class PublicReadinessTests(unittest.TestCase):
 
 
 class ReceiverTests(BundleFixture, unittest.TestCase):
-    def scenario(self, failure="", *, verified=True, interrupted=False, policy_fault=""):
+    def scenario(self, failure="", *, verified=True, interrupted=False, policy_fault="", console_exit=0, rollover=False):
         repo = self.root / "repo"
         repo.mkdir()
         (repo / "scripts").mkdir()
         (repo / "scripts/cloud-up.sh").write_text("# MAP_CUTOVER_SUPERVISOR_VERSION=1\n" +
             ("" if failure == "missing_migrator" else "# MAP_USER_STANDALONE_MIGRATION_VERSION=1\n") +
-            ("" if failure == "missing_service_migrator" else "# MAP_SERVICE_MIGRATION_VERSION=1\n"))
+            ("" if failure == "missing_service_migrator" else "# MAP_SERVICE_MIGRATION_VERSION=1\n") +
+            ("" if failure == "missing_rollover_contract" else "# MAP_ROLLOVER_VERSION=1\n"))
         env_path = repo / ".env.test"
         original = b"MAP_STACK_ENV=test\nIMAGE_TAG=old\nPOSTGRES_PASSWORD=synthetic-private\n"
         env_path.write_bytes(original)
@@ -624,6 +625,9 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
             policy["candidate_allowed"][0] = {**candidate, "user": candidate["user"][:-64] + "0" * 64}
         if policy_fault != "missing":
             (state / "rollback-policy.json").write_text(json.dumps(policy))
+        if rollover:
+            (state / "rollover.json").write_text(json.dumps(
+                {"schema_version": 1, "instance_id": deploy.INSTANCE_ID, "enabled": True}))
         if interrupted:
             (state / "security-cutover.json").write_text(json.dumps({
                 "schema_version": 1, "instance_id": deploy.INSTANCE_ID, "phase": "opening_ingress",
@@ -657,13 +661,18 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
                 raise deploy.DeployError("synthetic-private")
             if "scripts/cloud-up.sh" in args:
                 self.deployment_env = _kwargs["env"]
-                self.assertNotIn("edge", self.running)
+                if rollover:
+                    # The entry point must still be serving while services are replaced.
+                    self.assertIn("edge", self.running)
+                else:
+                    self.assertNotIn("edge", self.running)
                 self.assertNotIn("--edge", args)
-                self.assertEqual(json.loads((state / "security-cutover.json").read_text())["phase"], "starting_private")
+                self.assertEqual(json.loads((state / "security-cutover.json").read_text())["phase"],
+                                 "rollover" if rollover else "starting_private")
                 self.running |= set(deploy.release.SERVICES) | {"proxy"}
                 if failure == "interrupt":
                     raise KeyboardInterrupt()
-                if failure == "admin":
+                if failure in ("admin", "cloud-up"):
                     raise deploy.DeployError("synthetic-private")
             if args[:2] == ["docker", "compose"] and "up" in args:
                 selected = args[args.index("--wait-timeout") + 2:]
@@ -671,7 +680,9 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
             return ""
         def fake_smoke(*, include_public=True):
             self.calls.append(("smoke", include_public))
-            self.assertEqual("edge" in self.running, include_public)
+            # Replacing one service at a time keeps the entry point open throughout,
+            # so the private check legitimately runs while it is still serving.
+            self.assertEqual("edge" in self.running, include_public or rollover)
             if current_sha[0] != "f" * 40 and (failure == "smoke" or (failure == "public_smoke" and include_public)):
                 raise deploy.DeployError("synthetic-private")
             if failure == "public_alarm" and include_public:
@@ -711,6 +722,8 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
                  patch.object(deploy, "validate_host_metadata"), patch.object(deploy, "validate_state_directory"), \
                  patch.object(deploy, "verify_instance"), patch.object(deploy, "backup_environment", return_value={}), \
                  patch.object(deploy, "git", side_effect=fake_git), patch.object(deploy, "command", side_effect=fake_command), \
+                 patch.object(deploy, "command_status",
+                              side_effect=lambda args, **kw: (console_exit, fake_command(args, **{k: v for k, v in kw.items() if k != "accept"}))), \
                  patch.object(deploy, "preflight", side_effect=fake_preflight), patch.object(deploy, "smoke", side_effect=fake_smoke), \
                  patch.object(deploy, "capture_infrastructure", side_effect=fake_capture), \
                  patch.object(deploy, "prepare_infrastructure", side_effect=fake_prepare), \
@@ -741,6 +754,39 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
         if not policy_fault:
             self.assertEqual((state / "rollback-policy.json").read_bytes(), self.policy_before)
         return output.getvalue()
+
+    def test_replacing_one_service_at_a_time_never_closes_the_entry_point(self):
+        output = self.scenario(rollover=True)
+        self.assertIn("rollover_started", output)
+        self.assertIn("deploy_complete", output)
+        # The entry point is neither stopped at the start nor started at the end.
+        self.assertFalse(any("stop" in c and "edge" in str(c) for c in self.calls))
+        self.assertFalse(any(isinstance(c, tuple) and "up" in c and "edge" in c for c in self.calls))
+        self.assertEqual(self.deployment_env.get("CUTOVER_ROLLOVER"), "1")
+        self.assertEqual(self.deployment_env.get("ROLLOVER_PROBE_ORIGIN"), deploy.PRIVATE_ORIGIN)
+
+    def test_replacement_refuses_a_source_that_lacks_the_contract(self):
+        output = self.scenario("missing_rollover_contract", rollover=True)
+        self.assertIn("predeploy_state_restored", output)
+        self.assertFalse(any("scripts/cloud-up.sh" in c for c in self.calls))
+
+    def test_the_ordinary_path_is_unchanged_when_no_policy_file_exists(self):
+        output = self.scenario()
+        self.assertIn("deploy_private_started", output)
+        self.assertNotIn("rollover_started", output)
+        self.assertIsNone(self.deployment_env.get("CUTOVER_ROLLOVER"))
+
+    def test_a_console_only_failure_does_not_close_the_entry_points(self):
+        output = self.scenario(console_exit=3)
+        self.assertIn("console_degraded", output)
+        self.assertIn("deploy_complete", output)
+        self.assertNotIn("quarantined", output)
+
+    def test_any_other_failure_from_the_startup_script_is_not_treated_as_console_only(self):
+        # With a verified prior it rolls back; with none it closes the entry points.
+        self.assertIn("rollback_started", self.scenario("cloud-up"))
+        self.setUp()
+        self.assertIn("quarantined", self.scenario("cloud-up", verified=False))
 
     def test_success_requires_prebackup_deploy_and_smoke(self):
         output = self.scenario()

@@ -18,6 +18,10 @@ import time
 
 PUBLIC = ("edge", "proxy", "user", "yolo")
 TERMINAL = ("complete", "rolled_back")
+# A replacement in progress is a state the supervisor waits out rather than
+# closes: the containers it would stop are the ones still serving.
+TOLERATED = TERMINAL + ("rollover",)
+UPSTREAMS = Path("/var/lib/map-deploy/upstreams")
 OVERRIDE = "services:\n" + "".join(f"  {s}:\n    restart: 'no'\n" for s in PUBLIC)
 RECEIVER_UNIT = "map-deploy-receive.service"
 ENV = {"PATH": "/usr/bin:/bin", "DOCKER_HOST": "unix:///var/run/docker.sock",
@@ -60,6 +64,28 @@ def containers(d, services=PUBLIC):
                   and type(item["running"]) is bool and isinstance(item["restart"], str), "invalid container metadata")
         result[service] = item
     return result
+
+
+def return_to_canonical(d):
+    """Send traffic back to the canonical containers and leave everything running.
+
+    Only override files are removed and the proxy is asked to re-read them. No
+    container is started or stopped here, so a partly finished replacement ends
+    with whichever copy is healthy still answering.
+    """
+    try:
+        removed = []
+        if UPSTREAMS.is_dir():
+            for path in sorted(UPSTREAMS.glob("*.conf")):
+                path.unlink()
+                removed.append(path.name)
+        actual = containers(d)
+        d.require(all(item["running"] for item in actual.values()), "a public container is not running")
+        run(d, ["docker", "exec", actual["proxy"]["id"], "nginx", "-t"])
+        run(d, ["docker", "exec", actual["proxy"]["id"], "nginx", "-s", "reload"])
+        return {"removed": removed}
+    except Exception:
+        return None
 
 
 def policy_for_latch(d, latch):
@@ -138,6 +164,14 @@ def recover_once(d):
             return "receiver_active"
         latch = d.load_cutover_latch()
         d.require(latch is not None, "cutover latch required")
+        if not maintenance(d) and latch["phase"] == "rollover":
+            # Never read the ready receipt here: during a replacement the recorded
+            # identities legitimately differ, and calling that a fault is what
+            # closes an entry point that is still healthy.
+            if return_to_canonical(d) is not None:
+                return "rollover_returned_to_canonical"
+            d.stop_public_services(ENV)
+            return "public_quarantined"
         if maintenance(d) or latch["phase"] not in TERMINAL:
             d.stop_public_services(ENV)
             return "public_quarantined"
