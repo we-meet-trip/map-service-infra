@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import shutil
 import os
 from pathlib import Path
 import re
@@ -605,6 +606,7 @@ class PublicReadinessTests(unittest.TestCase):
 
 class ReceiverTests(BundleFixture, unittest.TestCase):
     def scenario(self, failure="", *, verified=True, interrupted=False, policy_fault="", console_exit=0, rollover=False):
+        prior_phase = interrupted if isinstance(interrupted, str) else "opening_ingress"
         repo = self.root / "repo"
         repo.mkdir()
         (repo / "scripts").mkdir()
@@ -630,7 +632,7 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
                 {"schema_version": 1, "instance_id": deploy.INSTANCE_ID, "enabled": True}))
         if interrupted:
             (state / "security-cutover.json").write_text(json.dumps({
-                "schema_version": 1, "instance_id": deploy.INSTANCE_ID, "phase": "opening_ingress",
+                "schema_version": 1, "instance_id": deploy.INSTANCE_ID, "phase": prior_phase,
                 "run_id": "122", "infra_sha": "f" * 40, "bundle": "/private/prior/bundle",
                 "candidate": candidate, "prior_rollback_compatible": True}))
         self.policy_before = (state / "rollback-policy.json").read_bytes() if not policy_fault else None
@@ -732,6 +734,10 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
                         patch.object(deploy, "validate_state_directory"),
                         patch.object(deploy, "verify_instance"),
                         patch.object(deploy, "backup_environment", return_value={}),
+                        patch.object(deploy.shutil, "disk_usage",
+                                     return_value=shutil._ntuple_diskusage(
+                                         100 * 1024 ** 3, 99 * 1024 ** 3,
+                                         1024 ** 3 if failure == "disk" else 40 * 1024 ** 3)),
                         patch.object(deploy, "git", side_effect=fake_git),
                         patch.object(deploy, "command", side_effect=fake_command),
                         patch.object(deploy, "command_status",
@@ -792,6 +798,42 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
         self.assertIn("deploy_private_started", output)
         self.assertNotIn("rollover_started", output)
         self.assertIsNone(self.deployment_env.get("CUTOVER_ROLLOVER"))
+
+    def test_the_next_deployment_after_a_failed_replacement_does_not_close_anything(self):
+        # The previous attempt left the containers serving. Treating that as an
+        # interrupted cutover and closing them would be the outage.
+        output = self.scenario(rollover=True, interrupted="rollover_failed_serving")
+        self.assertIn("interrupted_rollover_returned", output)
+        self.assertNotIn("interrupted_cutover_closed", output)
+        for service in ("edge", "proxy", "user", "yolo"):
+            self.assertIn(service, self.running)
+
+    def test_an_interrupted_replacement_is_recovered_the_same_way(self):
+        output = self.scenario(rollover=True, interrupted="rollover")
+        self.assertIn("interrupted_rollover_returned", output)
+        self.assertNotIn("interrupted_cutover_closed", output)
+
+    def test_any_other_interrupted_phase_still_closes_the_entry_points(self):
+        output = self.scenario(interrupted="opening_ingress")
+        self.assertIn("interrupted_cutover_closed", output)
+
+    def test_the_room_a_deployment_needs_is_stated_as_a_floor(self):
+        usage = shutil._ntuple_diskusage
+        with patch.object(deploy.shutil, "disk_usage",
+                          return_value=usage(100 * 1024 ** 3, 99 * 1024 ** 3, deploy.DISK_FLOOR)):
+            self.assertEqual(deploy.require_headroom(), deploy.DISK_FLOOR)
+        with patch.object(deploy.shutil, "disk_usage",
+                          return_value=usage(100 * 1024 ** 3, 99 * 1024 ** 3, deploy.DISK_FLOOR - 1)):
+            with self.assertRaisesRegex(deploy.DeployError, "insufficient disk"):
+                deploy.require_headroom()
+
+    def test_a_machine_without_room_is_refused_before_anything_changes(self):
+        self.scenario(failure="disk", rollover=True)
+        self.assertFalse(any("scripts/pg-backup.sh" in c for c in self.calls))
+        self.assertFalse(any("scripts/cloud-up.sh" in c for c in self.calls))
+        self.assertFalse(any(c[:2] == ("docker", "stop") for c in self.calls))
+        for service in ("edge", "proxy", "user", "yolo"):
+            self.assertIn(service, self.running)
 
     def test_a_failed_replacement_keeps_the_version_that_was_serving(self):
         # Nothing stopped serving during a replacement, so closing the public

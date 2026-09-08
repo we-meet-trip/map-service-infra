@@ -95,6 +95,9 @@ def guard_context():
 
 
 PUBLIC_SERVICES = ("edge", "proxy", "user", "yolo")
+# Two application images and their layers, plus the release copy kept beside them.
+DISK_FLOOR = 8 * 1024 ** 3
+SERVING_PHASES = ("rollover", "rollover_failed_serving")
 CUTOVER_PHASES = {"starting_private", "rollover", "rollover_failed_serving", "private_ready",
                   "opening_ingress", "complete", "quarantined", "quarantine_failed",
                   "rolled_back", "rollback_failed_quarantined"}
@@ -254,6 +257,18 @@ def remove_rollover_containers(env):
         require(re.fullmatch(r"[a-f0-9]{64}", identifier), "unexpected container identity")
         command(["docker", "rm", "-f", identifier], env=env, timeout=90, cwd=STATE)
     return ids
+
+
+def require_headroom():
+    """Refuse before anything changes when the machine has no room to work.
+
+    Pulling a release and keeping the copy that is serving needs space; running
+    out part way through leaves a deployment stopped in the middle, which is the
+    one state this whole path is built to avoid.
+    """
+    free = shutil.disk_usage("/").free
+    require(free >= DISK_FLOOR, "insufficient disk for a deployment")
+    return free
 
 
 def stop_public_services(env, services=PUBLIC_SERVICES):
@@ -984,10 +999,11 @@ def receive(raw):
             interrupted = prior_latch is not None and prior_latch["phase"] not in ("complete", "rolled_back")
             env = backup_environment()
             verify_detached_services(env)
+            disk_free = require_headroom()
             if interrupted:
                 # Recover even the kill windows before the first edge stop or after
                 # edge reopening. Never treat a pending attempt as a verified prior.
-                if prior_latch["phase"] == "rollover" and cutover_guard.return_to_canonical(guard_context()):
+                if prior_latch["phase"] in SERVING_PHASES and cutover_guard.return_to_canonical(guard_context()):
                     status("interrupted_rollover_returned")
                 else:
                     stop_public_services(env)
@@ -1104,7 +1120,8 @@ def receive(raw):
                 cutover_guard.write_ready_receipt(guard_context(), latch, "complete")
                 atomic_state(history / "result.json", {"status": "complete", "run_id": data["github_run_id"],
                              "infra_sha": data["infra_sha"], "prior_rollback_compatible": rollback_allowed,
-                             "rollover": rollover, "console": "degraded" if code == 3 else "ok"})
+                             "rollover": rollover, "console": "degraded" if code == 3 else "ok",
+                    "disk_free_at_start": disk_free})
                 atomic_state(STATE / "current.json", {"bundle": str(new_bundle), "infrastructure": str(infrastructure), "run_id": data["github_run_id"]})
                 latch["phase"] = "complete"
                 atomic_state(STATE / "security-cutover.json", latch)
