@@ -1,0 +1,11 @@
+[Unit]
+Description=MAP NCP production pg half-hour backup schedule
+
+[Timer]
+OnCalendar=*-*-* *:00,30:00
+Persistent=true
+AccuracySec=1s
+Unit=map-prod-pg-backup.service
+
+[Install]
+WantedBy=timers.target

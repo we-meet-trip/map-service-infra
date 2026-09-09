@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "environment": "prod",
+  "project": "map-prod",
+  "enrollment_sha256": "REQUIRED_CANONICAL_ENROLLMENT_SHA256",
+  "postgres": {
+    "container_id": "REQUIRED_EXACT_PROD_POSTGRES_CONTAINER_ID",
+    "image_id": "REQUIRED_EXACT_PROD_POSTGRES_IMAGE_ID",
+    "user": "REQUIRED_BACKUP_DATABASE_USER",
+    "database": "REQUIRED_PROD_DATABASE"
+  },
+  "redis": {
+    "container_id": "REQUIRED_EXACT_PROD_REDIS_CONTAINER_ID",
+    "image_id": "REQUIRED_EXACT_PROD_REDIS_IMAGE_ID"
+  },
+  "remote": "s3://REQUIRED_PRIVATE_BUCKET/prod/REQUIRED_REVIEWED_PREFIX",
+  "age_recipient": "REQUIRED_REAL_AGE_RECIPIENT"
+}

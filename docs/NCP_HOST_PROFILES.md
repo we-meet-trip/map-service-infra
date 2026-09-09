@@ -137,3 +137,13 @@ GitHub draft release는 push 권한이 있어야 조회되므로 전달 전용 j
 남은 실제 gate: 계정 로그인 견적·quota·정확image/zone, 생성 사용자확인, LUKS 키주입/재부팅복구, 기반이미지 보안 및 NCP용 receiver 승인, network/CIDR/관리 인증, 신규NCP S3 왕복·DB/전체역할 복원·알림도착, 목표p95/p99/동시수용과 RPO1h/RTO4h 실측이다. 이번 설치 준비를 운영전환·스토어출시 완료로 표시하지 않는다.
 
 현행 데이터 경로: NCP 운영 대상의 관리·관측 정보가 기존 GCP us-central1-a로 이동할 수 있다. 허용 필드·마스킹·보존기간을 기록하고 정책 검토에 반영한다. 국내 NCP 실행만으로 모든 처리의 국내 배치를 의미하지 않는다. NCP 자체 백업·감시는 GCP 관리자 장애에도 지속되어야 한다. GCP6앱 provenance/guard와 NCP4앱 배치를 구분하며 기존 GCP 관리자 분리 스위치를 켜지 않는다.
+
+## NCP 운영 현장 백업 runner
+
+`scripts/ncp-production-backup.py`와 `deploy/map-prod-{pg,redis}-backup.{service,timer}`가 GCP 관리자에 의존하지 않는 운영 백업 실행 경로다. 설치 전 검토한 infra 소스를 root 소유 `/opt/map-service-infra`에 고정하고, 실제 schema2 enrollment·LUKS mount·정확 PG/Redis container/image ID를 확인한다. `deploy/ncp-bootstrap/production-backup.template.json`을 채운 설정은 `/srv/map-prod/secrets/backup.json` root0600에 저장한다. 템플릿 그대로는 실행되지 않는다. 설정의 enrollment SHA는 canonical hash이며, 이후 container가 교체되면 receiver와 동일한 `/srv/map-prod/deploy/deploy.lock`을 소유한 상태에서 정확한 새 ID로 갱신해야 한다.
+
+NCP 정적 Object Storage credential INI는 `/srv/map-prod/secrets/NCP_BACKUP_CREDENTIALS` root0600만 사용한다. PG DB 비밀번호는 호스트 argv나 설정에 전달하지 않으며 기존 컨테이너 인증 경로로 논리 dump를 생성한다. Redis 비밀번호도 기존 컨테이너에서만 사용한다. Object Storage 전송은 검증된 닫힌 helper 산출물 → age 암호화 → private UUID 경로 업로드 → ciphertext/transport 재다운로드 SHA 검증 → 성공 상태 기록 순서다. PG 원본 논리 dump·역할 비밀번호 제외·row count 추출, Redis fork/memory 제한·snapshot 세대·두 격리 복원·TTL 의미 검증은 기존 helper를 재사용한다. Redis의 기본 GCS 백업 동작은 바뀌지 않는다.
+
+타이머는 PG 매시00/30분, Redis15/45분이며 process group 전체에 900초 상한을 둔다. 두 작업은 prod deploy.lock 다음 backup.lock 순서로 잠근다. 지연/실패는 마지막 성공 snapshot 시각을 보존하며 새 성공으로 표시하지 않는다. 상태는 `/srv/map-prod/deploy/{pg,redis}-backup-status.json`이다. 검증된 host·project·container·image 일치 전에 DB에 접근하지 않는다. GCP 주소·API·credential·상태는 조회하지 않는다.
+
+백업 생성물과 실패한 새 작업 디렉터리는 `/srv/map-prod/backups`에 보존한다. 이 runner는 기존 사본·데이터를 삭제하지 않는다. 사본 수명과 용량 모니터링은 별도 운영 gate이며, PG는 관측 DB 크기8배+2GiB 여유를 먼저 요구하고 Redis/전송 helper도 기존 용량 제한을 적용한다. 실제 NCP에서 key pair 복구, 두 번 이상의 timer/S3 암복호화 왕복, 새로운 DB restore·애플리케이션/권한/키·RPO/RTO 및 알림 수신은 여전히 별도 인수 검사다. 단위검사의 mock transport 성공을 실제 NCP 암복호화·전체 서비스 복원으로 기록하지 않는다.
