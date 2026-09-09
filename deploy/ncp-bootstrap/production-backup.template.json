@@ -7,7 +7,7 @@
     "container_id": "REQUIRED_EXACT_PROD_POSTGRES_CONTAINER_ID",
     "image_id": "REQUIRED_EXACT_PROD_POSTGRES_IMAGE_ID",
     "user": "REQUIRED_BACKUP_DATABASE_USER",
-    "database": "REQUIRED_PROD_DATABASE"
+    "database": "map_prod"
   },
   "redis": {
     "container_id": "REQUIRED_EXACT_PROD_REDIS_CONTAINER_ID",

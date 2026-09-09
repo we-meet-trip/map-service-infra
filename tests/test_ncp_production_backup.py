@@ -17,7 +17,7 @@ spec.loader.exec_module(job)
 def config():
     return {"schema_version": 1, "environment": "prod", "project": "map-prod", "enrollment_sha256": "e" * 64,
             "postgres": {"container_id": "a" * 64, "image_id": "sha256:" + "b" * 64,
-                         "user": "postgres", "database": "fixture"},
+                         "user": "postgres", "database": "map_prod"},
             "redis": {"container_id": "c" * 64, "image_id": "sha256:" + "d" * 64},
             "remote": "s3://fixture-backups/prod/isolated", "age_recipient": "age1" + "q" * 58}
 
@@ -46,7 +46,7 @@ class FixtureBackend:
         files = [{"name": name, "sha256": job.transfer.digest(directory / name)} for name in names]
         now = dt.datetime.now(dt.timezone.utc)
         if kind == "pg":
-            helper = {"version": 1, "environment": "prod", "database": "fixture", "roles_have_passwords": False,
+            helper = {"version": 1, "environment": "prod", "database": "map_prod", "roles_have_passwords": False,
                       "created_at": now.strftime("%Y%m%dT%H%M%SZ"), "files": files}
         else:
             helper = {"schema_version": 1, "kind": "redis-rdb", "environment": "prod", "snapshot_at": now.isoformat(),
@@ -81,6 +81,11 @@ class ProductionBackupTests(unittest.TestCase):
             bad = {**self.cfg, key: value}
             path.write_text(json.dumps(bad))
             with self.subTest(key=key), self.assertRaises(job.transfer.BackupError): job.configuration(path)
+        for database in ("map_test", "postgres", "other_prod"):
+            bad = copy.deepcopy(self.cfg); bad["postgres"]["database"] = database
+            path.write_text(json.dumps(bad))
+            with self.assertRaisesRegex(job.transfer.BackupError, "production_database_required"):
+                job.configuration(path)
 
     def test_wrong_host_is_rejected_before_state_creation(self):
         self.backend.fail_host = True
@@ -95,7 +100,8 @@ class ProductionBackupTests(unittest.TestCase):
                 self.assertTrue(result["success"])
                 self.assertFalse(result["rpo_1h_overdue"])
                 self.assertEqual(result["transport_sha256"], "f" * 64)
-        self.assertEqual(len(list((self.root / "backups").glob("*/remote-receipt.json"))), 2)
+        self.assertEqual(len(list((self.root / "deploy/backup-receipts").glob("*.json"))), 2)
+        self.assertEqual(list((self.root / "backups").iterdir()), [])
         self.assertFalse(any("gcp" in event for event in self.backend.events))
 
     def test_incomplete_remote_receipt_cannot_replace_last_success(self):
@@ -106,6 +112,42 @@ class ProductionBackupTests(unittest.TestCase):
         result = job.write_status(self.root / "deploy", "pg", "BACKUP_FAILED")
         self.assertFalse(result["success"])
         self.assertEqual(first["snapshot_at"], result["snapshot_at"])
+        self.assertEqual(len(list((self.root / "backups").iterdir())), 1)
+
+    def test_failed_jobs_are_preserved_and_block_before_another_collection(self):
+        self.backend.corrupt_receipt = True
+        for _ in range(4):
+            with self.assertRaises(job.transfer.BackupError):
+                job.execute("pg", self.cfg, data=self.root, backend=self.backend)
+        count = self.backend.events.count("collect_pg")
+        with self.assertRaisesRegex(job.transfer.BackupError, "failed_jobs_require_review"):
+            job.execute("pg", self.cfg, data=self.root, backend=self.backend)
+        self.assertEqual(self.backend.events.count("collect_pg"), count)
+        self.assertEqual(len(list((self.root / "backups").iterdir())), 4)
+
+    def test_success_cleanup_refuses_foreign_file_and_retains_every_plaintext_byte(self):
+        original = self.backend.upload
+        def upload(snapshot, value, kind):
+            (snapshot.parent / "operator-notes").write_text("preserve")
+            return original(snapshot, value, kind)
+        self.backend.upload = upload
+        with self.assertRaisesRegex(job.transfer.BackupError, "unknown_backup_output"):
+            job.execute("pg", self.cfg, data=self.root, backend=self.backend)
+        directory = next((self.root / "backups").iterdir())
+        self.assertEqual((directory / "operator-notes").read_text(), "preserve")
+        self.assertTrue((directory / "postgres.sql.gz").exists())
+        self.assertTrue((directory / "closed/postgres.sql.gz").exists())
+
+    def test_local_receipt_history_is_bounded_without_touching_other_files(self):
+        state = job.private_directory(self.root / "deploy")
+        receipt = {"ncp_remote_verified": True, "source_created_at": "2026-09-09T00:00:00+00:00"}
+        for number in range(98):
+            job.retain_receipt(state, "pg", f"{number:032x}", receipt)
+        history = state / "backup-receipts"
+        self.assertEqual(len(list(history.glob("pg-*.json"))), 96)
+        foreign = history / "operator-evidence.txt"; foreign.write_text("preserve")
+        job.retain_receipt(state, "pg", "f" * 32, receipt)
+        self.assertEqual(foreign.read_text(), "preserve")
 
     def test_deployment_lock_defers_before_source_access(self):
         state = job.private_directory(self.root / "deploy")

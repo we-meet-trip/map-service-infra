@@ -19,7 +19,7 @@ import re
 import shutil
 import stat
 import sys
-import tempfile
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pg_backup as pg
@@ -65,6 +65,7 @@ def configuration(path=CONFIG):
     require(value["postgres"]["container_id"] != value["redis"]["container_id"], "source_identity_reuse")
     require(all(isinstance(value["postgres"][key], str) and IDENTIFIER.fullmatch(value["postgres"][key])
                 for key in ("user", "database")), "database_identifiers_required")
+    require(value["postgres"]["database"] == "map_prod", "production_database_required")
     transfer.remote_prefix(value["remote"], "prod")
     require(isinstance(value["age_recipient"], str) and
             re.fullmatch(r"age1[023456789acdefghjklmnpqrstuvwxyz]{58}", value["age_recipient"]), "age_recipient_required")
@@ -182,6 +183,63 @@ def write_status(state, kind, code, *, receipt=None):
     return value
 
 
+def pending_guard(backups):
+    # Unknown/failed jobs are preserved for review, not retried forever until
+    # they consume the data volume. Each collection also has a byte/free guard.
+    require(len(list(backups.iterdir())) < 4, "backup_failed_jobs_require_review")
+
+
+def retain_receipt(state, kind, job_id, receipt):
+    directory = private_directory(state / "backup-receipts")
+    record = {"schema_version": 1, "owner": "map-prod-backup-v1", "kind": kind,
+              "job_id": job_id, "receipt": receipt}
+    transfer.write_json(directory / (kind + "-" + job_id + ".json"), record)
+    old = []
+    for path in directory.glob(kind + "-*.json"):
+        require(re.fullmatch(kind + r"-[a-f0-9]{32}\.json", path.name), "unknown_backup_receipt_requires_review")
+        item = transfer.read_json(path, private=True)
+        require(set(item) == set(record) and item["schema_version"] == 1 and
+                item["owner"] == record["owner"] and item["kind"] == kind and
+                path.name == kind + "-" + item["job_id"] + ".json" and
+                item["receipt"].get("ncp_remote_verified") is True,
+                "unknown_backup_receipt_requires_review")
+        old.append((transfer.utc(item["receipt"]["source_created_at"]), path))
+    # Two days at a 30-minute cadence; remote append-only copies remain intact.
+    for _, path in sorted(old, key=lambda item: (item[0], item[1].name))[:-96]:
+        transfer.file_info(path, private=True)
+        path.unlink()
+
+
+def remove_successful_plaintext(directory, kind, job_id):
+    directory = transfer.clean_path(directory)
+    require(directory.name == kind + "-" + job_id and
+            re.fullmatch(r"[a-f0-9]{32}", job_id), "backup_cleanup_identity_invalid")
+    marker = transfer.read_json(directory / "job.json", private=True)
+    require(marker == {"schema_version": 1, "owner": "map-prod-backup-v1", "kind": kind, "job_id": job_id},
+            "backup_cleanup_marker_invalid")
+    snapshot = directory / "closed"
+    manifest, _ = transfer.verify(snapshot, "prod")
+    files = manifest["files"]
+    names = {entry["name"] for entry in files}
+    require({path.name for path in directory.iterdir()} == names | {"closed", "closed-contract.json", "job.json"},
+            "unknown_backup_output_requires_review")
+    require(transfer.read_json(directory / "closed-contract.json", private=True) == manifest["contract"],
+            "backup_cleanup_contract_changed")
+    # Verify every expected file before deleting even the first byte. No rmtree,
+    # recursive traversal, volume removal, or cleanup of another attempt.
+    for entry in files:
+        path = directory / entry["name"]
+        info = transfer.file_info(path, private=True)
+        require(info.st_size == entry["bytes"] and transfer.digest(path) == entry["sha256"],
+                "backup_cleanup_source_changed")
+    for name in names | {"manifest.json"}:
+        (snapshot / name).unlink()
+    snapshot.rmdir()
+    for name in names | {"closed-contract.json", "job.json"}:
+        (directory / name).unlink()
+    directory.rmdir()
+
+
 def execute(kind, config, *, data=DATA, backend=None, lock_wait=150):
     require(kind in ("pg", "redis"), "invalid_backup_kind")
     backend = backend or Backend()
@@ -198,7 +256,11 @@ def execute(kind, config, *, data=DATA, backend=None, lock_wait=150):
         service = "postgres" if kind == "pg" else "redis"
         item = backend.source(config, service)
         backups = private_directory(data / "backups")
-        directory = Path(tempfile.mkdtemp(prefix=kind + "-", dir=backups))
+        pending_guard(backups)
+        job_id = uuid.uuid4().hex
+        directory = private_directory(backups / (kind + "-" + job_id))
+        transfer.write_json(directory / "job.json", {"schema_version": 1, "owner": "map-prod-backup-v1",
+                                                     "kind": kind, "job_id": job_id})
         helper = backend.collect(kind, config, item, directory)
         contract = closed_contract(kind, helper, item["Id"])
         snapshot = directory / "closed"
@@ -210,7 +272,8 @@ def execute(kind, config, *, data=DATA, backend=None, lock_wait=150):
         require(receipt.get("source_created_at") == transfer.read_json(contract)["created_at"] and
                 re.fullmatch(re.escape(config["remote"] + "/" + kind + "/") + r"[a-f0-9]{32}", receipt.get("remote", "")),
                 "remote_backup_identity_mismatch")
-        transfer.write_json(directory / "remote-receipt.json", receipt)
+        retain_receipt(state, kind, job_id, receipt)
+        remove_successful_plaintext(directory, kind, job_id)
         return write_status(state, kind, "COMPLETE", receipt=receipt)
 
 
