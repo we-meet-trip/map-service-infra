@@ -11,7 +11,7 @@ below is shared, so a service cannot quietly widen the isolation rules.
 """
 from __future__ import annotations
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 import fcntl
 import json
@@ -236,7 +236,20 @@ def read_credentials(service, path):
 
 def contract(service, config, credentials):
     project = config.get('name')
-    require(project in ('map-test', 'map-service'), 'migration_project_invalid')
+    require(project in ('map-test', 'map-service', 'map-prod'), 'migration_project_invalid')
+    production = config.get('x-map-production')
+    if project == 'map-prod':
+        require(isinstance(production, dict) and set(production) == {
+            'environment', 'database', 'postgres_container_id', 'postgres_image_id'},
+            'production_database_pin_required')
+        require(production['environment'] == 'prod' and production['database'] == 'map_prod'
+                and isinstance(production['postgres_container_id'], str)
+                and ID.fullmatch(production['postgres_container_id'])
+                and isinstance(production['postgres_image_id'], str)
+                and re.fullmatch(r'sha256:[a-f0-9]{64}', production['postgres_image_id']),
+                'production_database_identity_invalid')
+    else:
+        require(production is None, 'production_pin_on_nonproduction_project')
     try:
         entry = config['services'][service['name']]
         environment = entry['environment']
@@ -252,6 +265,10 @@ def contract(service, config, credentials):
     require(not entry.get('command') and not entry.get('entrypoint'),
             'serving_database_configuration_override')
     extra = service['contract'](service, environment, credentials)
+    if production is not None:
+        database = (urllib.parse.urlsplit(environment['HUB_DATABASE_URL']).path.removeprefix('/')
+                    if service['name'] == 'hub' else environment.get('POSTGRES_DB'))
+        require(database == production['database'], 'production_database_target_mismatch')
     return project, image, extra
 
 
@@ -265,12 +282,23 @@ def container_state(cid):
     return result
 
 
-def prepare_network(service, project):
+def prepare_network(service, project, production=None):
     ids = command(['ps', '-q', '--no-trunc', '--filter', f'label=com.docker.compose.project={project}',
                    '--filter', 'label=com.docker.compose.service=postgres']).splitlines()
     require(len(ids) == 1 and ID.fullmatch(ids[0]), 'one_running_postgres_required')
     pgid = ids[0]
     pg_before = container_state(pgid)
+    if project == 'map-prod':
+        require(production is not None and pgid == production['postgres_container_id']
+                and pg_before['image'] == production['postgres_image_id'] and pg_before['running'] is True,
+                'production_postgres_identity_changed')
+        labels = json.loads(command(['inspect', '--format',
+            '{"project":{{json (index .Config.Labels "com.docker.compose.project")}},'
+            '"service":{{json (index .Config.Labels "com.docker.compose.service")}}}', pgid]))
+        require(labels == {'project': 'map-prod', 'service': 'postgres'},
+                'production_postgres_scope_changed')
+    else:
+        require(production is None, 'production_pin_on_nonproduction_network')
     name = project + '-' + service['suffix']
     existing = command(['network', 'ls', '--filter', f'name=^{name}$', '--format', '{{.Name}}']).splitlines()
     require(existing in ([], [name]), 'migration_network_ambiguous')
@@ -390,7 +418,10 @@ def run_job(service, config, credentials, operation, scratch):
     image_id = command(['image', 'inspect', '--format', '{{.Id}}', image])
     require(re.fullmatch(r'sha256:[a-f0-9]{64}', image_id), 'serving_image_identity_invalid')
     no_previous_job(service, project, scratch)
-    network, pgid, pg_before = prepare_network(service, project)
+    if project == 'map-prod':
+        network, pgid, pg_before = prepare_network(service, project, config['x-map-production'])
+    else:
+        network, pgid, pg_before = prepare_network(service, project)
     cid = None
     outcome = None
     cleanup_ok = False
@@ -461,6 +492,23 @@ def job_lock(service, scratch):
         yield
 
 
+@contextmanager
+def production_lock(service, config, scratch, credentials, receipt):
+    """Direct CLI invocations share the receiver/backup writer lock on NCP."""
+    require(config.get('name') == 'map-prod', 'production_project_required')
+    state = Path('/srv/map-prod/deploy')
+    require(scratch == state / 'migrations' and receipt.parent == state / 'receipts'
+            and credentials == Path('/srv/map-prod/secrets') / (service['name'] + '-migration.env'),
+            'production_migration_paths_required')
+    for path in (scratch, receipt.parent, credentials.parent):
+        for parent in (path, *path.parents):
+            meta = parent.lstat()
+            require(stat.S_ISDIR(meta.st_mode) and meta.st_uid == 0 and not meta.st_mode & 0o022,
+                    'production_migration_path_unsafe')
+    with job_lock({'suffix': 'deploy'}, state):
+        yield
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--service', required=True, choices=sorted(SERVICES))
@@ -485,7 +533,9 @@ def main():
         require(len(raw) <= 4 * 1024 * 1024, 'compose_input_too_large')
         config = json.loads(raw)
         credentials = read_credentials(service, args.credentials)
-        with job_lock(service, args.scratch), bounded_signals():
+        shared = (production_lock(service, config, args.scratch, args.credentials, args.receipt)
+                  if config.get('name') == 'map-prod' else nullcontext())
+        with shared, job_lock(service, args.scratch), bounded_signals():
             result = run_job(service, config, credentials, args.operation, args.scratch)
     except Exception as error:
         result = {'status': 'FAIL', 'service': args.service,

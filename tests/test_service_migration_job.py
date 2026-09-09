@@ -46,6 +46,68 @@ def agent_credentials():
             'postgresql://map_agent_migrator:migration-only@postgres:5432/map_test'}
 
 class ContractTests(unittest.TestCase):
+    def production(self, service):
+        factory, secret_factory = {'user': (config, credentials), 'hub': (hub_config, hub_credentials),
+                                   'agent': (agent_config, agent_credentials)}[service['name']]
+        value = json.loads(json.dumps(factory()).replace('map_test', 'map_prod'))
+        value['name'] = 'map-prod'
+        value['x-map-production'] = {'environment': 'prod', 'database': 'map_prod',
+                                     'postgres_container_id': PGID, 'postgres_image_id': IMAGE_ID}
+        secret = json.loads(json.dumps(secret_factory()).replace('map_test', 'map_prod'))
+        return value, secret
+
+    def test_production_requires_fixed_database_environment_and_exact_postgres_pins(self):
+        for service in (USER, HUB, AGENT):
+            value, secret = self.production(service)
+            self.assertEqual(job.contract(service, value, secret)[0], 'map-prod')
+            for key, invalid in [('environment', 'test'), ('database', 'map_test'),
+                                 ('postgres_container_id', 'postgres'), ('postgres_image_id', 'postgres:17')]:
+                broken = json.loads(json.dumps(value)); broken['x-map-production'][key] = invalid
+                with self.subTest(service=service['name'], key=key), self.assertRaises(job.JobError):
+                    job.contract(service, broken, secret)
+            for project in ('map-test', 'map-service'):
+                broken = json.loads(json.dumps(value)); broken['name'] = project
+                with self.assertRaisesRegex(job.JobError, 'production_pin_on_nonproduction_project'):
+                    job.contract(service, broken, secret)
+            del value['x-map-production']
+            with self.assertRaisesRegex(job.JobError, 'production_database_pin_required'):
+                job.contract(service, value, secret)
+
+    def test_production_rejects_matching_test_runtime_and_migrator_targets(self):
+        # Both DSNs agreeing is insufficient: NCP's selected database is map_prod.
+        for service in (USER, HUB, AGENT):
+            value, secret = self.production(service)
+            environment = value['services'][service['name']]['environment']
+            value['services'][service['name']]['environment'] = json.loads(
+                json.dumps(environment).replace('map_prod', 'map_test'))
+            secret = json.loads(json.dumps(secret).replace('map_prod', 'map_test'))
+            with self.subTest(service=service['name']), self.assertRaisesRegex(
+                    job.JobError, 'production_database_target_mismatch'):
+                job.contract(service, value, secret)
+
+    def test_production_container_and_project_drift_precede_network_mutation(self):
+        production = self.production(USER)[0]['x-map-production']
+        for cid, image, labels in ((CID, IMAGE_ID, {'project': 'map-prod', 'service': 'postgres'}),
+                                   (PGID, 'sha256:'+'e'*64, {'project': 'map-prod', 'service': 'postgres'}),
+                                   (PGID, IMAGE_ID, {'project': 'map-test', 'service': 'postgres'})):
+            calls = []
+            def command(args, timeout=30):
+                calls.append(args)
+                if args[0] == 'ps': return cid
+                if args[0] == 'inspect': return json.dumps(labels)
+                self.fail('identity rejection must precede network writes')
+            with patch.object(job, 'command', side_effect=command), patch.object(
+                    job, 'container_state', return_value={'image': image, 'running': True}):
+                with self.assertRaises(job.JobError): job.prepare_network(USER, 'map-prod', production)
+            self.assertTrue(all(call[0] in ('ps', 'inspect') for call in calls))
+
+    def test_production_cli_cannot_write_gcp_state_or_use_gcp_credentials(self):
+        value, _ = self.production(USER)
+        with self.assertRaisesRegex(job.JobError, 'production_migration_paths_required'):
+            with job.production_lock(USER, value, Path('/var/lib/map-deploy'),
+                                     Path('/etc/map-test/user-migration.env'), Path('/tmp/receipt.json')):
+                self.fail('GCP migration paths accepted')
+
     def test_mutable_image_or_shared_serving_secret_is_rejected(self):
         for mutate in (lambda c:c['services']['user'].update(image='user:latest'),
                        lambda c:c['services']['user'].update(image=HUB_IMAGE),
