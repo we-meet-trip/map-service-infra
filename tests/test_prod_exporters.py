@@ -42,7 +42,7 @@ class ProductionExporterTests(unittest.TestCase):
             self.assertTrue(value['read_only'])
             self.assertEqual(value['cap_drop'], ['ALL'])
             self.assertEqual(value['security_opt'], ['no-new-privileges:true'])
-            self.assertEqual(value['mem_limit'], 64 * 1024**2)
+            self.assertEqual(int(value['mem_limit']), 64 * 1024**2)
             self.assertEqual(len(value['ports']), 1)
             self.assertEqual(value['ports'][0]['host_ip'], '127.0.0.1')
             self.assertEqual((int(value['ports'][0]['published']), value['ports'][0]['target']), expected_ports[name])
