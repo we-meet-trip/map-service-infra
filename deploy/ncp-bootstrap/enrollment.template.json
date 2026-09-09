@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "role": "prod",
   "profile": "prod-small",
   "machine_id": "REQUIRED_REAL_MACHINE_ID",
@@ -11,7 +11,7 @@
     "test": {
       "machine_id": "REQUIRED_TEST_MACHINE_ID",
       "instance_id": "REQUIRED_TEST_INSTANCE_ID",
-      "deploy_account": "map-deploy-test",
+      "deploy_account": "REQUIRED_EXISTING_GCP_DEPLOY_ACCOUNT",
       "data_volume_id": "REQUIRED_TEST_DATA_VOLUME_ID",
       "secret_scope": "map-test",
       "provider": "gcp"
@@ -25,12 +25,12 @@
       "provider": "ncp"
     },
     "admin": {
-      "machine_id": "reserved-admin-machine",
-      "instance_id": "reserved-admin-instance",
-      "deploy_account": "map-deploy-admin",
-      "data_volume_id": "reserved-admin-volume",
+      "machine_id": "REQUIRED_TEST_MACHINE_ID",
+      "instance_id": "REQUIRED_TEST_INSTANCE_ID",
+      "deploy_account": "REQUIRED_EXISTING_GCP_DEPLOY_ACCOUNT",
+      "data_volume_id": "REQUIRED_TEST_DATA_VOLUME_ID",
       "secret_scope": "map-admin",
-      "provider": "ncp"
+      "provider": "gcp"
     },
     "learning": {
       "machine_id": "reserved-learning-machine",
@@ -55,5 +55,7 @@
   "network_review_sha256": "REQUIRED_REAL_NETWORK_REVIEW_SHA256",
   "account_quote_sha256": "REQUIRED_REAL_ACCOUNT_QUOTE_SHA256",
   "approval": "pending",
-  "learning_hold": true
+  "learning_hold": true,
+  "topology": "gcp-test-admin-ncp-prod",
+  "gcp_cohost_review_sha256": "REQUIRED_GCP_COHOST_REVIEW_SHA256"
 }

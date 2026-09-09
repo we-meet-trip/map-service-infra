@@ -19,12 +19,18 @@ def manifest(role="prod"):
     inventory = {r: {"machine_id": str(i) * 32, "instance_id": "instance-" + r, "deploy_account": "map-deploy-" + r,
                      "data_volume_id": "volume-" + r, "secret_scope": "map-" + r, "provider": "gcp" if r == "test" else "ncp"}
                  for i, r in enumerate(("test", "prod", "admin", "learning"), 1)}
-    return {"schema_version": 1, "role": role, "profile": {"prod": "prod-small", "admin": "admin-small", "learning": "learning-cpu"}[role],
+    value = {"schema_version": 1, "role": role, "profile": {"prod": "prod-small", "admin": "admin-small", "learning": "learning-cpu"}[role],
             "machine_id": inventory[role]["machine_id"], "hostname": "map-" + role, "instance_id": inventory[role]["instance_id"],
             "data_uuid": "12345678-1234-1234-1234-123456789abc", "data_encryption": "luks2", "inventory": inventory,
             "docker_packages": {p: "1.2.3-1" for p in host.PACKAGES}, "docker_key_sha256": host.sha(KEY),
             "ssh_source_cidrs": ["192.0.2.12/32"], "network_review_sha256": "a" * 64, "account_quote_sha256": "b" * 64,
             "approval": "approved-empty-host-only", "learning_hold": True}
+    if role == "prod":
+        value.update(schema_version=2, topology=host.CURRENT_TOPOLOGY, gcp_cohost_review_sha256="c" * 64)
+        inventory["admin"].update({k: inventory["test"][k] for k in ("machine_id", "instance_id", "data_volume_id", "provider")})
+        for field, suffix in (("machine_id", "machine"), ("instance_id", "instance"), ("data_volume_id", "volume")):
+            inventory["learning"][field] = "reserved-learning-" + suffix
+    return value
 
 
 class FixtureOS:
@@ -73,6 +79,33 @@ class FixtureOS:
 
 
 class HostTransactions(unittest.TestCase):
+    def test_only_reviewed_existing_gcp_cohost_is_allowed(self):
+        m = manifest()
+        m["inventory"]["admin"]["deploy_account"] = m["inventory"]["test"]["deploy_account"]
+        self.assertEqual(host.validate(m)["role"], "prod")
+        for field in ("machine_id", "instance_id", "provider", "secret_scope"):
+            bad = copy.deepcopy(m)
+            bad["inventory"]["admin"][field] = bad["inventory"]["prod"][field]
+            with self.subTest(field=field), self.assertRaises(ValueError): host.validate(bad)
+        bad = copy.deepcopy(m)
+        bad["inventory"]["admin"]["secret_scope"] = bad["inventory"]["test"]["secret_scope"]
+        with self.assertRaises(ValueError): host.validate(bad)
+        for field, value in (("gcp_cohost_review_sha256", "pending"), ("topology", "ncp-admin-cohost")):
+            bad = copy.deepcopy(m); bad[field] = value
+            with self.assertRaises(ValueError): host.validate(bad)
+
+    def test_learning_is_reserved_and_new_admin_or_learning_install_is_blocked(self):
+        m = manifest()
+        m["inventory"]["learning"].update(machine_id="4" * 32, instance_id="real-learning", data_volume_id="real-learning-data")
+        with self.assertRaises(ValueError): host.validate(m)
+        for role in ("admin", "learning"):
+            legacy = manifest(role)
+            host.validate(legacy)  # Historical receipts remain readable.
+            backend = FixtureOS(legacy)
+            with self.assertRaisesRegex(ValueError, "legacy topology"):
+                host.install(legacy, KEY, host.sha(json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode()), self.root, backend)
+            self.assertEqual(backend.commands, [])
+
     def test_uncreated_peer_reservation_does_not_require_learning_creation(self):
         m = manifest()
         for field, suffix in (("machine_id", "machine"), ("instance_id", "instance"), ("data_volume_id", "volume")):
@@ -173,8 +206,6 @@ class HostTransactions(unittest.TestCase):
 
     def test_learning_cannot_receive_serving_secrets(self):
         self.m = manifest("learning"); self.os = FixtureOS(self.m)
-        (self.root / "srv/map-learning").mkdir()
-        self.install()
         for name in ("LOCATION_MASTER_KEY", "POSTGRES_PASSWORD", "REDIS_PASSWORD", "PRODUCTION_SSH_KEY", "GEMINI_API_KEY"):
             with self.assertRaises(ValueError): host.inject_secret(self.m, name, b"denied", self.root)
 
@@ -235,31 +266,15 @@ class HostTransactions(unittest.TestCase):
         self.os.run = old
         self.assertEqual(host.rollback(self.m, self.root, self.os)["status"], "rolled_back")
 
-    def test_real_stage_bound_to_host_then_image_cache_adapter(self):
+    def test_learning_artifact_cannot_activate_a_new_host_cache(self):
         import test_artifacts as fixture
         self.m = manifest("learning"); self.os = FixtureOS(self.m)
-        (self.root / "srv/map-learning").mkdir()
-        self.install()
         bundle = self.root / "bundle"
         contract, pin = fixture.learning_bundle(bundle)
         before = copy.deepcopy(self.os.commands)
-        with self.assertRaisesRegex(ValueError, "target host/account"):
+        with self.assertRaisesRegex(ValueError, "legacy topology"):
             host.artifact_cache(self.m, bundle, pin, "fixture-release", self.root, self.os)
         self.assertEqual(before, self.os.commands)
-        role = fixture.artifacts.read_json(bundle / "role.json")
-        role.update(host_identity=self.m["hostname"], deploy_account="map-deploy-learning")
-        fixture.write(bundle / "role.json", role)
-        contract, pin = fixture.seal(bundle, contract)
-        old = self.os.run
-        def image_adapter(argv):
-            if "inspect" in argv:
-                return json.dumps([{"Os":"linux", "Architecture":"amd64", "RepoDigests":[contract["images"]["dataset-worker"]["image"]]}])
-            return old(argv)
-        self.os.run = image_adapter
-        result = host.artifact_cache(self.m, bundle, pin, "fixture-correct-host", self.root, self.os)
-        self.assertEqual(result["status"], "images_cached")
-        self.assertFalse(result["receiver_executed"])
-        self.assertFalse(any("run" in c for c in self.os.commands))
 
 
 if __name__ == "__main__": unittest.main(verbosity=2)

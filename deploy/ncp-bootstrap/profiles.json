@@ -54,6 +54,7 @@
       "AGENT_DATABASE_PASSWORD",
       "INTERNAL_SERVICE_TOKEN",
       "USER_ADMIN_INTERNAL_TOKEN",
+      "HUB_ADMIN_INTERNAL_TOKEN",
       "JWT_SECRET",
       "LOCATION_MASTER_KEY",
       "GEMINI_API_KEY",
@@ -87,6 +88,12 @@
     "learning_capture_export": "HOLD",
     "gpu": "not_selected",
     "gcp_test": "observe_only",
-    "disk_format": "separate volume helper: exact device approval + entire zero check; never existing data"
-  }
+    "disk_format": "separate volume helper: exact device approval + entire zero check; never existing data",
+    "gcp_admin_test": "retain existing cohost; observe only",
+    "other_host_roles": "HOLD; legacy profile capacity comparison only"
+  },
+  "topology": "gcp-test-admin-ncp-prod",
+  "active_install_roles": [
+    "prod"
+  ]
 }

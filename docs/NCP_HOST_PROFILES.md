@@ -1,5 +1,7 @@
 # NCP 빈 호스트 설치 계약
 
+2026-09-09 현행 배치: **기존 GCP는 테스트와 중앙 관리자, 신규 NCP는 운영만**. 네 서버 분리와 신규 관리자/학습 VM은 HOLD다. 아래 2026-09-07 비용 비교는 역사적 검토이며 현행 견적이 아니다.
+
 2026-09-07, 세션 A. 이 문서와 `deploy/ncp-bootstrap/`, `scripts/ncp-bootstrap-*`만 신규 bootstrap 소유 범위다. 기존 GCP, 공용 Compose, root/session C receiver, 기반 보안 빌드 소스는 변경하지 않는다. 준비한 도구는 호스트·파일·이미지 cache까지만 담당하며 애플리케이션·receiver를 실행하지 않는다. 유료 생성·운영 전환·DNS와 develop/master 병합은 사용자 확인 전 HOLD다.
 
 ## 선정한 설치 프로필
@@ -8,16 +10,18 @@
 |---|---|---|---|
 | 시험 | 기존 GCP us-central1-a e2-medium 유지 | 기존 디스크 보존 | 기존 OS/daemon/시험 DB·secret 보존, 도구에서 test 설치 거절 |
 | 운영 | NCP 한국 VPC s2-g3, 2 vCPU/8GB 우선 | CB2 40GB / 100GB | `map-deploy-prod`, `/srv/map-prod`, User·Agent·Hub·YOLO·PG·Redis·OSRM·edge·현장 exporter |
-| 관리자 | 별도 NCP 한국 VPC c2-g3, 2 vCPU/4GB 우선 | CB2 30GB / 50GB | `map-deploy-admin`, `/srv/map-admin`, control DB·감사·Admin·Prometheus·Grafana |
+| 관리자 | 기존 GCP 테스트 호스트와 공존 유지 | 기존 디스크·DB 보존 | 기존 Admin/admin-web·control DB·감사·Prometheus·Grafana 유지, NCP에 관리자 추가 없음 |
 | 학습 | 독립 NCP 한국 s4-g3 4/16 CPU 프로필만 준비 | root20GB / 보존 data100GB | `map-deploy-learning`, `/srv/map-learning`, 합성/승인 산출물만. 현재 VM 미생성·HOLD |
 
-네 역할은 별도 VM·OS machine-id·daemon·볼륨·배포 계정·secret scope다. inventory에서 어느 하나라도 역할 사이 중복되면 차단한다. 학습을 동일 serving VM의 Compose 프로젝트로 대체하지 않는다. 실제 독립 VM 네 대가 가동했다는 증거는 아직 없다. 배포 계정은 nologin/독립 그룹이며 Docker 그룹·sudo·SSH 키를 자동 부여하지 않는다. root 소유 receiver의 제한된 ingress/권한 설치는 그 소유자의 별도 작업이다. 학습 worker에는 Docker socket, serving DB/Redis·위치 master key·production SSH가 전달되지 않는다.
+새 enrollment schema2는 `topology=gcp-test-admin-ncp-prod`와 `gcp_cohost_review_sha256`를 필수로 한다. test/admin은 관측한 GCP machine-id와 instance-id가 같아야 하며, 검토한 기존 배포계정·물리볼륨의 공유도 이 두 역할에만 허용한다. secret scope는 공유할 수 없다. prod와 다른 역할의 machine-id·instance-id·계정·볼륨·secret scope 중복은 모두 차단한다. learning은 완전한 reserved identity만 허용한다. 새 install/cache/secret 주입은 schema2 prod만 가능하다. schema1은 과거 증거 검증·복귀용이며 새 역할 설치를 허용하지 않는다. 학습을 동일 serving VM의 Compose 프로젝트로 대체하지 않는다. 실제 독립 VM 네 대가 가동했다는 증거는 아직 없다. 배포 계정은 nologin/독립 그룹이며 Docker 그룹·sudo·SSH 키를 자동 부여하지 않는다. root 소유 receiver의 제한된 ingress/권한 설치는 그 소유자의 별도 작업이다. 학습 worker에는 Docker socket, serving DB/Redis·위치 master key·production SSH가 전달되지 않는다.
 
 Ubuntu 24.04 LTS KVM amd64와 CB2를 선정한다. 정확한 NCP image product code·존·계정 capacity는 아직 입력이다. Docker 공식 Ubuntu 서명 저장소의 Engine/CLI/containerd/buildx/Compose **다섯 버전을 모두 고정**하고 공식 공개키의 SHA256도 enrollment에 묶는다. 예제 버전·mutable latest를 검증 운영 표준으로 만들지 않는다. [NCP Ubuntu24](https://guide.ncloud-docs.com/docs/ubuntu24-kernel-update), [Docker 설치 명세](https://docs.docker.com/engine/install/ubuntu/).
 
 NCP KVM g3는 공급자 디스크 암호화를 지원한다고 가정할 수 없다. 도구는 역할별 **LUKS2 + ext4 추가 디스크**를 요구하며 UUID·실제 mount·crypt 상태를 검사한다. root에는 OS와 공개 bootstrap 설정만, 비밀·Docker·containerd·백업 staging은 암호화 data mount에 둔다. 암호화키는 채팅/Git/enrollment에 넣지 않는다. 현재 helper는 원격 KMS 자동 unlock·crypttab·키 영구 저장을 만들지 않는다. 재부팅 후 운영자가 비공개 키를 주입해 mount를 복구하기 전 Docker/containerd의 ExecStartPre가 실패하도록 한다. 따라서 무인 재부팅·키 분실 복구·전체 RTO는 별도 인수 gate다. [NCP 스토리지 제한](https://guide.ncloud-docs.com/docs/server-storage-modify-vpc).
 
-## 비용과 확장 선택
+## 과거 비용 비교 — 현행 배치 견적 아님
+
+아래는 2026-09-07의 운영+별도관리자 2VM 비교다. 현재는 NCP 운영1VM + 기존 GCP 유지 + 클라우드 간 암호화 연결/egress 비용으로 별도 산정해야 한다. 다음 수치를 현재 요금 또는 신규 생성 승인으로 사용하지 않는다.
 
 720h, Linux 시간제, 할인/크레딧 미반영, KRW. 공통 디스크220GB·IP2·snapshot220GB 한 벌·객체120GB 예시를 포함한다.
 
@@ -49,7 +53,7 @@ python3 scripts/ncp-bootstrap-host.py plan --profile learning-cpu
 
 `deploy/ncp-bootstrap/enrollment.template.json`의 placeholder를 공급자 실제 조회값으로 채워 root 전용0600 파일로 보관한다. `approval=pending` 상태로는 설치할 수 없다. 사용자에게 새 호스트/견적 결과를 확인받은 뒤 `approved-empty-host-only`로 만든 **canonical enrollment SHA256**을 별도 검토 경로에서 전달한다. CLI가 내놓은 hash 자체는 사용자 승인이나 공급자 계정 검증이 아니다. quote/network SHA는 외부 검토 문서와 연결해야 하며 값만64자리 채웠다고 검토가 완료되는 것은 아니다.
 
-미생성 peer 역할은 machine/instance/volume을 모두 `reserved-ROLE-machine`, `reserved-ROLE-instance`, `reserved-ROLE-volume`으로 명시한다. 이는 실제 VM 관측값이 아닌 경계 예약이다. 설치 대상과 기존 test는 예약할 수 없다. 이 구분으로 학습 VM 생성이나 HOLD 해제 없이 운영 빈 호스트를 준비할 수 있다. 다른 역할이 생성되면 다음 호스트의 새 enrollment에 실제 조회값을 기록하며, 이미 승인된 enrollment를 임의 덮어쓰지 않는다.
+기존 GCP admin은 reserved로 꾸미지 않고 test와 동일한 실제 관측 host를 기록한다. 미생성 learning 역할만 machine/instance/volume을 모두 `reserved-ROLE-machine`, `reserved-ROLE-instance`, `reserved-ROLE-volume`으로 명시한다. 이는 실제 VM 관측값이 아닌 경계 예약이다. 설치 대상과 기존 test는 예약할 수 없다. 이 구분으로 학습 VM 생성이나 HOLD 해제 없이 운영 빈 호스트를 준비할 수 있다. 다른 역할이 생성되면 다음 호스트의 새 enrollment에 실제 조회값을 기록하며, 이미 승인된 enrollment를 임의 덮어쓰지 않는다.
 
 필요 OS 선행 패키지는 공식 Ubuntu의 python3·ca-certificates·cryptsetup·e2fsprogs·util-linux·systemd다. 배포용 개인 key는 설치하지 않는다. 볼륨 helper는 승인된 **새 추가 디스크**의 serial·용량·rootdisk 분리·미마운트·signature·전체0bytes를 검사한 뒤에만 LUKS2/ext4를 만든다. 알려진 기존 디스크에 format을 적용하거나 실패후 다시 format해 복구하지 않는다. 실제 NCP block 작업과 유료생성은 이 준비 세션에서 수행하지 않는다. 원격 CI에서 자기 생성 sparse 파일에 LUKS/ext4를 만드는 검사는 별도 범위다.
 
@@ -118,7 +122,7 @@ sudo python3 scripts/ncp-bootstrap-host.py rollback --manifest /root/prod-enroll
 python3 scripts/ncp-bootstrap-backup.py --help
 ```
 
-ACG/NACL/route 템플릿은 `network.template.json`이다. 실제 CIDR/인증·MTU·DNS/time sync·외부 API·registry·백업 HTTPS 허용 목록은 root review로 고정한다. 운영만 public80/443, SSH는운영자 경로, 관리자UI/DB/metrics는loopback+검증된 사설 management gateway로 제한한다. Docker publish가 UFW를 우회할 수 있으므로 host UFW 하나로 격리를 입증하지 않는다. 관리자/학습 장애 시 serving과 현장 백업이 유지돼야 하며 관리자 장애 감지는 별도 경로로 관측해야 한다. [Docker firewall 계약](https://docs.docker.com/engine/install/ubuntu/).
+ACG/NACL/route 템플릿은 `network.template.json`이다. 실제 CIDR/인증·MTU·DNS/time sync·외부 API·registry·백업 HTTPS 허용 목록은 root review로 고정한다. 운영만 public80/443, SSH는운영자 경로, NCP DB/metrics는loopback+검증된 암호화 management 경로로 제한한다. GCP 중앙 관리자 공개화는 별도 TLS·로그인·역할 검증을 통과한 기존 관리 진입점을 사용한다. NCP의 원시 DB/exporter 포트를 공인망에 열지 않는다. Docker publish가 UFW를 우회할 수 있으므로 host UFW 하나로 격리를 입증하지 않는다. 관리자/학습 장애 시 serving과 현장 백업이 유지돼야 하며 관리자 장애 감지는 별도 경로로 관측해야 한다. [Docker firewall 계약](https://docs.docker.com/engine/install/ubuntu/).
 
 ## 검사와 남은 gate
 
@@ -131,3 +135,5 @@ python3 -B -m unittest discover -s deploy/ncp-bootstrap -p 'test_*.py' -v
 GitHub draft release는 push 권한이 있어야 조회되므로 전달 전용 job만 `contents: write` 토큰으로 정확 기존 draft asset을 GET 한다. 게시·업로드 API는 사용하지 않는다. privileged fixture는 별도 `contents: read` job에서 실행하고 GitHub 토큰/runner Docker socket을 guest에 전달하지 않는다. [GitHub draft 조회 계약](https://docs.github.com/en/rest/releases/releases#list-releases).
 
 남은 실제 gate: 계정 로그인 견적·quota·정확image/zone, 생성 사용자확인, LUKS 키주입/재부팅복구, 기반이미지 보안 및 NCP용 receiver 승인, network/CIDR/관리 인증, 신규NCP S3 왕복·DB/전체역할 복원·알림도착, 목표p95/p99/동시수용과 RPO1h/RTO4h 실측이다. 이번 설치 준비를 운영전환·스토어출시 완료로 표시하지 않는다.
+
+현행 데이터 경로: NCP 운영 대상의 관리·관측 정보가 기존 GCP us-central1-a로 이동할 수 있다. 허용 필드·마스킹·보존기간을 기록하고 정책 검토에 반영한다. 국내 NCP 실행만으로 모든 처리의 국내 배치를 의미하지 않는다. NCP 자체 백업·감시는 GCP 관리자 장애에도 지속되어야 한다. GCP6앱 provenance/guard와 NCP4앱 배치를 구분하며 기존 GCP 관리자 분리 스위치를 켜지 않는다.

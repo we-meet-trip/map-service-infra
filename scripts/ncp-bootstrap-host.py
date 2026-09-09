@@ -26,6 +26,7 @@ ROLES = {"prod", "admin", "learning"}
 PACKAGES = {"docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin", "docker-compose-plugin"}
 HEX = re.compile(r"[a-f0-9]{64}")
 SAFE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{1,100}")
+CURRENT_TOPOLOGY = "gcp-test-admin-ncp-prod"
 
 
 def require(ok, message):
@@ -100,7 +101,13 @@ def atomic_json(path, value):
 
 def validate(manifest):
     required = {"schema_version", "profile", "role", "machine_id", "hostname", "instance_id", "data_uuid", "data_encryption", "inventory", "docker_packages", "docker_key_sha256", "ssh_source_cidrs", "network_review_sha256", "account_quote_sha256", "approval", "learning_hold"}
-    require(set(manifest) == required and type(manifest["schema_version"]) is int and manifest["schema_version"] == 1, "invalid enrollment schema")
+    current = manifest.get("schema_version") == 2
+    if current:
+        required |= {"topology", "gcp_cohost_review_sha256"}
+    require(set(manifest) == required and type(manifest["schema_version"]) is int and manifest["schema_version"] in (1, 2), "invalid enrollment schema")
+    if current:
+        require(manifest["topology"] == CURRENT_TOPOLOGY and manifest["role"] == "prod", "only NCP production enrollment is active")
+        require(isinstance(manifest["gcp_cohost_review_sha256"], str) and HEX.fullmatch(manifest["gcp_cohost_review_sha256"]), "reviewed existing GCP cohost inventory required")
     require(manifest["role"] in ROLES, "existing GCP test host is observe-only")
     profiles = json.loads(PROFILES.read_text())["profiles"]
     require(manifest["profile"] in profiles, "unknown profile")
@@ -116,12 +123,16 @@ def validate(manifest):
     inv = manifest["inventory"]
     require(isinstance(inv, dict) and set(inv) == {"test", "prod", "admin", "learning"}, "four-role inventory required")
     for field in ("machine_id", "instance_id", "deploy_account", "data_volume_id", "secret_scope"):
-        values = []
+        values = {}
         for role, host in inv.items():
             require(set(host) == {"machine_id", "instance_id", "deploy_account", "data_volume_id", "secret_scope", "provider"}, "invalid inventory entry")
             require(all(isinstance(v, str) and SAFE.fullmatch(v) for v in host.values()), "invalid inventory value")
-            values.append(host[field])
-        require(len(set(values)) == 4, "cross-role identity, account, volume or secret scope reuse")
+            values.setdefault(host[field], set()).add(role)
+        # The only exception is the explicitly reviewed, already existing GCP
+        # host. NCP production and every secret scope remain isolated.
+        for roles in values.values():
+            require(len(roles) == 1 or (current and roles == {"test", "admin"} and field != "secret_scope"),
+                    "cross-role identity, account, volume or secret scope reuse")
     for role, entry in inv.items():
         if entry["machine_id"].startswith("reserved-"):
             require(role not in {"test", manifest["role"]}, "current/test host cannot be a reservation")
@@ -130,6 +141,13 @@ def validate(manifest):
         else:
             require(re.fullmatch(r"[a-f0-9]{32}", entry["machine_id"]), "observed peer machine-id or explicit reservation required")
     require(inv["test"]["provider"] == "gcp", "existing GCP must remain test")
+    if current:
+        require(inv["admin"]["provider"] == "gcp" and
+                all(inv["admin"][field] == inv["test"][field] for field in ("machine_id", "instance_id")),
+                "existing GCP test and admin must share the observed host")
+        require(all(inv["learning"][field] == "reserved-learning-" + suffix
+                    for field, suffix in (("machine_id", "machine"), ("instance_id", "instance"), ("data_volume_id", "volume"))),
+                "learning host creation remains on HOLD")
     require(inv[manifest["role"]]["provider"] == "ncp", "new host must be NCP")
     require(inv[manifest["role"]]["machine_id"] == manifest["machine_id"] and inv[manifest["role"]]["instance_id"] == manifest["instance_id"], "inventory identity mismatch")
     require(inv[manifest["role"]]["deploy_account"] == "map-deploy-" + manifest["role"], "role account mismatch")
@@ -148,6 +166,11 @@ def validate(manifest):
     return p
 
 
+def require_current_topology(manifest):
+    require(manifest.get("schema_version") == 2 and manifest.get("topology") == CURRENT_TOPOLOGY
+            and manifest.get("role") == "prod", "legacy topology is verification/rollback only; new host roles remain on HOLD")
+
+
 def plan(manifest):
     p = validate(manifest)
     role = manifest["role"]
@@ -157,6 +180,8 @@ def plan(manifest):
             "account_shell": "/usr/sbin/nologin", "docker_socket_group": "root",
             "paid_creation": False, "serving_activation": False, "formats_disks": False,
             "approval": manifest["approval"], "learning_hold": True,
+            "topology": manifest.get("topology", "legacy-four-hosts"),
+            "new_install_allowed": manifest["schema_version"] == 2,
             "next": "preflight on a separately approved empty host; no cloud API is called"}
 
 
@@ -303,6 +328,7 @@ def locked(root):
 def install(manifest, key_bytes, expected_sha, root=Path("/"), backend=None):
     backend = backend or Linux()
     validate(manifest)
+    require_current_topology(manifest)
     require(manifest["approval"] == "approved-empty-host-only", "user empty-host approval is pending")
     require(sha(json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()) == expected_sha, "enrollment approval pin mismatch")
     require(sha(key_bytes) == manifest["docker_key_sha256"] and b"BEGIN PGP PUBLIC KEY BLOCK" in key_bytes, "Docker official key checksum mismatch")
@@ -380,6 +406,7 @@ def verify(manifest, root=Path("/"), backend=None):
 
 def inject_secret(manifest, key, content, root=Path("/")):
     validate(manifest)
+    require_current_topology(manifest)
     require(re.fullmatch(r"[A-Z][A-Z0-9_]{1,79}", key), "invalid secret key")
     allowed = json.loads(PROFILES.read_text())["secret_keys"][manifest["role"]]
     require(key in allowed, "secret is not allowed for this role")
@@ -435,6 +462,7 @@ def rollback(manifest, root=Path("/"), backend=None):
 def artifact_cache(manifest, bundle, approval, name, root=Path("/"), backend=None):
     """Stage + cache reviewed images on an enrolled host; no receiver or app runs."""
     backend = backend or Linux()
+    require_current_topology(manifest)
     verify(manifest, root, backend)
     require(isinstance(name, str) and re.fullmatch(r"[a-z][a-z0-9-]{1,63}", name), "release name required")
     spec = importlib.util.spec_from_file_location("host_artifacts", ROOT / "scripts/ncp-bootstrap-artifacts.py")
@@ -489,7 +517,9 @@ def main():
             require(args.profile in profiles, "unknown profile")
             print(json.dumps({"status": "offline_plan", "profile": args.profile, **profiles[args.profile],
                               "os": "Ubuntu 24.04 amd64", "approval": "pending", "paid_creation": False,
-                              "required_inputs": ["exact NCP quote/image/zone", "four-role inventory", "machine-id/hostname/instance-id", "new LUKS2 ext4 data UUID", "five exact Docker package versions and official key SHA256", "network review hash and operator CIDRs", "user empty-host approval", "separate reviewed receiver and image artifact contract"]}, sort_keys=True))
+                              "new_install_allowed": profiles[args.profile]["role"] == "prod",
+                              "topology": CURRENT_TOPOLOGY, "other_host_roles": "HOLD",
+                              "required_inputs": ["exact NCP quote/image/zone", "reviewed existing GCP test/admin cohost inventory with isolated NCP prod and reserved learning", "machine-id/hostname/instance-id", "new LUKS2 ext4 data UUID", "five exact Docker package versions and official key SHA256", "network review hash and operator CIDRs", "user empty-host approval", "separate reviewed receiver and image artifact contract"]}, sort_keys=True))
             return 0
         require(args.manifest is not None and not args.profile, "manifest required; profile is offline plan only")
         manifest = json.loads(regular(args.manifest))

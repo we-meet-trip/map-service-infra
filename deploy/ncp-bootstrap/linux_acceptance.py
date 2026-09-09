@@ -326,7 +326,13 @@ def guest():
                             "secret_scope": "map-" + role, "provider": "gcp" if role == "test" else "ncp"}
                      for role in ("test", "prod", "admin", "learning")}
         inventory["prod"]["machine_id"] = machine
-        manifest = {"schema_version": 1, "profile": "prod-small", "role": "prod", "machine_id": machine,
+        inventory["admin"].update({key: inventory["test"][key]
+                                   for key in ("machine_id", "instance_id", "data_volume_id", "provider")})
+        for field, suffix in (("machine_id", "machine"), ("instance_id", "instance"), ("data_volume_id", "volume")):
+            inventory["learning"][field] = "reserved-learning-" + suffix
+        manifest = {"schema_version": 2, "topology": "gcp-test-admin-ncp-prod",
+                    "gcp_cohost_review_sha256": hashlib.sha256(b"synthetic GCP cohost inventory; no observed cloud host").hexdigest(),
+                    "profile": "prod-small", "role": "prod", "machine_id": machine,
                     "hostname": platform.node(), "instance_id": inventory["prod"]["instance_id"], "data_uuid": marker["data_uuid"],
                     "data_encryption": "luks2", "inventory": inventory, "docker_packages": packages,
                     "docker_key_sha256": marker["docker_key_sha256"], "ssh_source_cidrs": ["192.0.2.0/24"],
