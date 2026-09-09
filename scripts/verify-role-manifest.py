@@ -72,6 +72,8 @@ def validate(manifest, config, *, host_identity, deploy_account):
             dedicated = target.get("USER_ADMIN_INTERNAL_TOKEN", "")
             require(ordinary, "target API credential required")
             require(isinstance(dedicated, str) and dedicated.strip() and dedicated != ordinary, "distinct target User admin credential required")
+            hub_dedicated = target.get("HUB_ADMIN_INTERNAL_TOKEN", "")
+            require(isinstance(hub_dedicated, str) and hub_dedicated.strip() and hub_dedicated not in {ordinary, dedicated}, "distinct target Hub admin credential required")
         migration = services["admin-migrate"].get("environment", {})
         require(set(migration) == {"ADMIN_CONTROL_MIGRATION_DATABASE_URL"}, "migration receives only its own credential")
         require(migration.get("ADMIN_CONTROL_MIGRATION_DATABASE_URL"), "separate migration credential required")

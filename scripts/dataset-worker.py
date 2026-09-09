@@ -49,7 +49,7 @@ def atomic_json(path, value):
 
 def run(job_path, dataset_root, output_root, program):
     started = time.monotonic()
-    forbidden = ("POSTGRES_", "SPRING_DATASOURCE_", "REDIS_", "LOCATION_", "JWT_", "SSH_", "INTERNAL_SERVICE_TOKEN", "USER_ADMIN_INTERNAL_TOKEN")
+    forbidden = ("POSTGRES_", "SPRING_DATASOURCE_", "REDIS_", "LOCATION_", "JWT_", "SSH_", "INTERNAL_SERVICE_TOKEN", "USER_ADMIN_INTERNAL_TOKEN", "HUB_ADMIN_INTERNAL_TOKEN")
     require(not any(name.startswith(forbidden) and value for name, value in os.environ.items()), "serving credentials forbidden")
     require(job_path.is_file() and not job_path.is_symlink(), "invalid job file")
     job = read_json(job_path)

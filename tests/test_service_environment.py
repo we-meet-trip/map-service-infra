@@ -27,6 +27,9 @@ class ServiceEnvironmentTests(unittest.TestCase):
         for name in ('user','agent','hub','yolo'):
             self.assertNotIn('UNRELATED_SECRET', services[name]['environment'])
             self.assertNotIn('env_file', services[name])
+        self.assertIn('HUB_ADMIN_INTERNAL_TOKEN', services['hub']['environment'])
+        for name in ('user', 'agent', 'yolo'):
+            self.assertNotIn('HUB_ADMIN_INTERNAL_TOKEN', services[name]['environment'])
         self.assertNotIn('POSTGRES_USER',services['user']['environment'])
         self.assertFalse(any(k.startswith('USER_MIGRATION_') for k in services['user']['environment']))
         self.assertEqual(services['user']['environment']['USER_DATABASE_USER'],'map_user_runtime')
