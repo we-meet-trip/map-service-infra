@@ -20,6 +20,29 @@ import backup_job as job
 
 
 class RedisBackupTests(unittest.TestCase):
+    def test_closed_prod_snapshot_keeps_restore_checks_without_plaintext_upload(self):
+        item = {'Id': 'a' * 64, 'Image': 'sha256:' + 'b' * 64}
+        metadata = {'memory': {}, 'persistence': {'rdb_last_save_time': '1', 'rdb_last_cow_size': '0'},
+                    'server': {'redis_version': '7.0.0'}, 'stats': {'latest_fork_usec': '0'}}
+        client = SimpleNamespace(container=item['Id'], call=lambda *args: 'databases\n16' if args[0] == 'CONFIG' else '',
+                                 info=lambda section: metadata[section])
+        restored = {'keyspace': {}, 'redis_version': '7.0.0', 'elapsed_seconds': 1}
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.dict(backup.os.environ, {}, clear=True), \
+                patch.object(backup, 'Redis', return_value=client), \
+                patch.object(backup, 'run', side_effect=['linux/amd64', 'MemAvailable: 2097152 kB']), \
+                patch.object(backup, 'resource_guard', return_value={'used_memory_bytes': 1}), \
+                patch.object(backup, 'wait_snapshot', return_value={'rdb_last_save_time': '2', 'rdb_last_bgsave_time_sec': '0', 'rdb_last_cow_size': '0'}), \
+                patch.object(backup, 'snapshot_file', side_effect=lambda source, path, *args, **kwargs: path.write_bytes(b'REDIS0011')), \
+                patch.object(backup, 'restore_counts', return_value=restored) as restores, \
+                patch.object(backup.pg_backup, 'upload') as upload, \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            path = backup.backup('prod', item=item, closed_directory=temporary)
+            self.assertTrue(path.is_file())
+            self.assertEqual(restores.call_count, 2)
+            upload.assert_not_called()
+            self.assertFalse(json.loads(output.getvalue())['remote_verified'])
+
     def test_keyspace_reports_only_database_aggregate_counts(self):
         self.assertEqual(backup.keyspace('# Keyspace\r\ndb2:keys=5,expires=3,avg_ttl=1\r\n'), {'db2': {'keys': 5, 'expires': 3}})
         with self.assertRaises(backup.BackupError):

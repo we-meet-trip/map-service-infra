@@ -212,11 +212,22 @@ def compare_counts(snapshot, restored):
                 'restored_key_count_mismatch')
 
 
-def backup(environment, *, item=None):
+def backup(environment, *, item=None, closed_directory=None):
+    """Capture and verify the snapshot; NCP owns transport of explicit closed outputs.
+
+    The default remains the existing GCS job. A production receiver may provide
+    its verified source identity and a private directory to obtain a closed
+    helper bundle, without publishing plaintext through either cloud transport.
+    """
     os.umask(0o077)
-    remote = os.environ['REDIS_BACKUP_REMOTE']
-    require(remote.startswith('gs://') and remote.rstrip('/').endswith('/' + environment + '/redis-v1'),
-            'separate_environment_gcs_redis_prefix_required')
+    require(environment in ('test', 'prod'), 'explicit_environment_required')
+    if closed_directory is None:
+        remote = os.environ['REDIS_BACKUP_REMOTE']
+        require(remote.startswith('gs://') and remote.rstrip('/').endswith('/' + environment + '/redis-v1'),
+                'separate_environment_gcs_redis_prefix_required')
+    else:
+        require(environment == 'prod' and item is not None, 'verified_production_source_required')
+        remote = None
     item = item or source_container(environment)
     redis = Redis(item['Id'])
     platform = run(['docker', 'image', 'inspect', '--format', '{{.Os}}/{{.Architecture}}', item['Image']])
@@ -224,7 +235,7 @@ def backup(environment, *, item=None):
     require(len(database_config) == 2 and database_config[0] == 'databases', 'database_count_required')
     databases = int(database_config[1])
     require(1 <= databases <= 1024, 'bounded_database_count_required')
-    directory = Path(os.environ['REDIS_BACKUP_DIR'])
+    directory = Path(closed_directory) if closed_directory is not None else Path(os.environ['REDIS_BACKUP_DIR'])
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     require(directory.is_dir() and not directory.is_symlink(), 'private_backup_directory_required')
     directory.chmod(0o700)
@@ -260,10 +271,12 @@ def backup(environment, *, item=None):
     partial = manifest.with_suffix('.part')
     with partial.open('x') as stream:
         stream.write(json.dumps(meta, indent=2) + '\n')
-    pg_backup.upload([rdb], remote)
+    if remote:
+        pg_backup.upload([rdb], remote)
     partial.replace(manifest)
-    pg_backup.upload([manifest], remote)
-    print(json.dumps({'backup': 'complete', 'environment': environment, 'remote_verified': True,
+    if remote:
+        pg_backup.upload([manifest], remote)
+    print(json.dumps({'backup': 'complete', 'environment': environment, 'remote_verified': bool(remote),
                       'snapshot_at': meta['snapshot_at'], 'rdb_bytes': rdb.stat().st_size,
                       'snapshot_keyspace': snapshot['keyspace'], 'restore': 'PASS'}))
     return manifest
