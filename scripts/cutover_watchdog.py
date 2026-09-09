@@ -123,14 +123,17 @@ def write_ready_receipt(d, latch, phase):
     d.atomic_state(d.STATE / "security-public-ready.json", value)
 
 
-def read_ready_receipt(d, latch):
+def read_ready_receipt(d, latch, stage=lambda reason: None):
+    stage("guard_retry_ready_receipt")
     data = d.read_host_json(d.STATE / "security-public-ready.json")
     d.require(isinstance(data, dict) and set(data) ==
               {"schema_version", "instance_id", "run_id", "infra_sha", "phase", "approved", "public"}
               and type(data["schema_version"]) is int and data["schema_version"] == 1
               and all(data[k] == latch[k] for k in ("instance_id", "run_id", "infra_sha", "phase")),
               "stale or invalid ready receipt")
+    stage("guard_retry_rollback_policy")
     policy = policy_for_latch(d, latch)
+    stage("guard_retry_ready_receipt")
     choices = [latch["candidate"]] if latch["phase"] == "complete" else policy["rollback_verified"]
     d.require(d.exact_image_tuple(data["approved"]) in choices, "ready tuple no longer approved")
     d.require(isinstance(data["public"], dict) and set(data["public"]) == set(PUBLIC), "invalid public receipt")
@@ -159,37 +162,50 @@ def receiver_scope_active(d):
     return state not in ("inactive", "failed")
 
 
-def recover_once(d):
+def recover_once(d, stage=lambda reason: None):
+    # These fixed operation names are diagnostic only. They never change the
+    # lock, the metadata validation, or the authority to start/stop a container.
+    stage("guard_retry_deployment_lock")
     with d.deployment_lock():
         # Never act on a state read before locking or while orphan cleanup is active.
+        stage("guard_retry_receiver_scope")
         if receiver_scope_active(d):
             return "receiver_active"
+        stage("guard_retry_cutover_latch")
         latch = d.load_cutover_latch()
         d.require(latch is not None, "cutover latch required")
+        stage("guard_retry_maintenance_metadata")
         if not maintenance(d) and latch["phase"] in SERVING:
             # Never read the ready receipt here: during a replacement the recorded
             # identities legitimately differ, and calling that a fault is what
             # closes an entry point that is still healthy.
             if return_to_canonical(d) is not None:
                 return "rollover_returned_to_canonical"
+            stage("guard_retry_public_quarantine")
             d.stop_public_services(ENV)
             return "public_quarantined"
         if maintenance(d) or latch["phase"] not in TERMINAL:
+            stage("guard_retry_public_quarantine")
             d.stop_public_services(ENV)
             return "public_quarantined"
         # Invalid/missing metadata never authorizes a start. Nor does a supervisor
         # read/health failure stop an already healthy completed release.
+        stage("guard_retry_restart_override")
         verify_override(d)
-        ready = read_ready_receipt(d, latch)
+        ready = read_ready_receipt(d, latch, stage)
+        stage("guard_retry_container_metadata")
         actual = containers(d)
+        stage("guard_retry_public_identity")
         d.require(all({k: item[k] for k in ("id", "image")} == ready["public"][s]
                       and item["restart"] == "no" for s, item in actual.items()), "public identity or restart contract changed")
         for service in ("yolo", "user", "proxy", "edge"):
             item = actual[service]
             if not item["running"]:
                 if service == "edge":
+                    stage("guard_retry_private_readiness")
                     with d.topology_scope():
                         d.smoke(include_public=False)
+                stage("guard_retry_public_start")
                 run(d, ["docker", "start", item["id"]], timeout=60)
         return "completed_public_supervised"
 
@@ -256,22 +272,31 @@ def main(argv=None):
     last = None
     instance_verified = False
     while True:
+        reason = "guard_retry_internal_error"
+        def stage(value):
+            nonlocal reason
+            reason = value
         try:
             if args.operation in ("watch", "once") and not instance_verified:
+                stage("guard_retry_instance_verification")
                 d.verify_instance()
                 instance_verified = True
             if args.operation == "enroll":
+                stage("guard_retry_enrollment")
                 enroll(d)
                 phase = "enrolled"
             elif args.operation == "verify-override":
+                stage("guard_retry_restart_override")
                 verify_override(d)
                 phase = "override_verified"
             else:
-                phase = recover_once(d)
+                phase = recover_once(d, stage)
             failed = False
+        except d.DeploymentBusy:
+            phase, failed = "guard_retry_deployment_busy", True
         except Exception:
             # No exception messages, env, subprocess output or stored values.
-            phase, failed = "guard_retry_no_unverified_start", True
+            phase, failed = reason, True
         if phase != last:
             print(json.dumps({"phase": phase}), flush=True)
             last = phase

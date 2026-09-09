@@ -80,6 +80,10 @@ class DeployError(Exception):
     pass
 
 
+class DeploymentBusy(DeployError):
+    """The single deployment writer already owns the lock."""
+
+
 def require(condition, message):
     if not condition:
         raise DeployError(message)
@@ -976,7 +980,7 @@ def deployment_lock():
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise DeployError("another deployment is in progress") from None
+            raise DeploymentBusy("another deployment is in progress") from None
         yield
 
 

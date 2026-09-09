@@ -3,6 +3,7 @@ import copy
 import fcntl
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -79,6 +80,47 @@ class WatchdogTests(unittest.TestCase):
 
     def mutations(self):
         return [x for x in self.calls if len(x) > 1 and x[1] in ("start", "stop", "update")]
+
+    def once_phase(self):
+        output = io.StringIO()
+        with patch.object(guard, "receiver", return_value=self.d), contextlib.redirect_stdout(output):
+            code = guard.main(["once"])
+        rows = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(set(rows[0]), {"phase"})
+        return code, rows[0]["phase"]
+
+    def test_lock_contention_has_a_typed_safe_reason_without_reading_state(self):
+        with self.d.deployment_lock():
+            self.assertEqual(self.once_phase(), (1, "guard_retry_deployment_busy"))
+        self.assertEqual(self.calls, [])
+
+    def test_missing_ready_receipt_and_policy_have_distinct_safe_reasons(self):
+        ready = self.d.STATE / "security-public-ready.json"
+        saved = ready.read_bytes()
+        ready.unlink()
+        self.assertEqual(self.once_phase(), (1, "guard_retry_ready_receipt"))
+        ready.write_bytes(saved)
+        (self.d.STATE / "rollback-policy.json").unlink()
+        self.assertEqual(self.once_phase(), (1, "guard_retry_rollback_policy"))
+        self.assertEqual(self.mutations(), [])
+
+    def test_readiness_failure_never_logs_exception_or_opens_edge(self):
+        self.items["edge"]["running"] = False
+        self.d.smoke.side_effect = RuntimeError("sensitive upstream response must stay private")
+        self.assertEqual(self.once_phase(), (1, "guard_retry_private_readiness"))
+        self.assertEqual(self.mutations(), [])
+
+    def test_identity_drift_has_a_distinct_reason_without_opening_edge(self):
+        self.items["user"]["restart"] = "unless-stopped"
+        self.items["edge"]["running"] = False
+        self.assertEqual(self.once_phase(), (1, "guard_retry_public_identity"))
+        self.assertEqual(self.mutations(), [])
+
+    def test_instance_failure_is_not_misclassified_as_lock_contention(self):
+        self.d.verify_instance.side_effect = self.d.DeployError("another deployment is in progress")
+        self.assertEqual(self.once_phase(), (1, "guard_retry_instance_verification"))
+        self.assertEqual(self.calls, [])
 
     def test_healthy_complete_neither_stops_nor_restarts(self):
         self.assertEqual(guard.recover_once(self.d), "completed_public_supervised")
