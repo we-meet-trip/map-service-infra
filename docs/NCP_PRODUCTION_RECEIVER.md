@@ -5,7 +5,7 @@ separate new **NCP production-only** host. NCP admits User/Agent/Hub/YOLO plus t
 existing production dependency allowlist. No NCP Admin, learning host, four-server
 split, existing GCP bootstrap, public DB/exporter port, or data reset is enabled.
 
-This implementation has four explicit phases. It does not yet activate serving.
+This implementation uses explicit phases. It does not yet activate serving.
 Local unit tests use generated files and an injected backend; live Docker/PG,
 new NCP installation, migrations, timer/backup restore and production readiness
 must have separate exact-source acceptance evidence before rollout.
@@ -17,10 +17,11 @@ must have separate exact-source acceptance evidence before rollout.
 | separate User controller | One use of existing prepare SQL/plain main/finalize SQL, private independent runtime/migrator roles, login/catalog checks and receipt | `PASS` bootstrap receipt |
 | `accept-bootstrap` | Verify exact request identity, finalized receipt, unchanged PG mount/network/container | `BOOTSTRAP_ACCEPTED` |
 | `migrate-user` | Existing normal User migrator `migrate` then `validate`, in its isolated disposable job | `USER_NORMAL_MIGRATIONS_COMPLETE` |
+| `ncp-production-database.py` | PostGIS, original Hub/Agent role SQL, initial and normal migrations, runtime login/ACL probes, unchanged User catalog | `PRODUCTION_DATABASE_PREPARED` |
 
 All results retain `public_serving=HOLD`. A successful phase is not production
-readiness or launch approval. Normal Hub/Agent role/schema provisioning and
-migrations, Redis/OSRM and four-app creation, target management/metrics transport,
+readiness or launch approval. Live Hub/Agent migration/ACL/PostGIS acceptance,
+Redis/OSRM and four-app creation, target management/metrics transport,
 backup identity enrollment/real recovery, production-specific private readiness,
 rollback evidence and a public admission guard remain later gates. The GCP
 six-app receiver/watchdog is unchanged. Public edge/proxy/user/yolo must retain
@@ -163,6 +164,7 @@ python3 -B /opt/map-service-infra/scripts/ncp-production-receiver.py prepare
 # Run the separately reviewed/pinned User bootstrap controller once.
 python3 -B /opt/map-service-infra/scripts/ncp-production-receiver.py accept-bootstrap
 python3 -B /opt/map-service-infra/scripts/ncp-production-receiver.py migrate-user
+python3 -B /opt/map-service-infra/scripts/ncp-production-database.py
 ```
 
 `first-install-attempt.json` is written as HOLD before any Docker creation and is
@@ -186,3 +188,72 @@ requires scratch `/srv/map-prod/deploy/migrations`, receipt parent
 `/srv/map-prod/deploy/receipts`, and `/srv/map-prod/secrets/<service>-migration.env`;
 it acquires the shared deploy lock before its service lock. Existing GCP
 `map-test`/legacy `map-service` behavior is retained and rejects production pins.
+
+## PostGIS and Hub/Agent database phase
+
+After User normal `migrate` and `validate`, install the exact release's Hub and
+Agent source checkouts at root-owned `/opt/map-service-hub` and
+`/opt/map-service-agent`. The phase requires independent regular Git checkouts,
+no symlinks/hardlinks or group/other writable source, exact HEAD/source pins and
+no tracked changes. It reads each existing `docs/database-roles.sql` unchanged
+and records its SHA256 with source/image identities. It imports no application
+settings or provider clients from these repositories.
+
+Provision independent root0600 32-byte hex `HUB_DATABASE_PASSWORD`,
+`HUB_MIGRATION_PASSWORD`, `AGENT_DATABASE_PASSWORD`, `AGENT_MIGRATION_PASSWORD`
+files. Values must differ from one another, User runtime/migrator passwords, the
+PostgreSQL operator password and marker. Migration DSNs are assembled only for
+the bounded jobs and are saved to the exact private migration files after all
+checks succeed. Serving receives only its own runtime credential later.
+
+The phase reacquires the same deployment lock and verifies the receiver/User
+proof chain, original PG container/image/bind/network, User normal migration
+receipts and absence of every other container/volume. A first-install DB guard
+requires `map_prod`, its independent marker, no Hub/Agent role/schema, no PostGIS
+extension, no other DB session and no User application rows. Unknown resources
+or any prior attempt means HOLD before DDL. It records a durable attempt first.
+
+The sequence is:
+
+1. Install PostGIS as the operator on this new DB and verify a basic geometry.
+2. Apply both original role SQL files and independent SCRAM login secrets.
+   Since User bootstrap revoked PUBLIC schema rights, grant only `public` USAGE
+   to `map_hub_owner` for PostGIS types/functions; no public CREATE or User grant.
+3. For Hub revision0001 only, atomically set a20-minute migrator login deadline
+   and grant database CREATE to its NOLOGIN owner. Run the unchanged immutable
+   Hub migrator. A mandatory `finally` revokes CREATE and verifies that revocation
+   before restoring normal login expiry. Reapply the original ACL SQL and run
+   Hub migration a second time without database CREATE, then reapply its ACL SQL.
+4. Run the unchanged Agent migrator on its operator-provisioned `langgraph`
+   schema and reapply its original ACL SQL. No database CREATE is granted to Agent.
+5. Connect with runtime passwords through private `postgres` DNS, not loopback.
+   Reject HBA errors or non-SCRAM host rules except exact loopback rules; require
+   a non-loopback server address, restricted role, no owner membership/CREATE,
+   history SELECT-only, all four permitted DML rights and no User-table rights.
+   Probe Hub PostGIS using the runtime role. Passwords travel only on private stdin.
+6. Verify User tables remain empty and its schema/object grants, roles,
+   memberships, credential-verifier fingerprints, defaults and real Flyway
+   history yield the same SHA256. Only the final aggregate digest is returned;
+   no row or credential verifier appears in a receipt. Confirm every service
+   owner/runtime/migrator lacks database CREATE/TEMP and PG identity is preserved.
+
+Role-source evidence: Hub `docs/database-roles.md/sql`,
+`migrations/revisions/001_create_tables.py`, `004_create_places.py`,
+`app/db/migrate.py`; Agent `docs/database-roles.md/sql`,
+`app/checkpoint_migrate.py`; User `docs/user-database-bootstrap-prepare.sql`.
+Applied Flyway/Alembic/SDK migrations and histories are never rewritten.
+
+Any ordinary exception/interrupt during the temporary Hub grant runs its
+revocation finalizer. A hard host/process kill can prevent cleanup; the durable
+HOLD attempt and20-minute login deadline limit that uncertain state. An operator
+must verify/stop the exact job and revoke the grant on the independently pinned
+new target before recovery; expiry is not a substitute for revocation and the
+phase never automatically retries. No source implementation claims that a hard
+kill successfully completed cleanup. All partial DB/history/receipt files remain.
+
+No `admin_data`, control DB or Admin runtime role is provisioned. Historical
+GCP cohost `admin-exporter-roles.sql` is not an NCP input. The separately reviewed
+production read-only management/exporter roles are a later gate after these
+migrations. Actual PG17/PostGIS execution, negative42501/role checks, first/second
+Hub migration and Agent concurrent-index acceptance remain NOT_RUN until the
+approved isolated integration fixture or new NCP host produces receipts.

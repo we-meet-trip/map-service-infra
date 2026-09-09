@@ -165,6 +165,7 @@ def release_binding(contract, manifest):
 
 def identity_request(config, enrollment, contract, manifest, proof, pgid):
     """Closed bridge to the independent one-use User bootstrap controller."""
+    require(isinstance(pgid, str) and HEX.fullmatch(pgid), 'bootstrap_postgres_pin_invalid')
     return {'schema_version': 1, 'environment': 'prod', 'project': 'map-prod', 'database': 'map_prod',
             'enrollment_sha256': config['enrollment_sha256'],
             'security_approval_sha256': config['security_approval_sha256'],
