@@ -1,0 +1,48 @@
+# Production-only observability. The receiver must match these exact image
+# digests to the approved artifact inventory before activation. Raw ports stay
+# on loopback; a separately verified authenticated transport owns remote access.
+name: map-prod
+services:
+  postgres-exporter:
+    image: ${PROD_POSTGRES_EXPORTER_IMAGE:?approved immutable exporter image required}
+    restart: unless-stopped
+    profiles: [monitoring]
+    mem_limit: 64m
+    cpus: 0.25
+    environment:
+      DATA_SOURCE_NAME: ${PROD_POSTGRES_EXPORTER_DSN:?dedicated map_prod pg_monitor login required}
+    ports: ['127.0.0.1:19187:9187']
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  redis-exporter:
+    image: ${PROD_REDIS_EXPORTER_IMAGE:?approved immutable exporter image required}
+    restart: unless-stopped
+    profiles: [monitoring]
+    mem_limit: 64m
+    cpus: 0.25
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      REDIS_USER: ${PROD_REDIS_EXPORTER_USER:?dedicated production metrics ACL user required}
+      REDIS_PASSWORD: ${PROD_REDIS_EXPORTER_PASSWORD:?dedicated production metrics credential required}
+    ports: ['127.0.0.1:19121:9121']
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  node-exporter:
+    image: ${PROD_NODE_EXPORTER_IMAGE:?approved immutable exporter image required}
+    restart: unless-stopped
+    profiles: [monitoring]
+    mem_limit: 64m
+    cpus: 0.25
+    command: [--path.rootfs=/host]
+    pid: host
+    volumes: ['/:/host:ro']
+    ports: ['127.0.0.1:19100:9100']
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+networks:
+  default:
+    name: map-prod-net
+    external: true

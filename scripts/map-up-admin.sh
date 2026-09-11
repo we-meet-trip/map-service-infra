@@ -10,6 +10,12 @@
 # 네트워크와 DB 준비 상태를 확인한 뒤 기동한다.
 set -uo pipefail
 
+# This entrypoint only knows the local map-net/default-env stack.
+if [ -e /etc/map-admin-ncp/compose.yml ] || [ -L /etc/map-admin-ncp/compose.yml ]; then
+  echo 'NCP-connected GCP administrator must use the verified test deployment (cloud-up --test)' >&2
+  exit 2
+fi
+
 INFRA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_COMPOSE=(docker compose -f "$INFRA_DIR/docker-compose.yml")
 ADMIN_COMPOSE=(docker compose -f "$INFRA_DIR/docker-compose.admin.yml")

@@ -31,14 +31,14 @@ set -euo pipefail
 db_user=fake; db_name=fake
 dc() {
   case "$*" in
+    *upgrade*) echo UPGRADE_ATTEMPTED ;;
     *"hub heads") printf '%s\\n' "$STUB_HEADS" ;;
-    *"hub upgrade head") [ "$STUB_FAIL" != yes ] ;;
-    *"select version_num"*) printf '%s\\n' "$STUB_ACTUAL" ;;
+    *"select version_num"*) [ "$STUB_FAIL" != yes ] && printf '%s\\n' "$STUB_ACTUAL" ;;
     *) return 99 ;;
   esac
 }
 source scripts/lib/migrations.sh
-verify_hub_migration
+verify_hub_revision
 echo START_APPLICATIONS
 '''
         return subprocess.run(["bash"], cwd=ROOT, input=script, capture_output=True,
@@ -48,7 +48,11 @@ echo START_APPLICATIONS
     def test_matching_revision_starts(self):
         self.assertEqual(self.migration().returncode, 0)
 
-    def test_generic_migration_failure_blocks_existing_schema(self):
+    def test_the_check_never_upgrades_because_the_isolated_job_owns_that(self):
+        # Only the separate bounded job holds the migrator credential.
+        self.assertNotIn("UPGRADE_ATTEMPTED", self.migration().stdout)
+
+    def test_unreadable_database_revision_blocks_existing_schema(self):
         result = self.migration(failure="yes")
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("START_APPLICATIONS", result.stdout)
@@ -142,7 +146,12 @@ class BackupTests(unittest.TestCase):
             calls.append(args)
             return subprocess.CompletedProcess(args, 0, str(manifest.stat().st_size))
 
-        with patch.object(pg, "run", side_effect=runner):
+        import io
+        from types import SimpleNamespace
+        download = SimpleNamespace(stdout=io.BytesIO(manifest.read_bytes()),
+                                   wait=lambda: 0, poll=lambda: 0)
+        with patch.object(pg, "run", side_effect=runner), patch.object(
+                pg.subprocess, "Popen", return_value=download):
             pg.upload([manifest], "s3://map-backup/test", "https://kr.object.ncloudstorage.com")
         self.assertIn("head-object", calls[1])
         with self.assertRaises(pg.BackupError):

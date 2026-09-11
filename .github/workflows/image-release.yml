@@ -10,6 +10,10 @@ on:
         type: string
         required: true
         default: develop
+      reuse_run_id:
+        description: "선택: 24시간 이내 검증 릴리스의 동일 소스 이미지만 재사용 (새 digest 재검사 유지)"
+        type: string
+        default: ""
       tag:
         description: "새 이미지 태그. 비우면 날짜-run ID-attempt (latest 금지)"
         type: string
@@ -28,6 +32,7 @@ concurrency:
 permissions:
   contents: read
   packages: write
+  actions: read
 
 env:
   IMAGE_REGISTRY: ghcr.io/we-meet-trip
@@ -166,12 +171,26 @@ jobs:
             fi
           done
 
+      - name: verify optional immutable image reuse bundle
+        if: github.event_name == 'workflow_dispatch' && inputs.reuse_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REUSE_RUN_ID: ${{ inputs.reuse_run_id }}
+        run: |
+          python3 release-tools/scripts/deploy-gcp.py prepare --run-id "$REUSE_RUN_ID" \
+            --output "$RUNNER_TEMP/map-image-reuse-bundle"
+
       - name: build and push six images
         working-directory: src/map-service-infra
         env:
           IMAGE_TAG: ${{ steps.inputs.outputs.tag }}
           IMAGE_PLATFORM: linux/amd64
-        run: ./scripts/images-push.sh
+          REUSE_RUN_ID: ${{ inputs.reuse_run_id }}
+        run: |
+          if [ -n "$REUSE_RUN_ID" ]; then
+            export RELEASE_REUSE_BUNDLE="$RUNNER_TEMP/map-image-reuse-bundle"
+          fi
+          ./scripts/images-push.sh
 
       - name: verify OCI provenance and create digest bundle
         env:
@@ -194,6 +213,34 @@ jobs:
           python release-tools/scripts/release_manifest.py verify \
             --bundle release-bundle --expected-run-id "$GITHUB_RUN_ID" \
             --expected-infra-sha "$INFRA_SHA" --expected-workflow-sha "$WORKFLOW_SHA"
+
+      # Scan the immutable registry references from the already verified bundle.
+      # This scanner belongs to workflow_sha, not a source-ref-provided script.
+      - name: scan six exact registry images
+        id: registry_audit
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ github.token }}
+        run: |
+          python3 release-tools/scripts/scan_release_images.py scan \
+            --bundle release-bundle --output release-image-audit \
+            --cache "$RUNNER_TEMP/map-release-trivy" --github-summary "$GITHUB_STEP_SUMMARY"
+
+      - name: retain exact image security evidence
+        if: ${{ always() && steps.registry_audit.outcome != 'skipped' && steps.registry_audit.outcome != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-image-security-audit
+          path: release-image-audit/
+          if-no-files-found: error
+          retention-days: 90
+
+      # Publish no deployable bundle after an incomplete scan or CRITICAL finding.
+      # HIGH remains FINDINGS_REQUIRE_REVIEW; GCP testing is not NCP acceptance.
+      - name: enforce critical vulnerability gate
+        run: |
+          python3 release-tools/scripts/scan_release_images.py enforce \
+            --bundle release-bundle --output release-image-audit
 
       - name: upload verified release bundle
         id: artifact

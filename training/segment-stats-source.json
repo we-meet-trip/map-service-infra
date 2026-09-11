@@ -1,0 +1,7 @@
+{
+  "repository": "we-meet-trip/map-service-agent",
+  "commit": "dacb2d614bf6aee8ee985c0834216199526d01a4",
+  "path": "eval/segment_stats.py",
+  "sha256": "019fabbf99318f0d0a6970e7476cf1f8047866eedfa2a9dab09e9842a4c034fb",
+  "purpose": "Pinned offline program artifact; update only from reviewed source; no real-user training approval"
+}

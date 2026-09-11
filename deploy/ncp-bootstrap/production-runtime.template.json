@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "environment": "prod",
+  "project": "map-prod",
+  "topology": "gcp-test-admin-ncp-prod",
+  "release_name": "required-approved-release",
+  "enrollment_sha256": "REQUIRED_CANONICAL_SCHEMA2_ENROLLMENT_SHA256",
+  "security_approval_sha256": "REQUIRED_REVIEWED_ARTIFACT_APPROVAL_FILE_SHA256",
+  "release_manifest_sha256": "REQUIRED_SIX_IMAGE_RELEASE_JSON_FILE_SHA256",
+  "bootstrap_approval_sha256": "REQUIRED_REVIEWED_USER_BOOTSTRAP_APPROVAL_FILE_SHA256",
+  "postgres_image_id": "REQUIRED_CACHED_POSTGRES_IMAGE_ID",
+  "user_image_id": "REQUIRED_CACHED_USER_IMAGE_ID"
+}

@@ -1,0 +1,38 @@
+# Dataset-only worker. Real-user learning remains HOLD; no source exporter runs here.
+name: map-learning
+services:
+  dataset-worker:
+    image: ${TRAINING_WORKER_IMAGE:?digest-pinned Python runtime image required}
+    profiles: [approved-synthetic-job]
+    restart: 'no'
+    user: '10001:10001'
+    entrypoint: [python, /opt/map/dataset-worker.py]
+    command: [--job, /input/job.json, --dataset-root, /input, --output-root, /output, --program, /opt/map/segment_stats.py]
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 512m
+    cpus: 1.0
+    environment:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUNBUFFERED: '1'
+      MAP_LEARNING_HOLD: 'true'
+    volumes:
+      - type: bind
+        source: ${TRAINING_INPUT_DIR:?approved synthetic dataset directory required}
+        target: /input
+        read_only: true
+      - type: bind
+        source: ${TRAINING_OUTPUT_DIR:?private candidate-only output directory required}
+        target: /output
+      - type: bind
+        source: ./scripts/dataset-worker.py
+        target: /opt/map/dataset-worker.py
+        read_only: true
+      - type: bind
+        source: ${TRAINING_PROGRAM_FILE:?checksum-verified Agent eval/segment_stats.py required}
+        target: /opt/map/segment_stats.py
+        read_only: true
+    tmpfs: [/tmp:rw,noexec,nosuid,size=64m]

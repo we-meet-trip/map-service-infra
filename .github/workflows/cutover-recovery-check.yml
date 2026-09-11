@@ -1,0 +1,34 @@
+name: cutover-recovery-check
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - scripts/deploy-gcp.py
+      - scripts/cloud-up.sh
+      - scripts/release_manifest.py
+      - scripts/cutover_watchdog.py
+      - scripts/receive-supervised.sh
+      - deploy/map-cutover-watchdog.service
+      - tests/fixtures/cutover_linux_acceptance.py
+      - .github/workflows/cutover-recovery-check.yml
+permissions:
+  contents: read
+concurrency:
+  group: cutover-recovery-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  isolated-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Standard library regressions
+        run: python3 -m unittest discover -s tests -v
+      - name: Separate daemon and systemd crash acceptance
+        run: sudo env GITHUB_ACTIONS=true python3 tests/fixtures/cutover_linux_acceptance.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cutover-linux-acceptance
+          path: cutover-linux-acceptance.json
+          if-no-files-found: warn

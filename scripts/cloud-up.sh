@@ -32,6 +32,7 @@ VISION=0
 EDGE=0
 ADMIN=0
 MONITORING=0
+TARGET_ONLY=0
 # 관리자 스택은 프로젝트가 따로다. 서비스 스택이 만든 네트워크에 얹히므로
 # 파일도 순서도 따로 세어야 한다.
 ADMIN_FILES=(-f docker-compose.admin.yml)
@@ -51,6 +52,7 @@ for arg in "$@"; do
     --admin) ADMIN=1 ;;
     # 지표 수집까지. 콘솔의 모니터링 화면은 여기서 뜨는 것을 창으로 불러온다.
     --monitoring) ADMIN=1; MONITORING=1 ;;
+    --target-exporters) TARGET_ONLY=1; MONITORING=1 ;;
     # 경로 엔진을 함께 올린다. 켜지 않으면 hub 가 주소를 못 찾아 구간마다
     # 실패 왕복을 반복하고, 화면에는 도로를 따르지 않는 직선이 그려진다.
     --routing) PROFILES+=(--profile routing); ROUTING=1 ;;
@@ -60,6 +62,38 @@ for arg in "$@"; do
     *) echo "모르는 인자: $arg" >&2; exit 2 ;;
   esac
 done
+
+# MAP_ADMIN_DETACHED_VERSION=1
+if [ "$TARGET_ONLY" = 1 ]; then
+  [ "$ADMIN" = 0 ] && [ "$ENV_FILE" = ./.env.test ] && [ -n "${INFRA_IMAGE_BUNDLE:-}" ] || {
+    echo 'target exporters require a pinned test release without --admin/--monitoring' >&2; exit 2;
+  }
+  ADMIN_FILES=(-f docker-compose.target-exporters.yml)
+fi
+# A root-owned host handoff policy survives checkout/rollback. Manual entrypoints
+# must not recreate a former administrator after that handoff either.
+if [ "$ADMIN" = 1 ] && [ -e /var/lib/map-deploy/topology.json ]; then
+  echo 'host topology policy exists; co-host administrator startup is blocked' >&2; exit 2
+fi
+
+# MAP_ADMIN_NCP_TUNNEL_VERSION=1
+# This host-owned override survives repository checkouts and administrator rebuilds.
+if [ "$ADMIN" = 1 ] && { [ -e /etc/map-admin-ncp/compose.yml ] || [ -L /etc/map-admin-ncp/compose.yml ]; }; then
+  [ "$ENV_FILE" = ./.env.test ] && [ -r /etc/map-admin-ncp/compose.yml ] || {
+    echo 'NCP administrator connection requires the GCP test deployment and readable host overlay' >&2; exit 2;
+  }
+  ADMIN_FILES+=(-f /etc/map-admin-ncp/compose.yml)
+fi
+
+# Fresh hosts must import the reviewed Caddy artifact before exposing public TLS.
+# Receiver deployments supply independently verified existing infrastructure pins.
+if [ "$EDGE" = 1 ] && [ -z "${INFRA_IMAGE_BUNDLE:-}" ]; then
+  [ -n "${EDGE_IMAGE_OVERRIDE:-}" ] && [ -f "$EDGE_IMAGE_OVERRIDE" ] || {
+    echo 'edge requires EDGE_IMAGE_OVERRIDE from install-caddy-artifact.py' >&2; exit 2;
+  }
+  python3 scripts/install-caddy-artifact.py --verify-compose "$EDGE_IMAGE_OVERRIDE"
+  FILES+=(-f "$EDGE_IMAGE_OVERRIDE")
+fi
 
 [ "$MONITORING" = 1 ] && ADMIN_PROFILES=(--profile monitoring)
 
@@ -71,7 +105,7 @@ if [ -n "${RELEASE_BUNDLE:-}" ]; then
     [ -f "$RELEASE_BUNDLE/$pin" ] || { echo 'release image pin missing' >&2; exit 2; }
   done
   FILES+=(-f "$RELEASE_BUNDLE/compose.images.yml")
-  ADMIN_FILES+=(-f "$RELEASE_BUNDLE/compose.admin-images.yml")
+  [ "$TARGET_ONLY" = 1 ] || ADMIN_FILES+=(-f "$RELEASE_BUNDLE/compose.admin-images.yml")
 fi
 
 # Automated application releases preserve the receiver's exact infrastructure
@@ -85,6 +119,31 @@ if [ -n "${INFRA_IMAGE_BUNDLE:-}" ]; then
   FILES+=(-f "$INFRA_IMAGE_BUNDLE/compose.infrastructure.yml")
   ADMIN_FILES+=(-f "$INFRA_IMAGE_BUNDLE/compose.admin-infrastructure.yml")
 fi
+
+# MAP_CUTOVER_SUPERVISOR_VERSION=1
+# A root-installed host contract survives checkouts. It applies to manual test
+# cloud-up too, so a later Compose invocation cannot restore Docker auto-start.
+if [ "$ENV_FILE" = ./.env.test ]; then
+  if [ -e /var/lib/map-deploy/public-restart.yml ] || [ -n "${CUTOVER_SUPERVISED:-}" ]; then
+    /usr/bin/python3 /usr/local/lib/map-deploy/cutover_watchdog.py verify-override >/dev/null
+    FILES+=(-f /var/lib/map-deploy/public-restart.yml)
+  fi
+elif [ -n "${CUTOVER_SUPERVISED:-}" ]; then
+  echo 'cutover supervisor requires the fixed test host' >&2
+  exit 2
+fi
+
+# MAP_INTERNAL_ROUTING_VERSION=1
+# 서비스끼리 관문의 내부 창구를 거치도록 주소를 돌려 두었는데 이 관문 설정에
+# 그 창구가 없으면, 컨테이너가 새로 뜨는 순간 서로를 전혀 부르지 못한다.
+# 두 자리가 어긋나면 아무것도 바꾸지 않고 멈춘다.
+require_internal_listener() {
+  grep -qE '^(HUB|AGENT|USER|USER_SERVICE)_BASE_URL=.*proxy:8081' "$1" 2>/dev/null || return 0
+  grep -q 'listen 8081;' "$2" 2>/dev/null && return 0
+  echo 'internal base URLs point at the proxy but this proxy configuration has no internal listener' >&2
+  return 2
+}
+require_internal_listener "$ENV_FILE" proxy/default.conf || exit 2
 
 # 작은 서버 덧칠은 1GB 급을 겨냥한다. 카메라 인식은 모델을 들고 있어 그 위에
 # 더 얹을 자리가 없다 — 재 보니 나머지 여섯만으로 부하 중 838 MiB 였고 거기에
@@ -110,7 +169,7 @@ dca() { docker compose --env-file "$ENV_FILE" "${ADMIN_FILES[@]}" "$@"; }
 
 # 값이 비면 그 서비스가 부팅하다 멈추는 것들만 미리 본다. 여기서 걸러 내지
 # 않으면 컨테이너가 뜨다 죽기를 반복하는 모습으로만 드러난다.
-for key in POSTGRES_PASSWORD HUB_DATABASE_URL GEMINI_API_KEY; do
+for key in POSTGRES_PASSWORD HUB_DATABASE_URL GEMINI_API_KEY USER_DATABASE_USER USER_DATABASE_PASSWORD; do
   if ! grep -qE "^${key}=.+" "$ENV_FILE"; then
     echo "$ENV_FILE 에 $key 값이 없다" >&2
     exit 1
@@ -243,14 +302,40 @@ fi
 echo "[$LABEL] 저장소 초기화 다시 적용"
 dc exec -T postgres psql -v ON_ERROR_STOP=1 -U "$db_user" -d "$db_name" \
   -f /docker-entrypoint-initdb.d/00-create-schemas.sql
-dc exec -T \
-  -e MAP_ADMIN_PASSWORD="$(grep -E '^MAP_ADMIN_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)" \
-  postgres bash /docker-entrypoint-initdb.d/10-admin.sh
+if [ "$TARGET_ONLY" = 0 ]; then
+  dc exec -T \
+    -e MAP_ADMIN_PASSWORD="$(grep -E '^MAP_ADMIN_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)" \
+    postgres bash /docker-entrypoint-initdb.d/10-admin.sh
+fi
 
-echo "[$LABEL] 3/4 hub 표 만들기"
+echo "[$LABEL] 3/4 스키마 이전"
+# MAP_USER_STANDALONE_MIGRATION_VERSION=1
+# MAP_SERVICE_MIGRATION_VERSION=1
+# The helper consumes rendered configuration privately, extracts only the exact
+# image and runtime contract of the one service it is told to migrate, and never
+# forwards serving environment to the job. Each service brings its own migrator
+# credential file and its own private, database-only network. Role and owner
+# provisioning and its verified backup are separate prerequisites.
+run_service_migration() {
+  local service=$1 credentials=$2 receipt
+  receipt="/var/lib/map-deploy/${service}-migration-$(python3 -c 'import uuid; print(uuid.uuid4().hex)').json"
+  if ! dc "${PROFILES[@]}" config --format json | python3 scripts/service-migration-job.py \
+      --service "$service" --credentials "$credentials" \
+      --operation migrate --receipt "$receipt"; then
+    echo "${service} standalone migration failed; application startup is blocked" >&2
+    return 1
+  fi
+}
+run_service_migration user \
+  "${USER_MIGRATION_CREDENTIALS_FILE:-/etc/map-deploy/user-migration.env}" || exit 1
+run_service_migration hub \
+  "${HUB_MIGRATION_CREDENTIALS_FILE:-/etc/map-deploy/hub-migration.env}" || exit 1
+run_service_migration agent \
+  "${AGENT_MIGRATION_CREDENTIALS_FILE:-/etc/map-deploy/agent-migration.env}" || exit 1
+
 # shellcheck source=scripts/lib/migrations.sh
 source ./scripts/lib/migrations.sh
-verify_hub_migration || exit 1
+verify_hub_revision || exit 1
 
 tables=$(dc exec -T postgres psql -U "$db_user" -d "$db_name" -tAc \
   "select count(*) from information_schema.tables where table_schema='hub_data'" | tr -d '[:space:]')
@@ -264,8 +349,84 @@ echo "[$LABEL] 4/4 애플리케이션 기동"
 # 상태가 정상이 될 때까지 기다린다. 기다리지 않으면 표 손질에 실패해 뜨다
 # 죽기를 반복하는 상태에서도 이 스크립트가 성공으로 끝나고, 바로 아래 목록은
 # 아직 기동 중이라 그 실패와 구분되지 않는다.
+# MAP_ROLLOVER_VERSION=1
+# 한 서비스씩 바꾼다. 새 판을 옆에 먼저 세워 정상이 된 뒤에 관문의 상류를
+# 그쪽으로 돌리고, 그다음에 원래 컨테이너를 새 판으로 다시 만든다. 바꾸는
+# 동안 요청을 받아 줄 컨테이너가 항상 하나 있으므로 공개 요청이 끊기지
+# 않는다. 실패하면 임시 컨테이너만 지우고 상류는 원래 자리로 되돌린다.
+# 상류를 갈아 끼우는 자리. compose 는 이 값을 env 파일에서 읽고 이 스크립트는
+# 그 파일을 자기 환경으로 들이지 않으므로, 같은 자리에서 같은 값을 직접 찾는다.
+# 두 곳이 어긋나면 파일은 써지는데 관문은 읽지 않아 교체가 조용히 헛돈다.
+upstream_directory() {
+  local value=${PROXY_UPSTREAMS_DIR:-}
+  [ -n "$value" ] || value=$(sed -n 's/^PROXY_UPSTREAMS_DIR=//p' "$1" | tail -1)
+  [ -n "$value" ] || return 1
+  printf '%s\n' "$value"
+}
+
+rollover_up() {
+  local upstreams
+  if ! upstreams=$(upstream_directory "$ENV_FILE"); then
+    echo 'replacement needs PROXY_UPSTREAMS_DIR in the environment file the proxy is built from' >&2
+    return 1
+  fi
+  local origin=${ROLLOVER_PROBE_ORIGIN:?rollover requires the published proxy origin}
+  local service receipt rc=0
+  mkdir -p "$upstreams"
+  # 앞선 실행이 중간에 죽으면 이제 없는 컨테이너를 가리키는 파일이 남는다.
+  # 그대로 두면 새로 뜬 관문이 그 파일을 읽어 모든 요청이 502 가 된다.
+  rm -f "$upstreams"/*.conf
+  # 앞단은 설정을 파일로 물고 있어 컨테이너를 그대로 두면 새 내용을 읽지
+  # 않는다. 관문이 잠깐 다시 서는 동안 요청을 붙들어 두는 것이 그 설정에
+  # 들어 있으므로, 관문에 손대기 전에 먼저 읽힌다. 다시 만들면 그 사이
+  # 바깥 포트가 비므로 다시 만들지 않고 설정만 갈아 끼운다. 배포는 앞단을
+  # 자기 목록에 넣지 않으므로 compose 가 아니라 도는 컨테이너를 직접 찾는다.
+  local entry
+  entry=$(docker ps -q --filter label=com.docker.compose.service=edge | head -1)
+  if [ -n "$entry" ]; then
+    if ! docker exec "$entry" caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile; then
+      echo 'the entry point did not accept its new configuration; replacement is unsafe' >&2
+      return 1
+    fi
+  fi
+  # 관문 자체를 먼저 최신으로 둔다. 상류를 갈아 끼울 자리가 여기에 있다.
+  dc "${PROFILES[@]}" up -d --no-deps --wait --wait-timeout 180 proxy
+  # 서비스끼리는 이제 관문의 내부 창구를 거친다. 그 창구가 이 네트워크의
+  # 주소를 받아 주지 않으면 교체가 끝난 뒤에야 전부 403 으로 드러난다.
+  # 아직 아무것도 바꾸지 않은 지금 한 번 물어본다.
+  if ! dc "${PROFILES[@]}" exec -T agent python3 -c \
+      "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://proxy:8081/hub/health/ready',timeout=5).status==200 else 1)"; then
+    echo 'internal listener did not answer from inside the network; replacement is unsafe' >&2
+    return 1
+  fi
+  # 부르는 쪽을 먼저 바꾼다. 불리는 쪽이 먼저 갈리면, 아직 예전 주소를 들고
+  # 있는 부르는 쪽의 호출이 그 컨테이너가 다시 서는 동안 끊긴다. yolo 는 user 를,
+  # user 는 agent 와 hub 를, agent 는 hub 를 부른다.
+  local services=()
+  [ "$VISION" = 0 ] || services+=(yolo)
+  services+=(user agent hub)
+  for service in "${services[@]}"; do
+    receipt="/var/lib/map-deploy/receipts/rollover-${service}-$(python3 -c 'import uuid; print(uuid.uuid4().hex)').json"
+    mkdir -p /var/lib/map-deploy/receipts
+    if ! dc "${PROFILES[@]}" config --format json | python3 scripts/service-rollover.py \
+        --service "$service" --project "$(dc "${PROFILES[@]}" config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')" \
+        --upstreams "$upstreams" --receipt "$receipt" \
+        --probe "$origin/healthz=200" --probe "$origin/healthz/app=200" \
+        --probe "$origin/api/v1/users/me=401" \
+        --compose "docker compose --env-file $ENV_FILE ${FILES[*]} ${PROFILES[*]}"; then
+      echo "${service} rollover failed; the previous container keeps serving" >&2
+      rc=1
+      break
+    fi
+  done
+  [ "$EDGE" = 0 ] || dc "${PROFILES[@]}" up -d --no-deps --wait --wait-timeout 180 edge dns
+  return $rc
+}
+
 application_up() {
-  if [ -n "${INFRA_IMAGE_BUNDLE:-}" ]; then
+  if [ -n "${CUTOVER_ROLLOVER:-}" ] && [ -n "${INFRA_IMAGE_BUNDLE:-}" ]; then
+    rollover_up
+  elif [ -n "${INFRA_IMAGE_BUNDLE:-}" ]; then
     # PostgreSQL/Redis were checked above. Updating applications must not recreate
     # their containers merely because the image spelling changed from tag to ID.
     local services=(user agent hub proxy)
@@ -298,13 +459,16 @@ fi
 #
 # 콘솔에 필요한 저장소 역할과 스키마 소유권은 위의 초기화 재적용 단계에서
 # 이미 맞춰졌다. 콘솔 자신의 표는 컨테이너가 뜨면서 스스로 손질한다.
-if [ "$ADMIN" = 1 ]; then
+if [ "$ADMIN" = 1 ] || [ "$TARGET_ONLY" = 1 ]; then
   echo
   echo "[$LABEL] 콘솔 기동"
   if ! dca "${ADMIN_PROFILES[@]}" up -d --wait --wait-timeout 180; then
     echo "콘솔이 정해진 시간 안에 정상이 되지 않았다." >&2
     echo "서비스 스택은 이미 서 있다 — 콘솔만 다시 보면 된다:" >&2
     echo "  docker compose --env-file $ENV_FILE ${ADMIN_FILES[*]} logs admin" >&2
+    # 서비스 스택은 이미 서 있다. 콘솔만의 실패를 서비스 실패와 같은 값으로
+    # 돌려주면 수령자가 공개 진입점을 닫는다. 다른 값으로 구분해서 알린다.
+    exit 3
     dca ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}' >&2
     exit 1
   fi
@@ -312,7 +476,7 @@ fi
 
 echo
 dc ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}\t{{.Image}}'
-if [ "$ADMIN" = 1 ]; then
+if [ "$ADMIN" = 1 ] || [ "$TARGET_ONLY" = 1 ]; then
   dca ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}\t{{.Image}}'
 fi
 

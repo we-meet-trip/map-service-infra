@@ -103,7 +103,7 @@ def upload(files, remote, endpoint=""):
     if remote.startswith("s3://"):
         if not re.fullmatch(r"https://[A-Za-z0-9.-]+(?::[0-9]+)?", endpoint):
             raise BackupError("explicit HTTPS BACKUP_S3_ENDPOINT required")
-        if not re.fullmatch(r"s3://[a-z0-9][a-z0-9.-]+(?:/[A-Za-z0-9_./-]*)?", remote):
+        if not re.fullmatch(r"s3://[a-z0-9][a-z0-9.-]+(?:/[A-Za-z0-9_./-]*)?", remote) or '..' in remote.split('/'):
             raise BackupError("invalid S3 destination")
         for path in files:
             destination = remote.rstrip("/") + "/" + path.name
@@ -115,6 +115,23 @@ def upload(files, remote, endpoint=""):
                           "--output", "text"], stdout=subprocess.PIPE, text=True)
             if result.stdout.strip() != str(path.stat().st_size):
                 raise BackupError("remote backup size mismatch")
+            # Multipart ETag and ContentLength cannot establish byte integrity.
+            # Stream the actual remote object, and publish the manifest only after
+            # each preceding data object has passed this check.
+            process = subprocess.Popen(
+                ["aws", "--endpoint-url", endpoint, "s3", "cp", destination, "-",
+                 "--only-show-errors"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            digest = hashlib.sha256()
+            try:
+                for block in iter(lambda: process.stdout.read(1024 * 1024), b""):
+                    digest.update(block)
+                process.stdout.close()
+                if process.wait() or digest.hexdigest() != checksum(path):
+                    raise BackupError("remote S3 backup checksum mismatch")
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait()
         return
     match = re.fullmatch(r"([A-Za-z0-9_.-]+@[A-Za-z0-9.-]+):(/[A-Za-z0-9_./-]+)", remote)
     if not match or ".." in match[2].split("/"):

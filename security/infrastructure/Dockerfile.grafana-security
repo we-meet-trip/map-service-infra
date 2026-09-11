@@ -1,0 +1,38 @@
+# Core-only candidate: all thirteen external catalog plugin signatures remain intact.
+ARG BASE=grafana/grafana@sha256:1dec240d14e232597dce9bfa56dae55f4397b138cdc91e3ee92ac6b157e2fc49
+FROM golang@sha256:bc6beb46032d45f421cf400036bf031cdc64f683ba9cdc124e31d063e71670bd AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY grafana-core-security /recipe
+ARG SOURCE_SHA
+RUN python3 /recipe/build.py --build --source-dir /src/grafana --output /out \
+    --candidate-source-sha "$SOURCE_SHA"
+
+FROM ${BASE} AS preserved
+ARG BASE
+USER 0
+RUN set -eu; set -o pipefail; \
+    test "$BASE" = 'grafana/grafana@sha256:1dec240d14e232597dce9bfa56dae55f4397b138cdc91e3ee92ac6b157e2fc49' \
+    && mkdir -p /usr/share/map-security/grafana-core \
+    && for plugin in elasticsearch prometheus tempo zipkin opentsdb stackdriver mssql jaeger loki mysql influxdb grafana-postgresql-datasource grafana-pyroscope-datasource; do \
+         test -f "/usr/share/grafana/data/plugins-bundled/$plugin/plugin.json" \
+         && test -f "/usr/share/grafana/data/plugins-bundled/$plugin/MANIFEST.txt" || exit 1; \
+       done \
+    && find /usr/share/grafana/public /usr/share/grafana/data/plugins-bundled -type f -exec sha256sum '{}' + \
+       | LC_ALL=C sort > /usr/share/map-security/grafana-core/preserved-files-before.sha256
+
+FROM preserved
+ARG SOURCE_SHA
+ARG RUNTIME_USER=472
+USER 0
+RUN test "$RUNTIME_USER" = '472' && apk upgrade --no-cache
+COPY --from=builder --chmod=755 /out/grafana /usr/share/grafana/bin/grafana
+COPY --from=builder /out/evidence/ /usr/share/map-security/grafana-core/
+RUN set -eu; set -o pipefail; \
+    find /usr/share/grafana/public /usr/share/grafana/data/plugins-bundled -type f -exec sha256sum '{}' + \
+      | LC_ALL=C sort > /usr/share/map-security/grafana-core/preserved-files-after.sha256 \
+    && cmp /usr/share/map-security/grafana-core/preserved-files-before.sha256 /usr/share/map-security/grafana-core/preserved-files-after.sha256
+LABEL org.opencontainers.image.revision=$SOURCE_SHA \
+      map.security.candidate="grafana-core-only-plugin-findings-retained" \
+      map.security.grafana.upstream-source="56cd3e9288d8255fecebe5d05b48d191f50674b5"
+USER ${RUNTIME_USER}

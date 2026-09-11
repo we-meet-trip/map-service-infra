@@ -1,0 +1,11 @@
+[Unit]
+Description=MAP NCP production redis half-hour backup schedule
+
+[Timer]
+OnCalendar=*-*-* *:15,45:00
+Persistent=true
+AccuracySec=1s
+Unit=map-prod-redis-backup.service
+
+[Install]
+WantedBy=timers.target

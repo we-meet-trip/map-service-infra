@@ -5,9 +5,11 @@ import hashlib
 import importlib.util
 import io
 import json
+import shutil
 import os
 from pathlib import Path
 import re
+import ssl
 import stat
 import sys
 import tempfile
@@ -15,6 +17,7 @@ import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import urllib.error
 import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -94,8 +97,9 @@ class ArtifactTests(BundleFixture, unittest.TestCase):
             return {"artifacts": [artifact]} if "/artifacts?" in path else metadata
         return metadata, artifact, get
 
-    def prepare(self, getter, automatic=False):
-        args = SimpleNamespace(run_id="123", output=self.root / "verified", automatic=automatic)
+    def prepare(self, getter, automatic=False, target_environment=None):
+        args = SimpleNamespace(run_id="123", output=self.root / "verified", automatic=automatic,
+                               target_environment=target_environment)
         with patch.dict(os.environ, {"GH_TOKEN": "synthetic-token"}), patch.object(deploy, "github_get", getter):
             deploy.prepare(args)
         return args.output
@@ -105,6 +109,21 @@ class ArtifactTests(BundleFixture, unittest.TestCase):
         output = self.prepare(getter)
         self.assertTrue((output / "transport.json").is_file())
         deploy.unpack_payload((output / "transport.json").read_bytes(), self.target)
+
+    def test_master_release_cannot_be_prepared_for_gcp_test(self):
+        data = fixtures.fixture()
+        data["source_ref"] = "master"
+        _, _, getter = self.github(data)
+        with self.assertRaisesRegex(deploy.DeployError, "deployment source"):
+            self.prepare(getter, target_environment="test")
+        self.assertFalse((self.root / "verified/transport.json").exists())
+
+    def test_master_release_can_be_prepared_for_ncp(self):
+        data = fixtures.fixture()
+        data["source_ref"] = "master"
+        _, _, getter = self.github(data)
+        output = self.prepare(getter, target_environment="prod")
+        self.assertTrue((output / "transport.json").is_file())
 
     def test_artifact_digest_mismatch_blocks_transport(self):
         _, artifact, getter = self.github()
@@ -213,6 +232,10 @@ class InfrastructureTests(BundleFixture, unittest.TestCase):
             admin = any(value.endswith("docker-compose.admin.yml") for value in args)
             project = "map-admin-test" if admin else "map-test"
             config = copy.deepcopy(self.configs[project])
+            if not admin and str(deploy.STATE / "public-restart.yml") in args:
+                for service in deploy.PUBLIC_SERVICES:
+                    if service in config["services"]:
+                        config["services"][service]["restart"] = "no"
             filename = "compose.admin-infrastructure.yml" if admin else "compose.infrastructure.yml"
             override = self.directory / filename
             if str(override) in args:
@@ -307,6 +330,8 @@ class InfrastructureTests(BundleFixture, unittest.TestCase):
         for admin in (False, True):
             args = deploy.compose_command(admin=admin, bundle=self.source, infrastructure=self.directory)
             files = [args[index + 1] for index, value in enumerate(args) if value == "-f"]
+            if not admin:
+                self.assertEqual(Path(files.pop()).name, "public-restart.yml")
             self.assertEqual(Path(files[-1]).parent, self.directory)
             self.assertEqual(Path(files[-2]).parent, self.source)
 
@@ -326,16 +351,321 @@ class InfrastructureTests(BundleFixture, unittest.TestCase):
                 deploy.verify_infrastructure_images(evidence, {})
 
 
+class RollbackPolicyTests(BundleFixture, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.candidate = deploy.candidate_images(fixtures.fixture())
+        self.policy = {"schema_version": 1, "instance_id": deploy.INSTANCE_ID,
+                       "candidate_allowed": [self.candidate], "rollback_verified": []}
+
+    def load(self, value):
+        (self.root / "rollback-policy.json").write_text(value if isinstance(value, str) else json.dumps(value))
+        with patch.object(deploy, "STATE", self.root), patch.object(deploy, "validate_host_metadata"):
+            return deploy.load_rollback_policy(self.candidate)
+
+    def test_valid_candidate_does_not_grant_rollback(self):
+        self.assertEqual(self.load(self.policy)["rollback_verified"], [])
+
+    def test_strict_schema_instance_types_and_six_digest_tuple(self):
+        variants = []
+        for key in self.policy:
+            value = copy.deepcopy(self.policy); del value[key]; variants.append(value)
+        variants += [{**self.policy, "extra": True}, {**self.policy, "schema_version": True},
+                     {**self.policy, "instance_id": "other"}, {**self.policy, "candidate_allowed": []},
+                     {**self.policy, "rollback_verified": {}},
+                     {**self.policy, "candidate_allowed": [self.candidate, self.candidate]}]
+        for field in ("candidate_allowed", "rollback_verified"):
+            for bad_tuple in ({"user": self.candidate["user"]},
+                              {**self.candidate, "extra": "bad"},
+                              {**self.candidate, "user": "attacker/user@sha256:" + "a" * 64},
+                              {**self.candidate, "user": self.candidate["user"].split("@")[0] + ":latest"},
+                              {**self.candidate, "user": None}):
+                variants.append({**self.policy, field: [bad_tuple]})
+        for value in variants:
+            with self.subTest(value=value), self.assertRaises(deploy.DeployError):
+                self.load(value)
+
+    def test_duplicate_json_keys_at_root_or_nested_are_rejected(self):
+        raw = json.dumps(self.policy)
+        for value in (raw.replace('"schema_version": 1', '"schema_version": 1, "schema_version": 1'),
+                      raw.replace('"user":', '"user": "discarded", "user":', 1)):
+            with self.assertRaises(deploy.DeployError):
+                self.load(value)
+
+    def test_metadata_requires_root_regular_exact_mode(self):
+        for mode in (0o600, 0o644):
+            deploy.validate_host_metadata(SimpleNamespace(st_mode=stat.S_IFREG | mode, st_uid=0))
+        for mode, uid in ((0o600, 501), (0o666, 0), (0o640, 0), (0o400, 0), (0o755, 0)):
+            with self.assertRaises(deploy.DeployError):
+                deploy.validate_host_metadata(SimpleNamespace(st_mode=stat.S_IFREG | mode, st_uid=uid))
+        with self.assertRaises(deploy.DeployError):
+            deploy.validate_host_metadata(SimpleNamespace(st_mode=stat.S_IFLNK | 0o600, st_uid=0))
+
+    def test_state_directory_cannot_be_symlink_or_nonroot_writable(self):
+        deploy.validate_state_directory(SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=0))
+        for mode, uid in ((stat.S_IFLNK | 0o700, 0), (stat.S_IFDIR | 0o777, 0), (stat.S_IFDIR | 0o700, 501)):
+            with self.assertRaises(deploy.DeployError):
+                deploy.validate_state_directory(SimpleNamespace(st_mode=mode, st_uid=uid))
+
+    def test_symlink_and_oversized_policy_rejected_without_following(self):
+        other = self.root / "other"
+        other.write_text(json.dumps(self.policy))
+        link = self.root / "rollback-policy.json"
+        link.symlink_to(other)
+        with patch.object(deploy, "STATE", self.root), patch.object(deploy, "validate_host_metadata"):
+            with self.assertRaises(deploy.DeployError):
+                deploy.load_rollback_policy(self.candidate)
+        link.unlink()
+        with self.assertRaises(deploy.DeployError):
+            self.load(" " * 65537)
+
+    def test_prior_requires_every_actual_local_identity(self):
+        for filename, services in (("compose.images.yml", deploy.release.SERVICES[:4]),
+                                   ("compose.admin-images.yml", deploy.release.SERVICES[4:])):
+            (self.target / filename).write_text("services:\n" + "".join(
+                f"  {service}:\n    build: !reset null\n    image: sha256:{'e' * 64}\n    pull_policy: never\n" for service in services))
+        policy = {**self.policy, "rollback_verified": [self.candidate]}
+        with patch.object(deploy, "command", return_value="sha256:" + "e" * 64) as run:
+            self.assertTrue(deploy.prior_rollback_compatible(policy, self.target, {}))
+            self.assertEqual(run.call_count, 6)
+            self.assertTrue(all(call.args[0][:3] == ["docker", "image", "inspect"] for call in run.call_args_list))
+        for failure in ("sha256:" + "f" * 64, deploy.DeployError("local image unavailable")):
+            effects = ["sha256:" + "e" * 64] * 5 + [failure]
+            with patch.object(deploy, "command", side_effect=effects):
+                self.assertFalse(deploy.prior_rollback_compatible(policy, self.target, {}))
+        (self.target / "compose.admin-images.yml").unlink()
+        with patch.object(deploy, "command") as run:
+            self.assertFalse(deploy.prior_rollback_compatible(policy, self.target, {}))
+            run.assert_not_called()
+
+    def test_candidate_only_does_not_resolve_local_rollback_images(self):
+        with patch.object(deploy, "command") as run:
+            self.assertFalse(deploy.prior_rollback_compatible(self.policy, self.target, {}))
+            run.assert_not_called()
+
+    def test_stop_failure_still_attempts_other_three_and_verifies_all(self):
+        seen, stopped = [], []
+        def running(service, _env):
+            seen.append(service)
+            return [hashlib.sha256(service.encode()).hexdigest()[:12]]
+        def stop(args, **kwargs):
+            stopped.append(args[-1])
+            if len(stopped) == 1:
+                raise deploy.DeployError("stop failed")
+        with patch.object(deploy, "running_service_ids", side_effect=running), patch.object(deploy, "command", side_effect=stop):
+            with self.assertRaises(deploy.DeployError):
+                deploy.stop_public_services({})
+        self.assertEqual(len(stopped), 4)
+        self.assertEqual(seen, list(deploy.PUBLIC_SERVICES) * 2)
+
+
+class PublicReadinessTests(unittest.TestCase):
+    class Clock:
+        def __init__(self):
+            self.now = 0.0
+            self.sleeps = []
+        def monotonic(self):
+            return self.now
+        def sleep(self, seconds):
+            self.sleeps.append(seconds)
+            self.now += seconds
+
+    def test_cold_connection_and_transient_gateway_then_real_readiness(self):
+        clock, output = self.Clock(), io.StringIO()
+        responses = [ConnectionRefusedError(deploy.errno.ECONNREFUSED, "private transport detail"),
+                     (503, b"private body"), (200, b"ok"), (200, b'{"status":"UP"}'), (401, b"")]
+        with patch.object(deploy, "http_response", side_effect=responses) as request, \
+             patch.object(deploy.time, "monotonic", clock.monotonic), patch.object(deploy.time, "sleep", clock.sleep), \
+             contextlib.redirect_stdout(output):
+            deploy.wait_public_readiness(90)
+        self.assertEqual(request.call_count, 5)
+        self.assertEqual(clock.sleeps, [0.25, 0.5])
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual([event["phase"] for event in events], ["public_probe_retry"] * 2 + ["public_probe_pass"] * 3)
+        self.assertEqual([event["error_kind"] for event in events[:2]], ["connection", "upstream_unavailable"])
+        self.assertTrue(all(set(event) == {"phase", "alias", "status", "error_kind"} for event in events))
+        self.assertNotIn("private", output.getvalue())
+        self.assertNotIn("http", output.getvalue())
+
+    def test_each_transient_status_is_retried_but_never_grants_pass(self):
+        for code in (502, 503, 504):
+            clock = self.Clock()
+            with self.subTest(code=code), patch.object(deploy, "http_response", return_value=(code, b"")), \
+                 patch.object(deploy.time, "monotonic", clock.monotonic), patch.object(deploy.time, "sleep", clock.sleep), \
+                 contextlib.redirect_stdout(io.StringIO()), self.assertRaises(deploy.SmokeDeadline):
+                deploy.wait_public_readiness(3)
+            self.assertEqual(clock.now, 3)
+
+    def test_tls_404_redirect_and_unknown_transport_fail_without_sleep(self):
+        # A plain handshake failure is waited out instead; it is covered separately.
+        cases = [(404, b""), (301, b""),
+                 deploy.urllib.error.URLError(deploy.ssl.SSLCertVerificationError(1, "private certificate detail")),
+                 deploy.urllib.error.URLError("private unclassified detail")]
+        for response in cases:
+            kwargs = {"side_effect": response} if isinstance(response, Exception) else {"return_value": response}
+            output = io.StringIO()
+            with self.subTest(response=type(response).__name__), patch.object(deploy, "http_response", **kwargs) as request, \
+                 patch.object(deploy.time, "sleep") as sleep, contextlib.redirect_stdout(output), \
+                 self.assertRaises(deploy.PublicProbeError):
+                deploy.wait_public_readiness(deploy.time.monotonic() + 90)
+            self.assertEqual(request.call_count, 1)
+            sleep.assert_not_called()
+            self.assertNotIn("private", output.getvalue())
+
+    def test_authentication_200_is_security_failure_without_retry(self):
+        responses = [(200, b"ok"), (200, b'{"status":"UP"}'), (200, b"private account body")]
+        output = io.StringIO()
+        with patch.object(deploy, "http_response", side_effect=responses), patch.object(deploy.time, "sleep") as sleep, \
+             contextlib.redirect_stdout(output), self.assertRaises(deploy.PublicProbeError) as raised:
+            deploy.wait_public_readiness(deploy.time.monotonic() + 90)
+        self.assertEqual(raised.exception.kind, "authentication_mismatch")
+        self.assertFalse(raised.exception.retryable)
+        sleep.assert_not_called()
+        self.assertNotIn("private account body", output.getvalue())
+
+    def test_readiness_wrong_or_malformed_body_is_not_retried(self):
+        for body in (b'{"status":"DOWN"}', b'{"status":"UNKNOWN"}', b'[]', b'not json'):
+            with self.subTest(body=body), patch.object(deploy, "http_response", side_effect=[(200, b""), (200, body)]), \
+                 patch.object(deploy.time, "sleep") as sleep, contextlib.redirect_stdout(io.StringIO()), \
+                 self.assertRaises(deploy.PublicProbeError):
+                deploy.wait_public_readiness(deploy.time.monotonic() + 90)
+            sleep.assert_not_called()
+
+    def test_a_handshake_that_fails_while_the_entry_point_is_starting_is_waited_out(self):
+        # A freshly started entry point answers its first requests with a
+        # handshake failure. Treating that as final ended a healthy deployment
+        # and closed the public entry points with most of the budget unused.
+        error = urllib.error.URLError(ssl.SSLError(1, "record layer failure"))
+        responses = [error, error, (200, b"ok"), (200, b'{"status":"UP"}'), (401, b"")]
+        output = io.StringIO()
+        with patch.object(deploy, "http_response", side_effect=responses), \
+             patch.object(deploy.time, "sleep") as sleep, contextlib.redirect_stdout(output):
+            deploy.wait_public_readiness(deploy.time.monotonic() + 90)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertIn("public_probe_retry", output.getvalue())
+        self.assertIn("tls_error", output.getvalue())
+        self.assertNotIn("record layer", output.getvalue())
+
+    def test_a_certificate_that_does_not_identify_this_host_still_fails_at_once(self):
+        error = urllib.error.URLError(ssl.SSLCertVerificationError(1, "hostname mismatch"))
+        with patch.object(deploy, "http_response", side_effect=[error]), \
+             patch.object(deploy.time, "sleep") as sleep, contextlib.redirect_stdout(io.StringIO()), \
+             self.assertRaises(deploy.PublicProbeError) as raised:
+            deploy.wait_public_readiness(deploy.time.monotonic() + 90)
+        self.assertEqual(raised.exception.kind, "tls_verification")
+        self.assertFalse(raised.exception.retryable)
+        sleep.assert_not_called()
+
+    def test_a_listener_that_never_completes_a_handshake_still_ends_the_deployment(self):
+        error = urllib.error.URLError(ssl.SSLError(1, "record layer failure"))
+        output = io.StringIO()
+        with patch.object(deploy, "http_response", side_effect=error), \
+             patch.object(deploy.time, "sleep"), contextlib.redirect_stdout(output), \
+             self.assertRaises(deploy.SmokeDeadline):
+            deploy.wait_public_readiness(deploy.time.monotonic() - 1)
+        self.assertIn("deadline", output.getvalue())
+
+    def test_timeout_retries_inside_same_deadline(self):
+        clock = self.Clock()
+        with patch.object(deploy, "http_response", side_effect=TimeoutError("private timeout")), \
+             patch.object(deploy.time, "monotonic", clock.monotonic), patch.object(deploy.time, "sleep", clock.sleep), \
+             contextlib.redirect_stdout(io.StringIO()), self.assertRaises(deploy.SmokeDeadline):
+            deploy.wait_public_readiness(90)
+        self.assertEqual(clock.now, 90)
+        self.assertLessEqual(max(clock.sleeps), 2)
+
+    def test_deadline_cannot_reset_per_probe_or_pass_after_late_response(self):
+        clock = self.Clock()
+        def late(_url, timeout):
+            self.assertEqual(timeout, 10)
+            clock.now += 95
+            return 200, b"ok"
+        with patch.object(deploy, "http_response", side_effect=late) as request, \
+             patch.object(deploy.time, "monotonic", clock.monotonic), contextlib.redirect_stdout(io.StringIO()), \
+             self.assertRaises(deploy.SmokeDeadline):
+            deploy.wait_public_readiness(90)
+        self.assertEqual(request.call_count, 1)
+
+    def test_full_smoke_private_recheck_consumes_same_public_budget(self):
+        clock, calls = self.Clock(), []
+        def response(url, timeout):
+            calls.append((url, timeout))
+            if url.startswith(deploy.PUBLIC_URL):
+                self.assertLessEqual(timeout, 1.000001)
+                return 503, b""
+            # Nine existing private checks total 89 seconds in this simulation.
+            clock.now += 89 / 9
+            return (401 if url.endswith("/me") else 200), b'{"status":"UP"}'
+        with patch.object(deploy, "ADMIN_DETACHED", False), patch.object(deploy, "http_response", side_effect=response), \
+             patch.object(deploy.time, "monotonic", clock.monotonic), patch.object(deploy.time, "sleep", clock.sleep), \
+             contextlib.redirect_stdout(io.StringIO()), self.assertRaises(deploy.SmokeDeadline):
+            deploy.smoke()
+        self.assertAlmostEqual(clock.now, 90)
+        self.assertEqual(sum(not url.startswith(deploy.PUBLIC_URL) for url, _ in calls), 9)
+
+    def test_alarm_bounds_blocking_io_and_restores_original_handler(self):
+        before = deploy.signal.getsignal(deploy.signal.SIGALRM)
+        with self.assertRaises(deploy.SmokeDeadline):
+            with deploy.smoke_deadline(deploy.time.monotonic() + 90):
+                deploy.signal.raise_signal(deploy.signal.SIGALRM)
+        self.assertEqual(deploy.signal.getsignal(deploy.signal.SIGALRM), before)
+        self.assertEqual(deploy.signal.getitimer(deploy.signal.ITIMER_REAL), (0.0, 0.0))
+
+    def test_private_only_smoke_does_not_retry_or_install_public_deadline(self):
+        with patch.object(deploy, "http_response", return_value=(503, b"")), \
+             patch.object(deploy, "wait_public_readiness") as wait, patch.object(deploy, "smoke_deadline") as deadline, \
+             self.assertRaises(deploy.DeployError):
+            deploy.smoke(include_public=False)
+        wait.assert_not_called()
+        deadline.assert_not_called()
+
+
 class ReceiverTests(BundleFixture, unittest.TestCase):
-    def scenario(self, failure=""):
+    def setUp(self):
+        super().setUp()
+        data = fixtures.fixture()
+        data["source_ref"] = "develop"
+        deploy.release.write_bundle(self.source, data)
+        self.payload["files"] = {
+            name: base64.b64encode((self.source / name).read_bytes()).decode()
+            for name in deploy.ARTIFACT_FILES}
+
+    def scenario(self, failure="", *, verified=True, interrupted=False, policy_fault="", console_exit=0, rollover=False):
+        prior_phase = interrupted if isinstance(interrupted, str) else "opening_ingress"
         repo = self.root / "repo"
         repo.mkdir()
+        (repo / "scripts").mkdir()
+        (repo / "scripts/cloud-up.sh").write_text("# MAP_CUTOVER_SUPERVISOR_VERSION=1\n" +
+            ("" if failure == "missing_migrator" else "# MAP_USER_STANDALONE_MIGRATION_VERSION=1\n") +
+            ("" if failure == "missing_service_migrator" else "# MAP_SERVICE_MIGRATION_VERSION=1\n") +
+            ("" if failure == "missing_rollover_contract" else "# MAP_ROLLOVER_VERSION=1\n"))
         env_path = repo / ".env.test"
         original = b"MAP_STACK_ENV=test\nIMAGE_TAG=old\nPOSTGRES_PASSWORD=synthetic-private\n"
         env_path.write_bytes(original)
         (repo / ".env.testyuy").write_text("preserve-existing-local-file")
+        state = self.root / "state"
+        state.mkdir()
+        candidate = deploy.candidate_images(fixtures.fixture())
+        policy = {"schema_version": 1, "instance_id": deploy.INSTANCE_ID,
+                  "candidate_allowed": [candidate], "rollback_verified": [candidate] if verified else []}
+        if policy_fault == "candidate":
+            policy["candidate_allowed"][0] = {**candidate, "user": candidate["user"][:-64] + "0" * 64}
+        if policy_fault != "missing":
+            (state / "rollback-policy.json").write_text(json.dumps(policy))
+        if rollover:
+            (state / "rollover.json").write_text(json.dumps(
+                {"schema_version": 1, "instance_id": deploy.INSTANCE_ID, "enabled": True}))
+        if interrupted:
+            (state / "security-cutover.json").write_text(json.dumps({
+                "schema_version": 1, "instance_id": deploy.INSTANCE_ID, "phase": prior_phase,
+                "run_id": "122", "infra_sha": "f" * 40, "bundle": "/private/prior/bundle",
+                "candidate": candidate, "prior_rollback_compatible": True}))
+        self.policy_before = (state / "rollback-policy.json").read_bytes() if not policy_fault else None
         self.calls = []
         current_sha = ["f" * 40]
+        known = set(deploy.release.SERVICES) | {"edge", "proxy", "dns"}
+        ids = {service: hashlib.sha256(service.encode()).hexdigest()[:12] for service in known}
+        self.running = set(known)
         def fake_git(*args):
             self.calls.append(("git", *args))
             if args == ("rev-parse", "HEAD"):
@@ -345,20 +675,64 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
             return ""
         def fake_command(args, **_kwargs):
             self.calls.append(tuple(args))
-            if "scripts/cloud-up.sh" in args:
-                self.deployment_env = _kwargs["env"]
             if args[:2] == ["docker", "ps"]:
-                return "a" * 12 if "label=com.docker.compose.service=user" in args else ""
-            if args[:2] == ["docker", "inspect"]:
+                labels = [value for value in args if value.startswith("label=com.docker.compose.service=")]
+                if not labels:
+                    # Any other filter, such as the label a replacement puts on the
+                    # temporary copies it creates, matches nothing here.
+                    return ""
+                service = labels[0].split("=", 2)[-1]
+                return ids[service] if service in known and ("-a" in args or service in self.running) else ""
+            if args[:2] == ["docker", "inspect"] or args[:3] == ["docker", "image", "inspect"]:
                 return "sha256:" + "e" * 64
+            if args[:2] == ["docker", "stop"]:
+                self.running -= {service for service, identity in ids.items() if identity in args}
+            if args[-1] == "heads":
+                return "0002_accounts (head)"
             if failure == "backup" and "scripts/pg-backup.sh" in args:
                 raise deploy.DeployError("synthetic-private")
-            if failure == "admin" and "scripts/cloud-up.sh" in args:
-                raise deploy.DeployError("synthetic-private")
+            if "scripts/cloud-up.sh" in args:
+                self.deployment_env = _kwargs["env"]
+                if rollover:
+                    # The entry point must still be serving while services are replaced.
+                    self.assertIn("edge", self.running)
+                else:
+                    self.assertNotIn("edge", self.running)
+                self.assertNotIn("--edge", args)
+                self.assertEqual(json.loads((state / "security-cutover.json").read_text())["phase"],
+                                 "rollover" if rollover else "starting_private")
+                self.running |= set(deploy.release.SERVICES) | {"proxy"}
+                if failure == "interrupt":
+                    raise KeyboardInterrupt()
+                if failure in ("admin", "cloud-up", "traffic_return"):
+                    raise deploy.DeployError("synthetic-private")
+            if args[:2] == ["docker", "compose"] and "up" in args:
+                selected = args[args.index("--wait-timeout") + 2:]
+                self.running |= set(selected)
             return ""
-        def fake_smoke():
-            if failure == "smoke":
+        def fake_smoke(*, include_public=True):
+            self.calls.append(("smoke", include_public))
+            # Replacing one service at a time keeps the entry point open throughout,
+            # so the private check legitimately runs while it is still serving.
+            self.assertEqual("edge" in self.running, include_public or rollover)
+            if current_sha[0] != "f" * 40 and (failure == "smoke" or (failure == "public_smoke" and include_public)):
                 raise deploy.DeployError("synthetic-private")
+            if failure == "public_alarm" and include_public:
+                self.blocked_response_returned = False
+                def blocked_response(_url, _timeout):
+                    time.sleep(1)
+                    self.blocked_response_returned = True
+                    return 200, b"ok"
+                deadline = time.monotonic() + 0.01
+                with patch.object(deploy, "http_response", side_effect=blocked_response), deploy.smoke_deadline(deadline):
+                    deploy.wait_public_readiness(deadline)
+            if failure in ("public_deadline", "public_auth_mismatch") and include_public:
+                clock = PublicReadinessTests.Clock()
+                responses = [(200, b"ok"), (200, b'{"status":"UP"}'), (200, b"private account")]
+                kwargs = {"return_value": (503, b"")} if failure == "public_deadline" else {"side_effect": responses}
+                with patch.object(deploy, "http_response", **kwargs), patch.object(deploy.time, "monotonic", clock.monotonic), \
+                     patch.object(deploy.time, "sleep", clock.sleep):
+                    deploy.wait_public_readiness(90)
         def fake_preflight(*args, **kwargs):
             if failure == "preflight":
                 raise deploy.DeployError("synthetic-private")
@@ -369,22 +743,48 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
             self.calls.append(("prepare_infrastructure",))
             directory.mkdir()
             (directory / "images.json").write_text("{}")
-            return {}
+            return {"projects": {"map-test": {}, "map-admin-test": {}}}
         def fake_verify(*args):
             if failure == "infrastructure":
                 raise deploy.DeployError("synthetic-private")
         output = io.StringIO()
         old_umask = os.umask(0o077)
         try:
-            with patch.object(deploy, "REPO", repo), patch.object(deploy, "STATE", self.root / "state"), \
-                 patch.object(deploy, "verify_instance"), patch.object(deploy, "backup_environment", return_value={}), \
-                 patch.object(deploy, "git", side_effect=fake_git), patch.object(deploy, "command", side_effect=fake_command), \
-                 patch.object(deploy, "preflight", side_effect=fake_preflight), patch.object(deploy, "smoke", side_effect=fake_smoke), \
-                 patch.object(deploy, "capture_infrastructure", side_effect=fake_capture), \
-                 patch.object(deploy, "prepare_infrastructure", side_effect=fake_prepare), \
-                 patch.object(deploy, "verify_infrastructure_images", side_effect=fake_verify), \
-                 contextlib.redirect_stdout(output):
-                if failure:
+            # A single with-statement over this many context managers exceeds
+            # CPython's nested-block limit, so they are entered one at a time.
+            with contextlib.ExitStack() as stack:
+                for patched in (
+                        patch.object(deploy, "REPO", repo), patch.object(deploy, "STATE", state),
+                        patch.object(deploy, "validate_host_metadata"),
+                        patch.object(deploy, "validate_state_directory"),
+                        patch.object(deploy, "verify_instance"),
+                        patch.object(deploy, "backup_environment", return_value={}),
+                        patch.object(deploy.shutil, "disk_usage",
+                                     return_value=shutil._ntuple_diskusage(
+                                         100 * 1024 ** 3, 99 * 1024 ** 3,
+                                         1024 ** 3 if failure == "disk" else 40 * 1024 ** 3)),
+                        patch.object(deploy, "git", side_effect=fake_git),
+                        patch.object(deploy, "command", side_effect=fake_command),
+                        patch.object(deploy, "command_status",
+                                     side_effect=lambda args, **kw: (console_exit, fake_command(
+                                         args, **{k: v for k, v in kw.items() if k != "accept"}))),
+                        patch.object(deploy, "preflight", side_effect=fake_preflight),
+                        patch.object(deploy, "smoke", side_effect=fake_smoke),
+                        patch.object(deploy, "capture_infrastructure", side_effect=fake_capture),
+                        patch.object(deploy, "prepare_infrastructure", side_effect=fake_prepare),
+                        patch.object(deploy, "verify_infrastructure_images", side_effect=fake_verify),
+                        patch.object(deploy.cutover_guard, "require_receiver_scope"),
+                        patch.object(deploy.cutover_guard, "require_enrolled"),
+                        patch.object(deploy.cutover_guard, "write_ready_receipt"),
+                        patch.object(deploy.cutover_guard, "require_public_restart"),
+                        patch.object(deploy.cutover_guard, "return_to_canonical",
+                                     return_value=None if failure == "traffic_return" else {"removed": []}),
+                        contextlib.redirect_stdout(output)):
+                    stack.enter_context(patched)
+                if failure == "interrupt":
+                    with self.assertRaises(deploy.DeployError):
+                        deploy.receive(json.dumps(self.payload).encode())
+                elif failure or policy_fault:
                     with self.assertRaises(deploy.DeployError):
                         deploy.receive(json.dumps(self.payload).encode())
                 else:
@@ -393,10 +793,104 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
             os.umask(old_umask)
         self.assertNotIn("synthetic-private", output.getvalue())
         self.assertEqual((repo / ".env.testyuy").read_text(), "preserve-existing-local-file")
-        if failure:
+        if (failure and failure != "interrupt" and verified and not interrupted) or failure in ("preflight", "backup") or policy_fault:
             self.assertEqual(env_path.read_bytes(), original)
             self.assertEqual(current_sha[0], "f" * 40)
+        elif failure:
+            self.assertIn(("IMAGE_TAG=" + fixtures.fixture()["release_tag"]).encode(), env_path.read_bytes())
+            self.assertEqual(current_sha[0], fixtures.fixture()["infra_sha"])
+        if not policy_fault:
+            self.assertEqual((state / "rollback-policy.json").read_bytes(), self.policy_before)
         return output.getvalue()
+
+    def test_replacing_one_service_at_a_time_never_closes_the_entry_point(self):
+        output = self.scenario(rollover=True)
+        self.assertIn("rollover_started", output)
+        self.assertIn("deploy_complete", output)
+        # The entry point is neither stopped at the start nor started at the end.
+        self.assertFalse(any("stop" in c and "edge" in str(c) for c in self.calls))
+        self.assertFalse(any(isinstance(c, tuple) and "up" in c and "edge" in c for c in self.calls))
+        self.assertEqual(self.deployment_env.get("CUTOVER_ROLLOVER"), "1")
+        self.assertEqual(self.deployment_env.get("ROLLOVER_PROBE_ORIGIN"), deploy.PRIVATE_ORIGIN)
+
+    def test_replacement_refuses_a_source_that_lacks_the_contract(self):
+        output = self.scenario("missing_rollover_contract", rollover=True)
+        self.assertIn("predeploy_state_restored", output)
+        self.assertFalse(any("scripts/cloud-up.sh" in c for c in self.calls))
+
+    def test_the_ordinary_path_is_unchanged_when_no_policy_file_exists(self):
+        output = self.scenario()
+        self.assertIn("deploy_private_started", output)
+        self.assertNotIn("rollover_started", output)
+        self.assertIsNone(self.deployment_env.get("CUTOVER_ROLLOVER"))
+
+    def test_the_next_deployment_after_a_failed_replacement_does_not_close_anything(self):
+        # The previous attempt left the containers serving. Treating that as an
+        # interrupted cutover and closing them would be the outage.
+        output = self.scenario(rollover=True, interrupted="rollover_failed_serving")
+        self.assertIn("interrupted_rollover_returned", output)
+        self.assertNotIn("interrupted_cutover_closed", output)
+        for service in ("edge", "proxy", "user", "yolo"):
+            self.assertIn(service, self.running)
+
+    def test_an_interrupted_replacement_is_recovered_the_same_way(self):
+        output = self.scenario(rollover=True, interrupted="rollover")
+        self.assertIn("interrupted_rollover_returned", output)
+        self.assertNotIn("interrupted_cutover_closed", output)
+
+    def test_any_other_interrupted_phase_still_closes_the_entry_points(self):
+        output = self.scenario(interrupted="opening_ingress")
+        self.assertIn("interrupted_cutover_closed", output)
+
+    def test_the_room_a_deployment_needs_is_stated_as_a_floor(self):
+        usage = shutil._ntuple_diskusage
+        with patch.object(deploy.shutil, "disk_usage",
+                          return_value=usage(100 * 1024 ** 3, 99 * 1024 ** 3, deploy.DISK_FLOOR)):
+            self.assertEqual(deploy.require_headroom(), deploy.DISK_FLOOR)
+        with patch.object(deploy.shutil, "disk_usage",
+                          return_value=usage(100 * 1024 ** 3, 99 * 1024 ** 3, deploy.DISK_FLOOR - 1)):
+            with self.assertRaisesRegex(deploy.DeployError, "insufficient disk"):
+                deploy.require_headroom()
+
+    def test_a_machine_without_room_is_refused_before_anything_changes(self):
+        self.scenario(failure="disk", rollover=True)
+        self.assertFalse(any("scripts/pg-backup.sh" in c for c in self.calls))
+        self.assertFalse(any("scripts/cloud-up.sh" in c for c in self.calls))
+        self.assertFalse(any(c[:2] == ("docker", "stop") for c in self.calls))
+        for service in ("edge", "proxy", "user", "yolo"):
+            self.assertIn(service, self.running)
+
+    def test_a_failed_replacement_keeps_the_version_that_was_serving(self):
+        # Nothing stopped serving during a replacement, so closing the public
+        # entry points here would be the outage rather than the protection.
+        output = self.scenario("cloud-up", verified=False, rollover=True)
+        self.assertIn("rollover_failed_serving", output)
+        self.assertNotIn('"quarantined"', output)
+        for service in ("edge", "proxy", "user", "yolo"):
+            self.assertIn(service, self.running)
+        self.assertFalse(any(c[:2] == ("docker", "stop") for c in self.calls))
+
+    def test_a_failed_replacement_that_cannot_return_traffic_closes_the_entry_points(self):
+        output = self.scenario("traffic_return", verified=False, rollover=True)
+        self.assertIn('"quarantined"', output)
+
+    def test_a_failed_replacement_removes_the_temporary_copies(self):
+        self.scenario("cloud-up", verified=False, rollover=True)
+        self.assertTrue(any(c[:2] == ("docker", "ps")
+                            and any("kr.mapservice.rollover=1" in value for value in c)
+                            for c in self.calls))
+
+    def test_a_console_only_failure_does_not_close_the_entry_points(self):
+        output = self.scenario(console_exit=3)
+        self.assertIn("console_degraded", output)
+        self.assertIn("deploy_complete", output)
+        self.assertNotIn("quarantined", output)
+
+    def test_any_other_failure_from_the_startup_script_is_not_treated_as_console_only(self):
+        # With a verified prior it rolls back; with none it closes the entry points.
+        self.assertIn("rollback_started", self.scenario("cloud-up"))
+        self.setUp()
+        self.assertIn("quarantined", self.scenario("cloud-up", verified=False))
 
     def test_success_requires_prebackup_deploy_and_smoke(self):
         output = self.scenario()
@@ -421,6 +915,15 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
         self.assertIn("predeploy_state_restored", output)
         self.assertFalse(any("scripts/cloud-up.sh" in c for c in self.calls))
 
+    def test_old_infra_without_standalone_migration_is_rejected_before_backup_or_app_start(self):
+        for failure in ("missing_migrator", "missing_service_migrator"):
+            with self.subTest(failure=failure):
+                self.setUp()
+                output = self.scenario(failure)
+                self.assertIn("predeploy_state_restored", output)
+                self.assertFalse(any("scripts/cloud-up.sh" in c or "scripts/pg-backup.sh" in c
+                                     for c in self.calls))
+
     def test_failed_prebackup_never_starts_application(self):
         self.scenario("backup")
         self.assertFalse(any("scripts/cloud-up.sh" in c for c in self.calls))
@@ -433,8 +936,8 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
             self.assertNotIn("downgrade", call)
             self.assertNotIn("down", call)
             self.assertNotIn("prune", call)
-        restore = [c for c in self.calls if "--pull" in c]
-        self.assertEqual(len(restore), 1)
+        restore = [c for c in self.calls if c[:2] == ("docker", "compose") and "up" in c]
+        self.assertEqual(len(restore), 2)
         self.assertIn("never", restore[0])
         self.assertIn("--force-recreate", restore[0])
         self.assertNotIn("postgres", restore[0])
@@ -449,6 +952,114 @@ class ReceiverTests(BundleFixture, unittest.TestCase):
         output = self.scenario("infrastructure")
         self.assertEqual(output.count('"rollback_started"'), 1)
         self.assertNotIn("deploy_complete", output)
+
+    def test_unsafe_admin_failure_quarantines_without_any_previous_up(self):
+        output = self.scenario("admin", verified=False)
+        self.assertIn('"quarantined"', output)
+        self.assertNotIn("rollback_started", output)
+        self.assertFalse(set(deploy.PUBLIC_SERVICES) & self.running)
+        self.assertTrue({"agent", "hub", "admin", "admin-web", "dns"} <= self.running)
+        self.assertFalse(any("up" in call for call in self.calls))
+        for call in self.calls:
+            self.assertFalse({"down", "prune", "rm", "postgres", "redis", "osrm-foot", "osrm-bicycle"} & set(call))
+        latch = json.loads((self.root / "state/security-cutover.json").read_text())
+        self.assertEqual(latch["phase"], "quarantined")
+        self.assertTrue(Path(latch["bundle"]).is_dir())
+        result = json.loads(next((self.root / "state").glob("release-*/result.json")).read_text())
+        self.assertTrue(result["candidate_preserved"])
+
+    def test_unsafe_public_smoke_failure_recloses_all_entrypoints(self):
+        output = self.scenario("public_smoke", verified=False)
+        self.assertIn('"quarantined"', output)
+        self.assertNotIn("rollback_started", output)
+        self.assertFalse(set(deploy.PUBLIC_SERVICES) & self.running)
+        ups = [call for call in self.calls if "up" in call]
+        self.assertEqual(len(ups), 1)
+        self.assertEqual(ups[0][-1], "edge")
+        self.assertIn(("smoke", False), self.calls)
+        self.assertIn(("smoke", True), self.calls)
+
+    def test_actual_public_deadline_quarantines_all_four_without_unsafe_rollback(self):
+        output = self.scenario("public_deadline", verified=False)
+        self.assertIn('"error_kind": "deadline"', output)
+        self.assertIn('"quarantined"', output)
+        self.assertFalse(set(deploy.PUBLIC_SERVICES) & self.running)
+        self.assertNotIn("rollback_started", output)
+
+    def test_real_alarm_interrupts_blocking_probe_and_quarantines_all_four(self):
+        output = self.scenario("public_alarm", verified=False)
+        self.assertFalse(self.blocked_response_returned)
+        self.assertIn('"error_kind": "deadline"', output)
+        self.assertFalse(set(deploy.PUBLIC_SERVICES) & self.running)
+        self.assertNotIn("rollback_started", output)
+        self.assertEqual(deploy.signal.getitimer(deploy.signal.ITIMER_REAL), (0.0, 0.0))
+
+    def test_actual_authentication_mismatch_quarantines_immediately(self):
+        output = self.scenario("public_auth_mismatch", verified=False)
+        self.assertIn('"error_kind": "authentication_mismatch"', output)
+        self.assertNotIn("public_probe_retry", output)
+        self.assertFalse(set(deploy.PUBLIC_SERVICES) & self.running)
+        self.assertNotIn("rollback_started", output)
+
+    def test_interrupted_retry_never_uses_even_allowlisted_partial_prior(self):
+        output = self.scenario("admin", verified=True, interrupted=True)
+        self.assertIn("interrupted_cutover_closed", output)
+        self.assertIn("security_cutover_no_rollback", output)
+        self.assertNotIn("rollback_started", output)
+        self.assertFalse(set(deploy.PUBLIC_SERVICES) & self.running)
+        snapshot_queries = [call for call in self.calls if call[:2] == ("docker", "ps") and "{{.ID}}" in call]
+        self.assertTrue(snapshot_queries)
+        self.assertTrue(all("-a" in call for call in snapshot_queries))
+
+    def test_process_interrupt_retains_latch_and_keeps_edge_closed(self):
+        self.scenario("interrupt", verified=False)
+        latch = json.loads((self.root / "state/security-cutover.json").read_text())
+        self.assertEqual(latch["phase"], "quarantined")
+        self.assertFalse(set(deploy.PUBLIC_SERVICES) & self.running)
+        self.assertFalse((self.root / "state/current.json").exists())
+        self.assertEqual(stat.S_IMODE((self.root / "state/security-cutover.json").stat().st_mode), 0o600)
+
+    def test_missing_policy_is_rejected_without_source_or_docker_commands(self):
+        self.scenario(policy_fault="missing")
+        self.assertEqual(self.calls, [])
+
+    def test_unapproved_candidate_is_rejected_before_fetch_pull_or_mutation(self):
+        self.scenario(policy_fault="candidate")
+        self.assertEqual(self.calls, [])
+
+    def test_unsafe_prebackup_failure_keeps_original_serving_untouched(self):
+        self.scenario("backup", verified=False)
+        self.assertTrue(set(deploy.PUBLIC_SERVICES) <= self.running)
+        self.assertFalse(any(call[:2] == ("docker", "stop") for call in self.calls))
+        self.assertFalse((self.root / "state/security-cutover.json").exists())
+
+    def test_first_success_opens_edge_after_private_checks_without_policy_promotion(self):
+        self.scenario(verified=False)
+        private = self.calls.index(("smoke", False))
+        opening = next(i for i, call in enumerate(self.calls) if "up" in call and call[-1] == "edge")
+        public = self.calls.index(("smoke", True))
+        self.assertLess(private, opening)
+        self.assertLess(opening, public)
+        self.assertEqual(json.loads((self.root / "state/security-cutover.json").read_text())["phase"], "complete")
+        self.assertEqual(json.loads((self.root / "state/rollback-policy.json").read_text())["rollback_verified"], [])
+
+    def test_signal_guard_restores_handlers_and_converts_termination(self):
+        watched = (deploy.signal.SIGTERM, deploy.signal.SIGINT, deploy.signal.SIGHUP)
+        before = {sig: deploy.signal.getsignal(sig) for sig in watched}
+        with self.assertRaisesRegex(deploy.DeployError, "interrupted"):
+            with deploy.interruption_guard():
+                deploy.signal.raise_signal(deploy.signal.SIGTERM)
+        self.assertEqual({sig: deploy.signal.getsignal(sig) for sig in watched}, before)
+
+    def test_command_interrupt_stops_group_before_propagating(self):
+        from unittest.mock import MagicMock
+        process = MagicMock(pid=123456)
+        process.communicate.side_effect = [deploy.DeployError("interrupted"), ("", ""), ("", "")]
+        with patch.object(deploy.subprocess, "Popen", return_value=process), patch.object(deploy.os, "killpg") as kill:
+            with self.assertRaisesRegex(deploy.DeployError, "interrupted"):
+                deploy.command(["synthetic"], cwd=self.root)
+        self.assertEqual([call.args for call in kill.call_args_list],
+                         [(123456, deploy.signal.SIGTERM), (123456, deploy.signal.SIGKILL)])
 
     def test_only_git_checkout_relaxes_child_umask(self):
         with patch.object(deploy, "command") as run:

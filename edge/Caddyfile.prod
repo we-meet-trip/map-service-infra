@@ -1,0 +1,36 @@
+{
+	email {$EDGE_EMAIL}
+}
+
+api.mapservice.app {
+	reverse_proxy proxy:80 {
+		lb_try_duration 15s
+		lb_try_interval 250ms
+		header_up CF-Connecting-IP {remote_host}
+		transport http {
+			response_header_timeout 320s
+			read_timeout 320s
+		}
+	}
+}
+
+mapservice.app {
+	root * /srv/public
+	header X-Content-Type-Options nosniff
+
+	@json path /app_config.json /invite-environment.json /.well-known/assetlinks.json /.well-known/apple-app-site-association
+	header @json Content-Type application/json
+	header @json Cache-Control no-store
+
+	@legal path /legal/* /privacy /privacy/ /terms /terms/ /location-terms /location-terms/ /support /support/ /delete /delete/ /delete-account /delete-account/ /account-deletion /account-deletion/
+	header @legal Cache-Control no-store
+	header @legal Referrer-Policy no-referrer
+
+	@policy path_regexp policy ^/(?:legal/)?(privacy|terms|location-terms|support)/?$
+	rewrite @policy /legal/{re.policy.1}.html
+	@deletion path_regexp deletion ^/(?:legal/)?(delete|delete-account|account-deletion)(?:/|\.html)?$
+	rewrite @deletion /legal/delete-account.html
+	@invite path /invite /invite/*
+	rewrite @invite /invite/index.html
+	file_server
+}

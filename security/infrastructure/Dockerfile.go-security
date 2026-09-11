@@ -1,0 +1,28 @@
+# Pinned linux/amd64 builder and unchanged upstream runtime contract.
+ARG BASE
+FROM golang@sha256:bc6beb46032d45f421cf400036bf031cdc64f683ba9cdc124e31d063e71670bd AS builder
+ARG BASE
+ARG SERVICE
+ARG SOURCE_SHA
+ENV MAP_GO_SECURITY_BUILDER=1 GOTOOLCHAIN=local GOWORK=off \
+    GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org \
+    GONOSUMDB="" GOPRIVATE="" CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    GOMAXPROCS=2 GOMEMLIMIT=3GiB GOFLAGS=-p=2
+COPY go-security/ /recipe/
+RUN command -v python3 && python3 /recipe/build.py --execute-builder \
+    --service "$SERVICE" --base "$BASE" --source-sha "$SOURCE_SHA"
+
+# Optional small evidence export; the default final stage remains the runtime.
+FROM scratch AS evidence
+COPY --from=builder /out/evidence/ /
+
+FROM ${BASE} AS runtime
+ARG SOURCE_SHA
+# COPY does not change the inherited UID, entrypoint, command, environment,
+# working directory, ports or volumes. Existing upstream files remain intact.
+COPY --from=builder /out/bin/ /bin/
+COPY --from=builder /out/runtime-evidence/ /usr/share/map-security/go/
+LABEL org.opencontainers.image.source="https://github.com/we-meet-trip/map-service-infra" \
+      org.opencontainers.image.revision="${SOURCE_SHA}" \
+      map.candidate-only="true" \
+      map.go-security-recipe="20260907-01"

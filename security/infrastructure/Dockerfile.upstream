@@ -1,0 +1,4 @@
+ARG BASE
+FROM ${BASE}
+ARG SOURCE_SHA
+LABEL org.opencontainers.image.source="https://github.com/we-meet-trip/map-service-infra" org.opencontainers.image.revision="${SOURCE_SHA}" map.candidate-only="true"

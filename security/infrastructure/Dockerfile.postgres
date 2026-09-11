@@ -1,0 +1,8 @@
+ARG BASE
+FROM ${BASE}
+ARG SOURCE_SHA
+USER 0
+# Candidate only: preserve Debian runtime UID/GID 999 on the Alpine build.
+# Never mount an existing data volume at build time or run chown on live data.
+RUN set -eu; apk upgrade --no-cache; test "$(id -u postgres)" = 70; test "$(id -g postgres)" = 70; ! getent passwd 999; ! getent group 999; sed -i 's/^postgres:x:70:70:/postgres:x:999:999:/' /etc/passwd; sed -i 's/^postgres:x:70:/postgres:x:999:/' /etc/group; chown -R 999:999 /var/lib/postgresql /var/run/postgresql; test "$(id -u postgres)" = 999; test "$(id -g postgres)" = 999
+LABEL org.opencontainers.image.source="https://github.com/we-meet-trip/map-service-infra" org.opencontainers.image.revision="${SOURCE_SHA}" map.candidate-only="true"

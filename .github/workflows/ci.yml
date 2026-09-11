@@ -63,6 +63,26 @@ jobs:
               -f docker-compose.yml -f docker-compose.edge.yml \
               --profile full --profile edge --profile dns config -q
 
+      # 관문 설정은 렌더링 검사에 걸리지 않는다. 문법이 깨져도 compose 는
+      # 통과하고, 서버에서 컨테이너가 뜨지 못하는 모습으로만 드러난다.
+      # 배포가 상류를 갈아 끼우는 자리도 같은 방식으로 함께 본다.
+      - name: proxy configuration
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/upstreams"
+          python3 - <<'PY' > "$RUNNER_TEMP/upstreams/hub.conf"
+          import importlib.util
+          spec = importlib.util.spec_from_file_location('roll', 'scripts/service-rollover.py')
+          roll = importlib.util.module_from_spec(spec); spec.loader.exec_module(roll)
+          print(roll.upstream_body('hub', 'map-test-hub-rollover'), end='')
+          PY
+          for dir in "$PWD/proxy/upstreams" "$RUNNER_TEMP/upstreams"; do
+            docker run --rm \
+              -v "$PWD/proxy/default.conf:/etc/nginx/conf.d/default.conf:ro" \
+              -v "$dir:/etc/nginx/upstreams:ro" \
+              nginx:alpine nginx -t
+          done
+
       - name: stack isolation
         run: ./scripts/compose-isolation-check.sh
 
