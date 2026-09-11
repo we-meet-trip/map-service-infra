@@ -72,6 +72,14 @@ digest through the release evidence process before pinning this wrapper. The
 wrapper and file checks do not independently authenticate GitHub or establish a
 real NCP PASS. Artifact security approval is for staging, not serving.
 
+In the artifact image inventory, record a published upstream Git revision when
+available. For third-party PostgreSQL, Redis, proxy, OSRM and optional utility
+images, `source_commit: null` explicitly records an unavailable revision; do not
+substitute an unrelated infra commit. Immutable image digests, platform and
+artifact review remain required. MAP application images and the custom Caddy
+image still require exact source commits, and the four application commits must
+match the authenticated six-image release.
+
 Before `prepare`, provision five independently generated 32-byte lowercase-hex
 values as separate root0600, single-link regular files under
 `/srv/map-prod/secrets`: `POSTGRES_PASSWORD`, `USER_BOOTSTRAP_MARKER`,

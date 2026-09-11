@@ -182,7 +182,11 @@ def verify_bundle(bundle, role, expected=None, *, staged=False):
         require(isinstance(identity, str) and (IMAGE.fullmatch(identity) or
                 role == "prod" and service == "edge" and re.fullmatch(r"sha256:[a-f0-9]{64}", identity)),
                 "immutable image digest required")
-        require(isinstance(entry["source_commit"], str) and COMMIT.fullmatch(entry["source_commit"]), "exact source commit required")
+        upstream = role == "prod" and service in (PROD_REQUIRED | PROD_OPTIONAL) - {"user", "agent", "hub", "yolo", "edge"}
+        source_commit = entry["source_commit"]
+        require((upstream and source_commit is None) or
+                (isinstance(source_commit, str) and COMMIT.fullmatch(source_commit)),
+                "exact source commit required; upstream image revision may be null")
         require(entry["platform"] == "linux/amd64", "host image platform mismatch")
     if role == "prod":
         require(PROD_REQUIRED <= set(images) <= PROD_REQUIRED | PROD_OPTIONAL, "production image role boundary mismatch")
