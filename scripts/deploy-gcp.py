@@ -65,6 +65,8 @@ APP_SERVICES = ("user", "agent", "hub", "yolo", "proxy", "edge", "dns")
 ADMIN_SERVICES = ("admin", "admin-web", "prometheus", "grafana", "postgres-exporter", "redis-exporter", "node-exporter", "cadvisor")
 TARGET_EXPORTERS = ("postgres-exporter", "redis-exporter", "node-exporter")
 ADMIN_DETACHED = False
+ADMIN_NCP_OVERLAY = Path("/etc/map-admin-ncp/compose.yml")
+ADMIN_NCP_MARKER = "# MAP_ADMIN_NCP_TUNNEL_VERSION=1"
 DETACHED_MARKER = "# MAP_ADMIN_DETACHED_VERSION=1"
 INFRASTRUCTURE = {
     "map-test": {"postgres": "postgis/postgis", "redis": "redis", "proxy": "nginx",
@@ -447,6 +449,12 @@ def github_get(path, token, *, archive=False):
     return content if archive else json.loads(content, object_pairs_hook=release.unique_object)
 
 
+def require_target_source(data, environment):
+    expected = {"test": "develop", "prod": "master"}
+    require(environment in expected and data["source_ref"] == expected[environment],
+            "deployment source must match test=develop or prod=master")
+
+
 def prepare(args):
     require(re.fullmatch(r"[1-9][0-9]{0,19}", args.run_id), "invalid release run ID")
     token = os.environ.get("GH_TOKEN", "")
@@ -480,6 +488,8 @@ def prepare(args):
             (args.output / name).write_bytes(zipped.read(name))
     data = release.verify_bundle(args.output, expected_run_id=args.run_id,
                                  expected_workflow_sha=workflow_sha)
+    if getattr(args, "target_environment", None):
+        require_target_source(data, args.target_environment)
     require(data["provenance"]["event_name"] == run["event"], "release event provenance mismatch")
     if run["event"] == "repository_dispatch":
         # A self-consistent artifact alone must not turn an arbitrary dispatch into
@@ -582,6 +592,11 @@ def compose_command(*, admin=False, bundle=None, env_file=None, infrastructure=N
              if admin else ["docker-compose.yml", "docker-compose.test.yml", "docker-compose.registry.yml", "docker-compose.edge.yml"])
     if admin and ADMIN_DETACHED:
         files = ["docker-compose.target-exporters.yml"]
+    if admin and not ADMIN_DETACHED and (ADMIN_NCP_OVERLAY.exists() or ADMIN_NCP_OVERLAY.is_symlink()):
+        validate_host_metadata(ADMIN_NCP_OVERLAY.lstat())
+        require(ADMIN_NCP_MARKER in (REPO / "scripts/cloud-up.sh").read_text().splitlines(),
+                "release cannot preserve the installed NCP administrator connection")
+        files.append(str(ADMIN_NCP_OVERLAY))
     args = ["docker", "compose", "--env-file", str(env_file or REPO / ".env.test")]
     for filename in files:
         args.extend(("-f", str(REPO / filename)))
@@ -996,6 +1011,7 @@ def receive(raw):
         with tempfile.TemporaryDirectory(prefix="incoming-", dir=STATE) as incoming:
             bundle = Path(incoming)
             data = unpack_payload(raw, bundle)
+            require_target_source(data, "test")
             candidate = candidate_images(data)
             policy = load_rollback_policy(candidate)
             prior_latch = load_cutover_latch()
@@ -1201,6 +1217,7 @@ def main(argv=None):
     prepare_parser.add_argument("--run-id", required=True)
     prepare_parser.add_argument("--output", required=True, type=Path)
     prepare_parser.add_argument("--automatic", action="store_true")
+    prepare_parser.add_argument("--target-environment", choices=("test", "prod"))
     commands.add_parser("receive")
     args = parser.parse_args(argv)
     try:

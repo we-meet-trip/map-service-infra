@@ -5,7 +5,9 @@ separate new **NCP production-only** host. NCP admits User/Agent/Hub/YOLO plus t
 existing production dependency allowlist. No NCP Admin, learning host, four-server
 split, existing GCP bootstrap, public DB/exporter port, or data reset is enabled.
 
-This implementation uses explicit phases. It does not yet activate serving.
+This implementation uses explicit database phases. It does not activate serving;
+the separate [production serving controller](NCP_PRODUCTION_SERVING.md) consumes
+the completed database receipt and preserves the installed PostgreSQL identity.
 Local unit tests use generated files and an injected backend; live Docker/PG,
 new NCP installation, migrations, timer/backup restore and production readiness
 must have separate exact-source acceptance evidence before rollout.

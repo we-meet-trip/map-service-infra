@@ -76,6 +76,15 @@ if [ "$ADMIN" = 1 ] && [ -e /var/lib/map-deploy/topology.json ]; then
   echo 'host topology policy exists; co-host administrator startup is blocked' >&2; exit 2
 fi
 
+# MAP_ADMIN_NCP_TUNNEL_VERSION=1
+# This host-owned override survives repository checkouts and administrator rebuilds.
+if [ "$ADMIN" = 1 ] && { [ -e /etc/map-admin-ncp/compose.yml ] || [ -L /etc/map-admin-ncp/compose.yml ]; }; then
+  [ "$ENV_FILE" = ./.env.test ] && [ -r /etc/map-admin-ncp/compose.yml ] || {
+    echo 'NCP administrator connection requires the GCP test deployment and readable host overlay' >&2; exit 2;
+  }
+  ADMIN_FILES+=(-f /etc/map-admin-ncp/compose.yml)
+fi
+
 # Fresh hosts must import the reviewed Caddy artifact before exposing public TLS.
 # Receiver deployments supply independently verified existing infrastructure pins.
 if [ "$EDGE" = 1 ] && [ -z "${INFRA_IMAGE_BUNDLE:-}" ]; then

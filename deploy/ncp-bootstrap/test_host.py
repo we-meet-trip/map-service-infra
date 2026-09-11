@@ -136,11 +136,11 @@ class HostTransactions(unittest.TestCase):
 
     def test_install_twice_preserves_secret_and_no_repeat_commands(self):
         self.assertEqual(self.install()["status"], "host_prepared")
-        host.inject_secret(self.m, "JWT_SECRET", b"synthetic-private-value", self.root)
+        host.inject_secret(self.m, "JWT_PRIVATE_KEY", b"synthetic-private-value", self.root)
         commands = copy.deepcopy(self.os.commands)
         self.assertEqual(self.install()["status"], "host_prepared")
         self.assertEqual(commands, self.os.commands)
-        p = self.root / "srv/map-prod/secrets/JWT_SECRET"
+        p = self.root / "srv/map-prod/secrets/JWT_PRIVATE_KEY"
         self.assertEqual(p.stat().st_mode & 0o777, 0o600)
         self.assertEqual(p.read_bytes(), b"synthetic-private-value")
 
@@ -200,24 +200,24 @@ class HostTransactions(unittest.TestCase):
     def test_secrets_are_allowlisted_and_never_replaced(self):
         self.install()
         with self.assertRaises(ValueError): host.inject_secret(self.m, "ADMIN_CONTROL_DATABASE_PASSWORD", b"denied", self.root)
-        host.inject_secret(self.m, "JWT_SECRET", b"original", self.root)
-        host.inject_secret(self.m, "JWT_SECRET", b"original", self.root)
-        with self.assertRaises(ValueError): host.inject_secret(self.m, "JWT_SECRET", b"replacement", self.root)
+        host.inject_secret(self.m, "JWT_PRIVATE_KEY", b"original", self.root)
+        host.inject_secret(self.m, "JWT_PRIVATE_KEY", b"original", self.root)
+        with self.assertRaises(ValueError): host.inject_secret(self.m, "JWT_PRIVATE_KEY", b"replacement", self.root)
 
     def test_learning_cannot_receive_serving_secrets(self):
         self.m = manifest("learning"); self.os = FixtureOS(self.m)
-        for name in ("LOCATION_MASTER_KEY", "POSTGRES_PASSWORD", "REDIS_PASSWORD", "PRODUCTION_SSH_KEY", "GEMINI_API_KEY"):
+        for name in ("LOCATION_ENC_KEYS", "POSTGRES_PASSWORD", "REDIS_PASSWORD", "PRODUCTION_SSH_KEY", "GEMINI_API_KEY"):
             with self.assertRaises(ValueError): host.inject_secret(self.m, name, b"denied", self.root)
 
     def test_rollback_preserves_data_secrets_packages_account(self):
         self.install()
-        host.inject_secret(self.m, "JWT_SECRET", b"retain", self.root)
+        host.inject_secret(self.m, "JWT_PRIVATE_KEY", b"retain", self.root)
         p = self.root / "srv/map-prod/backups/closed-backup"
         p.write_text("retain data")
         result = host.rollback(self.m, self.root, self.os)
         self.assertEqual(result["data_deleted"], 0)
         self.assertTrue(p.exists())
-        self.assertEqual((self.root / "srv/map-prod/secrets/JWT_SECRET").read_bytes(), b"retain")
+        self.assertEqual((self.root / "srv/map-prod/secrets/JWT_PRIVATE_KEY").read_bytes(), b"retain")
         self.assertTrue((self.root / "etc/docker/daemon.json").exists())
         self.assertTrue(any("mask" in c for c in self.os.commands))
         self.assertTrue((self.root / "var/lib/map-bootstrap/rollback-config/etc/docker/daemon.json").exists())

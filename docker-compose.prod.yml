@@ -1,0 +1,82 @@
+# Serving only: the first-install receiver owns PostgreSQL and its data.
+name: map-prod
+services:
+  redis:
+    extends: {file: docker-compose.yml, service: redis}
+    image: ${PROD_REDIS_IMAGE:?verified Redis image required}
+    container_name: !reset null
+    profiles: !reset []
+    restart: 'no'
+    volumes: !override
+      - type: bind
+        source: /srv/map-prod/data/redis
+        target: /data
+        bind: {create_host_path: false}
+  user:
+    extends: {file: docker-compose.yml, service: user}
+    image: ${PROD_USER_IMAGE:?verified User image required}
+    build: !reset null
+    container_name: !reset null
+    profiles: !reset []
+    depends_on: !reset {}
+    restart: 'no'
+  agent:
+    extends: {file: docker-compose.yml, service: agent}
+    image: ${PROD_AGENT_IMAGE:?verified Agent image required}
+    build: !reset null
+    container_name: !reset null
+    profiles: !reset []
+    depends_on: !reset {}
+    restart: 'no'
+  hub:
+    extends: {file: docker-compose.yml, service: hub}
+    image: ${PROD_HUB_IMAGE:?verified Hub image required}
+    build: !reset null
+    container_name: !reset null
+    profiles: !reset []
+    depends_on: !reset {}
+    restart: 'no'
+  yolo:
+    extends: {file: docker-compose.yml, service: yolo}
+    image: ${PROD_YOLO_IMAGE:?verified Vision image required}
+    build: !reset null
+    container_name: !reset null
+    profiles: !reset []
+    restart: 'no'
+  proxy:
+    extends: {file: docker-compose.yml, service: proxy}
+    image: ${PROD_PROXY_IMAGE:?verified proxy image required}
+    container_name: !reset null
+    profiles: !reset []
+    depends_on: !reset {}
+    restart: 'no'
+  osrm-foot:
+    extends: {file: docker-compose.osrm-runtime.yml, service: osrm-foot}
+    image: ${PROD_OSRM_FOOT_IMAGE:?verified routing image required}
+    restart: 'no'
+    networks: !override
+      default: {aliases: [osrm-foot]}
+  osrm-bicycle:
+    extends: {file: docker-compose.osrm-runtime.yml, service: osrm-bicycle}
+    image: ${PROD_OSRM_BICYCLE_IMAGE:?verified routing image required}
+    restart: 'no'
+    networks: !override
+      default: {aliases: [osrm-bicycle]}
+  edge:
+    image: ${PROD_EDGE_IMAGE:?verified Caddy image required}
+    restart: 'no'
+    ports: ['80:80', '443:443']
+    environment:
+      EDGE_EMAIL: ${EDGE_EMAIL:?certificate contact required}
+    volumes:
+      - ./edge/Caddyfile.prod:/etc/caddy/Caddyfile:ro
+      - /srv/map-prod/data/public:/srv/public:ro
+      - /srv/map-prod/data/caddy-data:/data
+      - /srv/map-prod/data/caddy-config:/config
+    mem_limit: 128m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+networks:
+  default: {external: true, name: map-prod-net}
