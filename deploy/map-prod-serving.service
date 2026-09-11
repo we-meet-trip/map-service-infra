@@ -1,0 +1,25 @@
+[Unit]
+Description=MAP NCP production serving resume
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+RequiresMountsFor=/srv/map-prod
+ConditionPathExists=/srv/map-prod/secrets/production-serving.json
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+UMask=0077
+WorkingDirectory=/opt/map-service-infra
+ExecStart=/usr/bin/python3 -B /opt/map-service-infra/scripts/ncp-production-serving.py resume
+ExecStop=/usr/bin/python3 -B /opt/map-service-infra/scripts/ncp-production-serving.py stop-public --keep-resume-intent
+TimeoutStartSec=1200
+TimeoutStopSec=360
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/var/empty
+Environment=DOCKER_HOST=unix:///var/run/docker.sock
+Environment=DOCKER_CONFIG=/var/empty
+
+[Install]
+WantedBy=multi-user.target

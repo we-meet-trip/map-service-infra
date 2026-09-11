@@ -1,0 +1,16 @@
+# Append after the existing GCP admin/test/registry overlays. No service DB changes.
+services:
+  admin:
+    environment:
+      ADMIN_TARGETS: !reset null
+    env_file:
+      - path: ${NCP_ADMIN_TARGETS_ENV_FILE:-/etc/map-admin-ncp/admin-targets.env}
+        format: raw
+        required: true
+    networks:
+      default: {}
+      ncp-admin: {}
+networks:
+  ncp-admin:
+    external: true
+    name: map-admin-ncp-tunnel

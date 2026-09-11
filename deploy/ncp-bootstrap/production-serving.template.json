@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "environment": "prod",
+  "runtime_env_sha256": "REQUIRED_PRIVATE_RUNTIME_ENV_FILE_SHA256",
+  "public_manifest_sha256": null,
+  "gemini_key_sha256": "REQUIRED_VERIFIED_MAP_PRODUCTION_API_KEY_SHA256"
+}

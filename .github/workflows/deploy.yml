@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: "성공한 image-release 실행 ID (수동 branch 릴리스 허용)"
+        description: "develop 소스로 성공한 image-release 실행 ID"
         type: string
         required: true
   workflow_run:
@@ -56,7 +56,7 @@ jobs:
           automatic=()
           if [ "$DEPLOY_EVENT" = workflow_run ]; then automatic=(--automatic); fi
           python scripts/deploy-gcp.py prepare --run-id "$RELEASE_RUN_ID" \
-            --output "$RUNNER_TEMP/map-release-bundle" "${automatic[@]}"
+            --output "$RUNNER_TEMP/map-release-bundle" --target-environment test "${automatic[@]}"
 
       - uses: google-github-actions/auth@v2
         with:

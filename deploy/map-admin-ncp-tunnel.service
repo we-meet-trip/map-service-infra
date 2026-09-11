@@ -1,0 +1,20 @@
+[Unit]
+Description=MAP GCP administrator API connection to NCP
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+ConditionPathExists=/etc/map-admin-ncp/ssh_config
+
+[Service]
+Type=simple
+User=map-admin-tunnel
+Group=map-admin-tunnel
+UMask=0077
+ExecStart=/usr/bin/ssh -F /etc/map-admin-ncp/ssh_config -NT map-ncp-admin
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -9,7 +9,7 @@
 | 역할 | 공급자·사양 | root / data | 계정·데이터·실행 경계 |
 |---|---|---|---|
 | 시험 | 기존 GCP us-central1-a e2-medium 유지 | 기존 디스크 보존 | 기존 OS/daemon/시험 DB·secret 보존, 도구에서 test 설치 거절 |
-| 운영 | NCP 한국 VPC s2-g3, 2 vCPU/8GB 우선 | CB2 40GB / 100GB | `map-deploy-prod`, `/srv/map-prod`, User·Agent·Hub·YOLO·PG·Redis·OSRM·edge·현장 exporter |
+| 운영 | NCP 한국 VPC s2-g3a, 2 vCPU/8GB | CB1 40GB / CB2 100GB | `map-deploy-prod`, `/srv/map-prod`, User·Agent·Hub·YOLO·PG·Redis·OSRM·edge·현장 exporter |
 | 관리자 | 기존 GCP 테스트 호스트와 공존 유지 | 기존 디스크·DB 보존 | 기존 Admin/admin-web·control DB·감사·Prometheus·Grafana 유지, NCP에 관리자 추가 없음 |
 | 학습 | 독립 NCP 한국 s4-g3 4/16 CPU 프로필만 준비 | root20GB / 보존 data100GB | `map-deploy-learning`, `/srv/map-learning`, 합성/승인 산출물만. 현재 VM 미생성·HOLD |
 
@@ -85,7 +85,7 @@ sudo python3 scripts/ncp-bootstrap-host.py install --manifest /root/prod-enrollm
 sudo python3 scripts/ncp-bootstrap-host.py verify --manifest /root/prod-enrollment.json
 # 값은 argv/.env/로그에 넣지 않는다. 같은 값 재주입은 멱등, 다른 값은 교체하지 않는다.
 sudo python3 scripts/ncp-bootstrap-host.py secret --manifest /root/prod-enrollment.json \
-  --key JWT_SECRET < /root/private-jwt-input
+  --key JWT_PRIVATE_KEY < /root/private-jwt-input
 ```
 
 설치는 프로필 CPU/RAM/disk 하한, machine-id/hostname, 암호화 mount UUID, 기존 Docker/컨테이너 자료와 systemd override 부재를 검사한다. 초기 apt 중 서비스 자동기동을 막고, Docker/containerd를 mask한 상태에서 설정을 완성한 뒤 시작한다. data-root는 역할 mount, socket group은root다. 기존 파일을 덮어쓰지 않고 temp+fsync+원자 게시와 영속 transaction/lock을 사용한다. 실패 시 기존 GCP로 fallback하지 않는다.

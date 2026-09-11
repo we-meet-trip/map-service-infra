@@ -97,8 +97,9 @@ class ArtifactTests(BundleFixture, unittest.TestCase):
             return {"artifacts": [artifact]} if "/artifacts?" in path else metadata
         return metadata, artifact, get
 
-    def prepare(self, getter, automatic=False):
-        args = SimpleNamespace(run_id="123", output=self.root / "verified", automatic=automatic)
+    def prepare(self, getter, automatic=False, target_environment=None):
+        args = SimpleNamespace(run_id="123", output=self.root / "verified", automatic=automatic,
+                               target_environment=target_environment)
         with patch.dict(os.environ, {"GH_TOKEN": "synthetic-token"}), patch.object(deploy, "github_get", getter):
             deploy.prepare(args)
         return args.output
@@ -108,6 +109,21 @@ class ArtifactTests(BundleFixture, unittest.TestCase):
         output = self.prepare(getter)
         self.assertTrue((output / "transport.json").is_file())
         deploy.unpack_payload((output / "transport.json").read_bytes(), self.target)
+
+    def test_master_release_cannot_be_prepared_for_gcp_test(self):
+        data = fixtures.fixture()
+        data["source_ref"] = "master"
+        _, _, getter = self.github(data)
+        with self.assertRaisesRegex(deploy.DeployError, "deployment source"):
+            self.prepare(getter, target_environment="test")
+        self.assertFalse((self.root / "verified/transport.json").exists())
+
+    def test_master_release_can_be_prepared_for_ncp(self):
+        data = fixtures.fixture()
+        data["source_ref"] = "master"
+        _, _, getter = self.github(data)
+        output = self.prepare(getter, target_environment="prod")
+        self.assertTrue((output / "transport.json").is_file())
 
     def test_artifact_digest_mismatch_blocks_transport(self):
         _, artifact, getter = self.github()
@@ -605,6 +621,15 @@ class PublicReadinessTests(unittest.TestCase):
 
 
 class ReceiverTests(BundleFixture, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        data = fixtures.fixture()
+        data["source_ref"] = "develop"
+        deploy.release.write_bundle(self.source, data)
+        self.payload["files"] = {
+            name: base64.b64encode((self.source / name).read_bytes()).decode()
+            for name in deploy.ARTIFACT_FILES}
+
     def scenario(self, failure="", *, verified=True, interrupted=False, policy_fault="", console_exit=0, rollover=False):
         prior_phase = interrupted if isinstance(interrupted, str) else "opening_ingress"
         repo = self.root / "repo"
