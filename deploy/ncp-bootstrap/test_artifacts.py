@@ -348,6 +348,10 @@ class MapAndCaddyTest(unittest.TestCase):
             (bundle / "receiver.py").write_text("# Synthetic NCP staging-only receiver, never executed.\n")
             images = {name: {"image": "registry.example/fixture@sha256:" + "a" * 64,
                              "source_commit": "b" * 40, "platform": "linux/amd64"} for name in artifacts.PROD_REQUIRED}
+            # These upstream OCI images may publish no Git revision. Their
+            # immutable digests remain required throughout staging and caching.
+            for name in ("postgres", "redis", "proxy"):
+                images[name]["source_commit"] = None
             images["edge"]["image"] = config
             for name in ("osrm-foot", "osrm-bicycle"):
                 images[name]["image"] = artifacts.osrm.IMAGE
@@ -359,6 +363,15 @@ class MapAndCaddyTest(unittest.TestCase):
                         "artifact_sha256": {}}
             _, pin = seal(bundle, contract)
             with patch.object(artifacts.caddy, "MANIFEST", anchor_path), patch.object(artifacts, "CADDY_ANCHOR_SHA256", artifacts.sha256(anchor_path)):
+                for name, value in [(name, None) for name in ("user", "agent", "hub", "yolo", "edge")] + [("postgres", "develop")]:
+                    with self.subTest(service=name, source_commit=value):
+                        original = images[name]["source_commit"]
+                        images[name]["source_commit"] = value
+                        _, invalid_pin = seal(bundle, contract)
+                        with self.assertRaisesRegex(ValueError, "exact source commit required"):
+                            artifacts.verify_bundle(bundle, "prod", invalid_pin)
+                        images[name]["source_commit"] = original
+                _, pin = seal(bundle, contract)
                 result = artifacts.stage(bundle, root / "staged", "prod", pin)
                 self.assertEqual(result["map_files"], 40)
                 self.assertEqual(artifacts.verify_installed(root / "staged", "prod", pin)["status"], "installed_verified")
