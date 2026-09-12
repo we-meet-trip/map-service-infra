@@ -76,10 +76,11 @@ class BackupTests(unittest.TestCase):
         def dump(args, path):
             calls.append(args)
             with gzip.open(path, "wb") as stream:
-                stream.write(b"SELECT 1;\n")
+                stream.write(b"CREATE ROLE postgres;\nALTER ROLE postgres NOLOGIN;\nGRANT owner TO migrator WITH INHERIT FALSE GRANTED BY postgres;\n" if "pg_dumpall" in args else b"SELECT 1;\n")
 
         with patch.object(pg, "compose", return_value=(["docker", "compose"], "map", "map_test")), \
                 patch.object(pg, "dump_gzip", side_effect=dump), \
+                patch.object(pg, "bootstrap_role", return_value="postgres"), \
                 patch.dict(os.environ, {"BACKUP_DIR": str(self.directory), "BACKUP_REMOTE": "",
                                         "BACKUP_REQUIRE_REMOTE": "0"}), \
                 contextlib.redirect_stdout(io.StringIO()):
@@ -178,13 +179,21 @@ class BackupTests(unittest.TestCase):
             calls.append(args)
             if "run" in args:
                 return subprocess.CompletedProcess(args, 0)
+            if "SELECT rolname FROM pg_roles WHERE oid=10" in args:
+                return subprocess.CompletedProcess(args, 0, "postgres\n")
             if "-Atc" in args:
                 return subprocess.CompletedProcess(args, 0, "hub_data:3\nuser_service:4\n")
             return subprocess.CompletedProcess(args, 0)
 
+        replayed = []
+        class Input(io.BytesIO):
+            def close(self):
+                replayed.append(self.getvalue())
+                super().close()
+
         class Process:
             def __init__(self, *args, **kwargs):
-                self.stdin = io.BytesIO()
+                self.stdin = Input()
 
             def wait(self):
                 return 0
@@ -200,9 +209,32 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(creation[creation.index("--network") + 1], "none")
         self.assertNotIn("-v", creation)
         self.assertNotIn("-p", creation)
+        self.assertIn("POSTGRES_USER=postgres", creation)
+        self.assertEqual(replayed[0], b"\nALTER ROLE postgres NOLOGIN;\nGRANT owner TO migrator WITH INHERIT FALSE GRANTED BY postgres;\n")
+        self.assertTrue(any('SUPERUSER LOGIN' in str(call) for call in calls))
         name = creation[creation.index("--name") + 1]
         self.assertTrue(name.startswith("map-restore-check-"))
         self.assertEqual(cleanup, ["docker", "rm", "-f", "-v", name])
+
+    def test_legacy_or_ambiguous_bootstrap_is_rejected_before_docker(self):
+        manifest, _ = self.bundle()
+        metadata = json.loads(manifest.read_text())
+        for value in (None, "bad;role", "absent"):
+            changed = {**metadata, "source_bootstrap_role": value}
+            manifest.write_text(json.dumps(changed))
+            pg.verified_bundle(manifest, "test")  # Legacy retention/integrity remains usable.
+            with self.subTest(value=value), patch.object(pg, "run") as run, self.assertRaises(pg.BackupError):
+                pg.restore("test", manifest)
+            run.assert_not_called()
+        metadata["source_bootstrap_role"] = "postgres"
+        path = manifest.parent / metadata["files"][0]["name"]
+        with gzip.open(path, "wb") as stream:
+            stream.write(b'CREATE ROLE postgres;\nCREATE ROLE "postgres";\n')
+        metadata["files"][0]["sha256"] = pg.checksum(path)
+        manifest.write_text(json.dumps(metadata))
+        with patch.object(pg, "run") as run, self.assertRaisesRegex(pg.BackupError, "exactly one"):
+            pg.restore("test", manifest)
+        run.assert_not_called()
 
 
 class AuditTests(unittest.TestCase):

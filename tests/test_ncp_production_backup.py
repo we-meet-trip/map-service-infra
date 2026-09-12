@@ -81,12 +81,14 @@ class ProductionBackupTests(unittest.TestCase):
                 stream.write(sql)
             path.chmod(0o600)
 
-        with patch.object(job.redis, "run", return_value="1"), patch.object(job.pg, "dump_gzip", side_effect=dump):
+        with patch.object(job.redis, "run", return_value="1"), patch.object(job.pg, "dump_gzip", side_effect=dump), \
+                patch.object(job.pg, "bootstrap_role", return_value="postgres"):
             helper = job.Backend().collect("pg", self.cfg, {"Id": self.cfg["postgres"]["container_id"]}, self.root)
         metadata, paths = job.pg.verified_bundle(helper, "prod")
         self.assertEqual(len(paths), 2)
         self.assertEqual(metadata["table_row_counts"], {"user_service.sample": 1})
         self.assertFalse(metadata["roles_have_passwords"])
+        self.assertEqual(metadata["source_bootstrap_role"], "postgres")
 
     def test_only_pinned_production_configuration_is_accepted(self):
         path = self.root / "config.json"
