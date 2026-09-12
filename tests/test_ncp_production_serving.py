@@ -2,7 +2,9 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -49,6 +51,7 @@ class FixtureBackend:
     def __init__(self):
         self.events = []
         self.fail = set()
+        self.binding = 'b' * 64
 
     def event(self, event):
         self.events.append(event)
@@ -57,7 +60,7 @@ class FixtureBackend:
 
     def inputs(self, config):
         self.event('inputs')
-        return {'binding': 'b' * 64}
+        return {'binding': self.binding}
 
     def pg(self, inputs): self.event('pg')
     def rendered(self, inputs): self.event('rendered')
@@ -176,6 +179,24 @@ class ServingStateTests(unittest.TestCase):
                 self.run_action('start-private')
         self.assertEqual(self.backend.events, [])
 
+    def test_new_controller_cannot_publish_or_resume_prior_private_readiness(self):
+        first = {'schema_version': 1, 'source_ref': 'master', 'controller_source_sha': 'a' * 40,
+                 'database_source_sha': 'b' * 40}
+        second = {**first, 'controller_source_sha': 'c' * 40}
+        for action in ('publish', 'resume'):
+            self.backend.binding = serving.runtime_binding({'fixture': 'same-db'}, self.config, first)
+            self.run_action('start-private')
+            previous_binding = self.record()['binding']
+            self.backend.binding = serving.runtime_binding({'fixture': 'same-db'}, self.config, second)
+            self.assertNotEqual(previous_binding, self.backend.binding)
+            self.backend.events.clear()
+            with self.subTest(action=action), self.assertRaises(serving.receiver.ReceiverError):
+                self.run_action(action)
+            self.assertNotIn('private_up', self.backend.events)
+            self.assertNotIn('edge_up', self.backend.events)
+            self.assertEqual(self.backend.events[-1], 'stop')
+            self.assertEqual(self.record()['public_serving'], 'HOLD')
+
 
 class ServingInputTests(unittest.TestCase):
     def test_production_key_and_runtime_roles_match_existing_secret_files(self):
@@ -215,6 +236,108 @@ class ServingInputTests(unittest.TestCase):
         self.assertEqual(calls[1], ['stop', '--time', '60', 'a' * 64])
         self.assertTrue(all('label=com.docker.compose.project=map-prod' in call for call in calls if call[0] == 'ps'))
         self.assertNotIn('postgres', str(calls))
+
+
+class ServingPromotionTests(unittest.TestCase):
+    def test_reviewed_caddy_identity_reaches_compose_without_rewriting_contract(self):
+        backend = serving.Backend()
+        index = 'sha256:' + 'a' * 64
+        contract = {'images': {name: {'image': index if name == 'edge' else
+                    'example.invalid/' + name + '@sha256:' + 'b' * 64} for name in serving.SERVICES},
+                    'caddy': {'archive': 'caddy.tar', 'report': 'scan.json'}}
+        original = json.dumps(contract, sort_keys=True)
+        # Classic Docker exposes the config digest; containerd can expose the index.
+        for actual_id in ('sha256:' + 'c' * 64, index):
+            with self.subTest(actual_id=actual_id):
+                installer = SimpleNamespace(verify_compose=lambda *args: {'id': actual_id})
+                runtime = {'release_name': 'prod-fixture'}
+                with patch.object(serving.receiver.artifacts, 'caddy', installer):
+                    images = backend.resolved_images(runtime, contract)
+                self.assertEqual(images['edge'], actual_id)
+                self.assertEqual(json.dumps(contract, sort_keys=True), original)
+                inputs = {'runtime': runtime, 'environment': {'GEMINI_API_KEY': 'fixture'},
+                          'resolved_images': images, 'contract': contract}
+                rendered = {'name': 'map-prod', 'services': {name: {'image': image, 'restart': 'no',
+                            'environment': {'GEMINI_API_KEY': 'fixture'}} for name, image in images.items()}}
+
+                def compose(command, **kwargs):
+                    self.assertEqual(kwargs['env']['PROD_EDGE_IMAGE'], actual_id)
+                    self.assertEqual(kwargs['cwd'], serving.ROOT)
+                    self.assertIn(str(serving.ROOT / 'docker-compose.prod.yml'), command)
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(rendered))
+
+                with patch.object(serving.subprocess, 'run', side_effect=compose):
+                    backend.rendered(inputs)
+                    if actual_id != index:
+                        rendered['services']['edge']['image'] = index
+                        with self.assertRaisesRegex(serving.receiver.ReceiverError, 'image_or_restart_mismatch'):
+                            backend.rendered(inputs)
+
+    def test_unverified_caddy_never_becomes_a_runtime_image(self):
+        backend = serving.Backend()
+        contract = {'images': {name: {'image': 'sha256:' + 'a' * 64} for name in serving.SERVICES},
+                    'caddy': {'archive': 'caddy.tar', 'report': 'scan.json'}}
+        from unittest.mock import Mock
+        installer = Mock()
+        installer.verify_compose.side_effect = ValueError('unreviewed image')
+        with patch.object(serving.receiver.artifacts, 'caddy', installer):
+            with self.assertRaisesRegex(serving.receiver.ReceiverError, 'caddy_identity_unverified'):
+                backend.resolved_images({'release_name': 'prod-fixture'}, contract)
+            installer.verify_compose.side_effect = None
+            installer.verify_compose.return_value = {'id': 'mutable-tag:latest'}
+            with self.assertRaisesRegex(serving.receiver.ReceiverError, 'caddy_identity_unverified'):
+                backend.resolved_images({'release_name': 'prod-fixture'}, contract)
+
+    def test_promoted_controller_requires_clean_master_pin_and_preserves_database_checkout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            database, controller = base / 'database', base / 'controller'
+            def git(root, *args):
+                return subprocess.check_output(['git', '-C', str(root), *args], text=True,
+                                               stderr=subprocess.DEVNULL).strip()
+            for root in (database, controller):
+                (root / 'scripts').mkdir(parents=True)
+                (root / 'scripts/ncp-production-serving.py').write_text('# fixture\n')
+                git(root, 'init', '-q', '-b', 'master')
+                git(root, 'add', '.')
+                git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                    '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture')
+            database_sha, controller_sha = (git(root, 'rev-parse', 'HEAD') for root in (database, controller))
+            pin_path = base / 'pin.json'
+            pin = {'schema_version': 1, 'source_ref': 'master', 'controller_source_sha': controller_sha,
+                   'database_source_sha': database_sha}
+            pin_path.write_text(json.dumps(pin)); pin_path.chmod(0o600)
+            with patch.multiple(serving, ROOT=database, CONTROLLER_ROOT=controller,
+                                PROMOTED_ROOT=controller, CONTROLLER_CONFIG=pin_path,
+                                __file__=str(controller / 'scripts/ncp-production-serving.py')), \
+                 patch.object(serving.receiver, 'ROOT', database), \
+                 patch.object(serving.receiver, 'source_ownership'):
+                backend = serving.Backend()
+                backend.controller()
+                git(controller, 'checkout', '-qb', 'develop')
+                with self.assertRaisesRegex(serving.receiver.ReceiverError, 'source_mismatch'):
+                    backend.controller()
+                git(controller, 'checkout', '-q', '--detach')
+                with self.assertRaises(serving.receiver.ReceiverError):
+                    backend.controller()
+                git(controller, 'checkout', '-q', 'master')
+                with patch.object(serving, '__file__', str(controller / 'untracked-copy.py')):
+                    with self.assertRaisesRegex(serving.receiver.ReceiverError, 'script_mismatch'):
+                        backend.controller()
+                for key, value in (('source_ref', 'develop'), ('controller_source_sha', 'a' * 40),
+                                   ('database_source_sha', 'b' * 40)):
+                    pin_path.write_text(json.dumps({**pin, key: value}))
+                    with self.subTest(key=key), self.assertRaises(serving.receiver.ReceiverError):
+                        backend.controller()
+                pin_path.write_text(json.dumps(pin))
+                (controller / 'scripts/ncp-production-serving.py').write_text('# changed\n')
+                with self.assertRaisesRegex(serving.receiver.ReceiverError, 'source_mismatch'):
+                    backend.controller()
+                pin_path.unlink()
+                with self.assertRaises(Exception):
+                    backend.controller()
+                self.assertEqual(git(database, 'rev-parse', 'HEAD'), database_sha)
+                self.assertEqual(git(database, 'status', '--porcelain'), '')
 
 
 class PublicBundleTests(unittest.TestCase):
