@@ -131,6 +131,7 @@ class Backend:
         pg.dump_gzip(command + ["pg_dumpall", "--roles-only", "--no-role-passwords", "-U", entry["user"]], roles)
         pg.dump_gzip(command + ["pg_dump", "--clean", "--if-exists", "-U", entry["user"], "-d", entry["database"]], data)
         value = {"version": 1, "environment": "prod", "database": entry["database"],
+                 "source_bootstrap_role": pg.bootstrap_role(command + ["psql", "-X", "-U", entry["user"], "-d", entry["database"]]),
                  "created_at": created, "roles_have_passwords": False, "table_row_counts": pg.dump_row_counts(data),
                  "files": [{"name": path.name, "sha256": pg.checksum(path)} for path in (roles, data)]}
         path = directory / "postgres.helper.json"

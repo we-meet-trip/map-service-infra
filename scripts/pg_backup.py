@@ -193,6 +193,14 @@ def dump_row_counts(path):
             if name.split('.', 1)[0] in {'hub_data', 'user_service', 'admin_data'}}
 
 
+def bootstrap_role(sql):
+    name = run(sql + ["-Atc", "SELECT rolname FROM pg_roles WHERE oid=10"],
+               stdout=subprocess.PIPE, text=True).stdout.strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", name):
+        raise BackupError("supported source bootstrap role required")
+    return name
+
+
 def backup(environment):
     cmd, user, database = compose(environment)
     directory = Path(os.environ.get("BACKUP_DIR", str(Path.home() / "backups" / environment)))
@@ -211,6 +219,7 @@ def backup(environment):
         dump_gzip(cmd + ["exec", "-T", "postgres", "pg_dump", "--clean", "--if-exists",
                          "-U", user, "-d", database], data)
         meta = {"version": 1, "environment": environment, "database": database,
+                "source_bootstrap_role": bootstrap_role(cmd + ["exec", "-T", "postgres", "psql", "-X", "-U", user, "-d", database]),
                 "created_at": stamp, "roles_have_passwords": False,
                 "table_row_counts": dump_row_counts(data),
                 "files": [{"name": p.name, "sha256": checksum(p)} for p in (roles, data)]}
@@ -244,21 +253,28 @@ def backup(environment):
 
 def restore(environment, manifest):
     meta, paths = verified_bundle(manifest, environment)
+    bootstrap = meta.get("source_bootstrap_role", "")
+    if not isinstance(bootstrap, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", bootstrap):
+        raise BackupError("source bootstrap role missing or invalid; collect a new backup")
+    creates = {f'CREATE ROLE {bootstrap};\n'.encode(), f'CREATE ROLE "{bootstrap}";\n'.encode()}
+    with gzip.open(paths[0], "rb") as source:
+        if sum(line in creates for line in source) != 1:
+            raise BackupError("exactly one source bootstrap CREATE ROLE required")
     token = uuid.uuid4().hex[:16]
     box, user = "map-restore-check-" + token, "restore_" + token
     bootstrap_db = "bootstrap_" + token
     started, created = time.monotonic(), False
     try:
-        # Unique superuser avoids duplicate source-role CREATE failures. No live
-        # volume, host path, published port or application network is attached.
+        # Preserve the bootstrap grantor (OID 10), which has special GRANT rights.
+        # No live volume, host path, port or application network is attached.
         run(["docker", "run", "-d", "--name", box, "--network", "none",
              "--platform", "linux/amd64", "--memory", "1g", "--cpus", "1",
-             "-e", f"POSTGRES_USER={user}", "-e", f"POSTGRES_DB={bootstrap_db}",
+             "-e", f"POSTGRES_USER={bootstrap}", "-e", f"POSTGRES_DB={bootstrap_db}",
              "-e", "POSTGRES_PASSWORD=isolated-restore-only",
              os.environ.get("POSTGRES_IMAGE", "postgis/postgis:17-3.5")], stdout=subprocess.DEVNULL)
         created = True
         sql = ["docker", "exec", "-i", box, "psql", "-h", "127.0.0.1", "-v",
-               "ON_ERROR_STOP=1", "-v", "VERBOSITY=sqlstate", "-q", "-U", user, "-d", bootstrap_db]
+               "ON_ERROR_STOP=1", "-v", "VERBOSITY=sqlstate", "-q", "-U", bootstrap, "-d", bootstrap_db]
         for attempt in range(90):
             result = subprocess.run(sql + ["-c", "SELECT 1"], stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL)
@@ -267,6 +283,12 @@ def restore(environment, manifest):
             if attempt == 89:
                 raise BackupError("isolated restore readiness timed out")
             time.sleep(1)
+        if bootstrap_role(sql) != bootstrap:
+            raise BackupError("isolated bootstrap role identity mismatch")
+        # The source may demote/disable its bootstrap role. Keep a separate
+        # executor only inside this disposable container for the remaining SQL.
+        run(sql + ["-c", f'CREATE ROLE "{user}" SUPERUSER LOGIN'], stdout=subprocess.DEVNULL)
+        sql[sql.index("-U") + 1] = user
         # The PostGIS image populates its bootstrap database with extensions that
         # may not exist in the source (e.g. topology). Restore into template0 so a
         # source DROP EXTENSION postgis does not hit bootstrap-only dependencies.
@@ -280,7 +302,11 @@ def restore(environment, manifest):
                 try:
                     try:
                         with gzip.open(path, "rb") as source:
-                            shutil.copyfileobj(source, process.stdin)
+                            if index == 0:
+                                for line in source:
+                                    process.stdin.write(b"\n" if line in creates else line)
+                            else:
+                                shutil.copyfileobj(source, process.stdin)
                         process.stdin.close()
                     except BrokenPipeError:
                         pass
@@ -312,6 +338,7 @@ def restore(environment, manifest):
             if result.stdout.strip() != str(expected):
                 raise BackupError(f"restored table row count mismatch: {table}, expected={expected}, actual={result.stdout.strip()}")
         print(json.dumps({"restore": "complete", "environment": environment,
+                          "source_bootstrap_role": bootstrap,
                           "verified_table_row_counts": len(expected_counts),
                           "schema_table_counts": counts,
                           "elapsed_seconds": round(time.monotonic() - started, 2),
