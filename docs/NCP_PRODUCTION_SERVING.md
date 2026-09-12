@@ -22,6 +22,50 @@ database receipts unchanged. The serving phase reuses the receiver's source,
 host/mount and artifact checks. Every phase takes the same nonblocking
 `/srv/map-prod/deploy/deploy.lock` as migration and backup.
 
+### Serving-only controller promotion
+
+An installed DB release pins the original infra checkout and receiver bytes.
+Do not update that checkout to apply a serving-script fix. After review, CI and
+owner-approved master promotion, install the clean, root-owned **master**
+checkout at the fixed path `/opt/map-serving-controller`. Use the same standalone
+checkout ownership rules as the original receiver (no worktree, symlink or
+group/world-writable files). Record the verified master SHA and the unchanged
+DB checkout SHA in root0600 `/srv/map-prod/secrets/serving-controller.json`:
+
+```json
+{
+  "schema_version": 1,
+  "source_ref": "master",
+  "controller_source_sha": "<verified new master commit, 40 lowercase hex>",
+  "database_source_sha": "<unchanged installed DB infra commit, 40 lowercase hex>"
+}
+```
+
+The new controller checks its HEAD, master ref, tracked script and clean tree
+against this pin. It imports the receiver and helpers, renders Compose and runs
+DB Git checks from the unchanged `/opt/map-service-infra`. The original release,
+cache, request and DB receipts retain their original bytes and validation.
+Only serving Python changes are consumed from the new checkout; changing a
+Compose file there does not alter the installed service definition.
+
+For this installation, use `/opt/map-serving-controller/scripts/ncp-production-serving.py`
+for `verify`, `start-private`, `publish` and `resume` below. A new controller pin
+requires a fresh successful `start-private` before publication or resume; the
+old readiness receipt cannot authorize a different controller. Preserve the
+original controller's `stop-public` command as an independent emergency stop.
+For systemd, install a drop-in that clears `ExecStart` and sets it to
+`/usr/bin/python3 -B /opt/map-serving-controller/scripts/ncp-production-serving.py resume`.
+Keep the existing `ExecStop`, working directory and mount dependencies.
+Do not start/enable the unit until the new controller's private acceptance passes.
+
+Caddy keeps the reviewed archive/index identity in the original release contract.
+After the existing receiver verifies the archive, report and identity chain,
+the serving controller rechecks `installations/<release>/caddy-verified.yml` with
+the same installer. Its verified local immutable image ID is used consistently
+for image inspection, Compose and runtime validation. Classic Docker's config ID
+and containerd's index/platform IDs are supported without tagging or reloading
+an image, changing the contract or bypassing its checks.
+
 Install the following root0600 single-link files under `/srv/map-prod/secrets`:
 
 - `production-serving.json`, using
