@@ -1,6 +1,7 @@
 import copy
 import datetime as dt
 import fcntl
+import gzip
 import importlib.util
 import json
 from pathlib import Path
@@ -40,7 +41,7 @@ class FixtureBackend:
 
     def collect(self, kind, value, item, directory):
         self.events.append("collect_" + kind)
-        names = ("postgres.roles.sql.gz", "postgres.sql.gz") if kind == "pg" else ("snapshot.rdb",)
+        names = ("map-prod.roles.sql.gz", "map-prod.sql.gz") if kind == "pg" else ("snapshot.rdb",)
         for name in names:
             job.transfer.write_bytes(directory / name, b"synthetic fixture bytes")
         files = [{"name": name, "sha256": job.transfer.digest(directory / name)} for name in names]
@@ -71,6 +72,21 @@ class ProductionBackupTests(unittest.TestCase):
         self.root = Path(self.tmp.name).resolve()
         self.cfg = config()
         self.backend = FixtureBackend()
+
+    def test_collected_postgres_bundle_is_accepted_by_existing_restore_reader(self):
+        def dump(command, path):
+            sql = ("CREATE ROLE map_user_runtime NOLOGIN;\n" if "pg_dumpall" in command else
+                   "COPY user_service.sample (id) FROM stdin;\n1\n\\.\n")
+            with gzip.open(path, "wt", encoding="utf-8") as stream:
+                stream.write(sql)
+            path.chmod(0o600)
+
+        with patch.object(job.redis, "run", return_value="1"), patch.object(job.pg, "dump_gzip", side_effect=dump):
+            helper = job.Backend().collect("pg", self.cfg, {"Id": self.cfg["postgres"]["container_id"]}, self.root)
+        metadata, paths = job.pg.verified_bundle(helper, "prod")
+        self.assertEqual(len(paths), 2)
+        self.assertEqual(metadata["table_row_counts"], {"user_service.sample": 1})
+        self.assertFalse(metadata["roles_have_passwords"])
 
     def test_only_pinned_production_configuration_is_accepted(self):
         path = self.root / "config.json"
@@ -135,8 +151,8 @@ class ProductionBackupTests(unittest.TestCase):
             job.execute("pg", self.cfg, data=self.root, backend=self.backend)
         directory = next((self.root / "backups").iterdir())
         self.assertEqual((directory / "operator-notes").read_text(), "preserve")
-        self.assertTrue((directory / "postgres.sql.gz").exists())
-        self.assertTrue((directory / "closed/postgres.sql.gz").exists())
+        self.assertTrue((directory / "map-prod.sql.gz").exists())
+        self.assertTrue((directory / "closed/map-prod.sql.gz").exists())
 
     def test_local_receipt_history_is_bounded_without_touching_other_files(self):
         state = job.private_directory(self.root / "deploy")

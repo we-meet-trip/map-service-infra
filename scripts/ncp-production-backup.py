@@ -126,7 +126,7 @@ class Backend:
                                     "-c", "SELECT pg_database_size(current_database())"])
         require(size.isdecimal() and int(size) * 8 + 2 * 1024**3 <= shutil.disk_usage(directory).free,
                 "postgres_backup_capacity_low")
-        roles, data = directory / "postgres.roles.sql.gz", directory / "postgres.sql.gz"
+        roles, data = directory / "map-prod.roles.sql.gz", directory / "map-prod.sql.gz"
         created = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         pg.dump_gzip(command + ["pg_dumpall", "--roles-only", "--no-role-passwords", "-U", entry["user"]], roles)
         pg.dump_gzip(command + ["pg_dump", "--clean", "--if-exists", "-U", entry["user"], "-d", entry["database"]], data)

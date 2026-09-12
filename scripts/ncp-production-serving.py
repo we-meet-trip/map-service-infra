@@ -20,7 +20,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-ROOT = Path(__file__).resolve().parents[1]
+CONTROLLER_ROOT = Path(__file__).resolve().parents[1]
+# A serving-only promotion must not rewrite the DB installation's source pin.
+PROMOTED_ROOT = Path('/opt/map-serving-controller')
+ROOT = Path('/opt/map-service-infra') if CONTROLLER_ROOT == PROMOTED_ROOT else CONTROLLER_ROOT
 
 
 def module(name, filename):
@@ -34,6 +37,7 @@ receiver = module('ncp_serving_receiver', 'ncp-production-receiver.py')
 DATA, STATE = receiver.DATA, receiver.STATE
 CONFIG = DATA / 'secrets/production-serving.json'
 ENV_FILE = DATA / 'secrets/production-serving.env'
+CONTROLLER_CONFIG = DATA / 'secrets/serving-controller.json'
 PUBLIC = DATA / 'data/public'
 PUBLIC_MANIFEST = DATA / 'data/public-manifest.json'
 NETWORK = 'map-prod-net'
@@ -182,8 +186,57 @@ def verify_public(config, *, root=PUBLIC, manifest_path=PUBLIC_MANIFEST):
     return manifest
 
 
+def runtime_binding(request, config, controller):
+    binding = {'request': request, 'runtime_env_sha256': config['runtime_env_sha256'],
+               'gemini_key_sha256': config['gemini_key_sha256']}
+    if controller is not None:
+        binding['controller'] = controller
+    return receiver.canonical(binding)
+
+
 class Backend(receiver.Backend):
+    def controller(self):
+        if CONTROLLER_ROOT == ROOT:
+            return
+        receiver.source_ownership(CONTROLLER_ROOT, required_path=PROMOTED_ROOT)
+        require(Path(__file__).resolve() == CONTROLLER_ROOT / 'scripts/ncp-production-serving.py',
+                'serving_controller_script_mismatch')
+        pin = receiver.private.read_json(CONTROLLER_CONFIG, private=True)
+        receiver.exact(pin, 'schema_version source_ref controller_source_sha database_source_sha',
+                       'serving_controller_pin_invalid')
+        require(type(pin['schema_version']) is int and pin['schema_version'] == 1 and
+                pin['source_ref'] == 'master' and
+                all(isinstance(pin[key], str) and re.fullmatch(r'[a-f0-9]{40}', pin[key])
+                    for key in ('controller_source_sha', 'database_source_sha')),
+                'serving_controller_pin_invalid')
+        git = ['git', '-C', str(CONTROLLER_ROOT)]
+        require(self.command(git + ['rev-parse', '--show-toplevel']) == str(CONTROLLER_ROOT) and
+                self.command(git + ['symbolic-ref', '--short', 'HEAD']) == 'master' and
+                self.command(git + ['rev-parse', 'HEAD']) == pin['controller_source_sha'] and
+                self.command(git + ['rev-parse', 'refs/heads/master']) == pin['controller_source_sha'] and
+                not self.command(git + ['status', '--porcelain', '--untracked-files=no']) and
+                self.command(git + ['ls-files', '--error-unmatch', 'scripts/ncp-production-serving.py']) ==
+                    'scripts/ncp-production-serving.py' and
+                self.command(['git', 'rev-parse', 'HEAD']) == pin['database_source_sha'],
+                'serving_controller_source_mismatch')
+        return pin
+
+    def resolved_images(self, runtime, contract):
+        images = {name: contract['images'][name]['image'] for name in SERVICES}
+        if contract.get('caddy') is not None:
+            # self.verify() already checks the archive, report and contract against
+            # this same frozen trust anchor. Reuse the cache installer's identity.
+            override = DATA / 'installations' / runtime['release_name'] / 'caddy-verified.yml'
+            try:
+                actual = receiver.artifacts.caddy.verify_compose(override)
+            except (ValueError, OSError, KeyError, TypeError):
+                raise receiver.ReceiverError('serving_caddy_identity_unverified') from None
+            require(receiver.IMAGE.fullmatch(actual['id']), 'serving_caddy_identity_unverified')
+            images['edge'] = actual['id']
+        return images
+
     def inputs(self, config):
+        controller = self.controller()
         runtime = receiver.configuration(receiver.private.read_json(receiver.CONFIG, private=True))
         enrollment, contract, release = self.verify(runtime)
         require(release['source_ref'] == 'master', 'production_requires_master_release')
@@ -212,13 +265,14 @@ class Backend(receiver.Backend):
             raw = stream.read(131073)
         require(hashlib.sha256(raw).hexdigest() == config['runtime_env_sha256'], 'runtime_env_pin_mismatch')
         environment = validate_environment(parse_environment(raw), config, passwords)
-        image_ids = {name: self.docker(['image', 'inspect', '--format', '{{.Id}}', entry['image']])
-                     for name, entry in contract['images'].items() if name in SERVICES}
+        resolved_images = self.resolved_images(runtime, contract)
+        image_ids = {name: self.docker(['image', 'inspect', '--format', '{{.Id}}', image])
+                     for name, image in resolved_images.items()}
         require(set(image_ids) == set(SERVICES) and all(receiver.IMAGE.fullmatch(value) for value in image_ids.values()),
                 'serving_cached_images_missing')
         return {'runtime': runtime, 'request': request, 'contract': contract, 'environment': environment,
-                'images': image_ids, 'binding': receiver.canonical({'request': request,
-                    'runtime_env_sha256': config['runtime_env_sha256'], 'gemini_key_sha256': config['gemini_key_sha256']})}
+                'images': image_ids, 'resolved_images': resolved_images,
+                'binding': runtime_binding(request, config, controller)}
 
     def public_inputs(self, config):
         require(config['public_manifest_sha256'] is not None, 'ready_public_manifest_pin_required')
@@ -262,7 +316,7 @@ class Backend(receiver.Backend):
                'OSRM_FOOT_PORT': '5000', 'OSRM_BICYCLE_PORT': '5001',
                'PROXY_UPSTREAMS_DIR': str(DATA / 'data/proxy-upstreams')}
         for name in SERVICES:
-            env['PROD_' + name.upper().replace('-', '_') + '_IMAGE'] = inputs['contract']['images'][name]['image']
+            env['PROD_' + name.upper().replace('-', '_') + '_IMAGE'] = inputs['resolved_images'][name]
         command = ['docker', 'compose', '--project-directory', str(ROOT), '--env-file', '/dev/null',
                    '-f', str(ROOT / 'docker-compose.prod.yml'), *args]
         try:
@@ -276,7 +330,7 @@ class Backend(receiver.Backend):
         value = json.loads(self.compose(inputs, 'config', '--format', 'json'))
         require(value.get('name') == 'map-prod' and set(value['services']) == set(SERVICES), 'serving_service_allowlist')
         for name, entry in value['services'].items():
-            require(entry.get('image') == inputs['contract']['images'][name]['image'] and
+            require(entry.get('image') == inputs['resolved_images'][name] and
                     not entry.get('build') and entry.get('restart') == 'no', 'serving_image_or_restart_mismatch')
             require('postgres' not in entry.get('depends_on', {}), 'serving_must_not_manage_postgres')
             for port in entry.get('ports', []):
