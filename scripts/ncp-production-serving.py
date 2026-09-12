@@ -362,7 +362,7 @@ class Backend(receiver.Backend):
                 '"environment":{{json .Config.Env}}}', ids[0]]))
             require(item['image'] == inputs['images'][name] and item['running'] and not item['oom'],
                     'serving_container_unhealthy')
-            actual_env = dict(value.split('=', 1) for value in item['environment'])
+            actual_env = dict(value.split('=', 1) for value in item['environment'] if '=' in value)
             expected_env = inputs['rendered']['services'][name].get('environment', {})
             require(all(actual_env.get(key) == value for key, value in expected_env.items() if value is not None),
                     'serving_container_environment_drift')
