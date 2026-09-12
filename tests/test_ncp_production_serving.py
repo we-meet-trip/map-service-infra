@@ -237,6 +237,27 @@ class ServingInputTests(unittest.TestCase):
         self.assertTrue(all('label=com.docker.compose.project=map-prod' in call for call in calls if call[0] == 'ps'))
         self.assertNotIn('postgres', str(calls))
 
+    def test_inventory_accepts_unset_optional_environment_and_rejects_required_drift(self):
+        backend = serving.Backend()
+        cid, image = 'a' * 64, 'sha256:' + 'b' * 64
+        inputs = {'images': {'yolo': image}, 'rendered': {'services': {'yolo': {
+            'environment': {'LOG_LEVEL': None, 'GEMINI_API_KEY': 'fixture=key', 'EMPTY': ''}}}},
+            'request': {'postgres': {'container_id': 'c' * 64, 'image_id': 'sha256:' + 'd' * 64}}}
+        for key, expected_pass in (('GEMINI_API_KEY=fixture=key', True),
+                                   ('GEMINI_API_KEY=wrong', False), ('GEMINI_API_KEY', False)):
+            item = {'image': image, 'running': True, 'oom': False,
+                    'environment': ['LOG_LEVEL', 'EMPTY=', key]}
+            with self.subTest(key=key), patch.object(backend, 'docker', side_effect=[cid, json.dumps(item)]), \
+                 patch.object(backend, 'postgres') as postgres:
+                if expected_pass:
+                    self.assertEqual(backend.inventory(inputs, ('yolo',)),
+                                     {'yolo': {'container_id': cid, 'image_id': image}})
+                    postgres.assert_called_once_with('c' * 64, 'sha256:' + 'd' * 64)
+                else:
+                    with self.assertRaisesRegex(serving.receiver.ReceiverError, 'environment_drift'):
+                        backend.inventory(inputs, ('yolo',))
+                    postgres.assert_not_called()
+
 
 class ServingPromotionTests(unittest.TestCase):
     def test_reviewed_caddy_identity_reaches_compose_without_rewriting_contract(self):
