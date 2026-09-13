@@ -121,7 +121,7 @@ def validate_environment(env, config, passwords):
     redis = urllib.parse.urlsplit(env.get('REDIS_URL', ''))
     require(redis.scheme == 'redis' and redis.hostname == 'redis' and redis.port == 6379 and
             urllib.parse.unquote(redis.password or '') == passwords['REDIS_PASSWORD'] and
-            redis.path in ('', '/0') and not redis.query and not redis.fragment, 'redis_runtime_secret_mismatch')
+            not redis.path and not redis.query and not redis.fragment, 'redis_runtime_secret_mismatch')
     require(set(env.get('CORS_ALLOWED_ORIGINS', '').split(',')) == {SITE}, 'production_cors_mismatch')
     internal = {'HUB_BASE_URL': 'http://proxy:8081/hub', 'AGENT_BASE_URL': 'http://proxy:8081/agent',
                 'USER_SERVICE_BASE_URL': 'http://proxy:8081/user',

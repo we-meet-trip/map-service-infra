@@ -99,7 +99,7 @@ Required runtime identities and switches:
 | `USER_DATABASE_USER`, `AGENT_DATABASE_USER` | `map_user_runtime`, `map_agent_runtime` |
 | `USER_DATABASE_PASSWORD`, `AGENT_DATABASE_PASSWORD`, `REDIS_PASSWORD` | Match their private files |
 | `HUB_DATABASE_URL` | `postgresql+psycopg://map_hub_runtime:<URL-encoded HUB_DATABASE_PASSWORD>@postgres:5432/map_prod` |
-| `REDIS_HOST`, `REDIS_PORT`, `REDIS_URL` | `redis`, `6379`, `redis://:<URL-encoded REDIS_PASSWORD>@redis:6379/0` |
+| `REDIS_HOST`, `REDIS_PORT`, `REDIS_URL` | `redis`, `6379`, `redis://:<URL-encoded REDIS_PASSWORD>@redis:6379` — DB 경로·쿼리를 붙이면 서비스별 `REDIS_DB_*` 설정을 덮어쓰므로 사용하지 않음 |
 | `LANGGRAPH_SCHEMA` | `langgraph` |
 | `AUTH_ENFORCED`, `LOCATION_ENC_ENABLED`, `LOCATION_WIRE_ENABLED`, `APPLE_ENABLED` | `true` |
 | `TESTER_SEED_ENABLED`, `PLACES_STUB_MODE`, `TRAINING_CAPTURE_ENABLED`, `TRAINING_EXPORT_ENABLED` | `false` |

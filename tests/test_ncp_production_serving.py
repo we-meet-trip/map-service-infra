@@ -42,7 +42,7 @@ def environment():
         ('USER_DATABASE_PASSWORD', 'HUB_DATABASE_PASSWORD', 'AGENT_DATABASE_PASSWORD', 'REDIS_PASSWORD')}
     env.update({key: value for key, value in passwords.items() if key != 'HUB_DATABASE_PASSWORD'})
     env['HUB_DATABASE_URL'] = 'postgresql+psycopg://map_hub_runtime:' + passwords['HUB_DATABASE_PASSWORD'] + '@postgres:5432/map_prod'
-    env['REDIS_URL'] = 'redis://:' + passwords['REDIS_PASSWORD'] + '@redis:6379/0'
+    env['REDIS_URL'] = 'redis://:' + passwords['REDIS_PASSWORD'] + '@redis:6379'
     return env, passwords
 
 
@@ -199,6 +199,12 @@ class ServingStateTests(unittest.TestCase):
 
 
 class ServingInputTests(unittest.TestCase):
+    def test_redis_url_cannot_override_service_database_selection(self):
+        env, passwords = environment()
+        for suffix in ('/0', '/2', '?db=0', '?db=2'):
+            with self.subTest(suffix=suffix), self.assertRaises(serving.receiver.ReceiverError):
+                serving.validate_environment({**env, 'REDIS_URL': env['REDIS_URL'] + suffix}, config(), passwords)
+
     def test_production_key_and_runtime_roles_match_existing_secret_files(self):
         env, passwords = environment()
         self.assertEqual(serving.validate_environment(env, config(), passwords), env)
