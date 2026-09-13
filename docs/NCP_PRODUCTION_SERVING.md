@@ -48,6 +48,24 @@ cache, request and DB receipts retain their original bytes and validation.
 Only serving Python changes are consumed from the new checkout; changing a
 Compose file there does not alter the installed service definition.
 
+A schema-compatible User application fix may use an optional `user_release`
+object in `production-serving.json`: `release_name`, `security_approval_sha256`
+and `release_manifest_sha256`. Stage and cache the reviewed release through the
+existing artifact tools and place its verified `release.json` in
+`installations/<release_name>/`; do not execute the first-install receiver again.
+The controller verifies those pins, the master release, the unchanged source
+commits of every other application, and the cached User digest and OCI revision.
+Release CI relabels all candidate images, so unchanged sources may have new
+digests. Only User is selected from that unedited CI release; every other runtime
+image remains pinned by the original installation contract. Do not construct a
+mixed release manifest and attribute it to the original CI run.
+The initial runtime config, database source,
+bootstrap request, receipts and PostgreSQL/Redis identities stay unchanged.
+The update is included in the readiness binding, so it needs a new `start-private`
+and application acceptance before publication or resume. Review must establish
+schema compatibility; this path does not run or authorize migrations. Keep the
+previous serving configuration and image for a verified rollback.
+
 For this installation, use `/opt/map-serving-controller/scripts/ncp-production-serving.py`
 for `verify`, `start-private`, `publish` and `resume` below. A new controller pin
 requires a fresh successful `start-private` before publication or resume; the
@@ -99,7 +117,7 @@ Required runtime identities and switches:
 | `USER_DATABASE_USER`, `AGENT_DATABASE_USER` | `map_user_runtime`, `map_agent_runtime` |
 | `USER_DATABASE_PASSWORD`, `AGENT_DATABASE_PASSWORD`, `REDIS_PASSWORD` | Match their private files |
 | `HUB_DATABASE_URL` | `postgresql+psycopg://map_hub_runtime:<URL-encoded HUB_DATABASE_PASSWORD>@postgres:5432/map_prod` |
-| `REDIS_HOST`, `REDIS_PORT`, `REDIS_URL` | `redis`, `6379`, `redis://:<URL-encoded REDIS_PASSWORD>@redis:6379/0` |
+| `REDIS_HOST`, `REDIS_PORT`, `REDIS_URL` | `redis`, `6379`, `redis://:<URL-encoded REDIS_PASSWORD>@redis:6379` — DB 경로·쿼리를 붙이면 서비스별 `REDIS_DB_*` 설정을 덮어쓰므로 사용하지 않음 |
 | `LANGGRAPH_SCHEMA` | `langgraph` |
 | `AUTH_ENFORCED`, `LOCATION_ENC_ENABLED`, `LOCATION_WIRE_ENABLED`, `APPLE_ENABLED` | `true` |
 | `TESTER_SEED_ENABLED`, `PLACES_STUB_MODE`, `TRAINING_CAPTURE_ENABLED`, `TRAINING_EXPORT_ENABLED` | `false` |

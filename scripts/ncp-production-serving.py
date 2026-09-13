@@ -51,7 +51,8 @@ require = receiver.require
 
 
 def configuration(value):
-    receiver.exact(value, 'schema_version environment runtime_env_sha256 public_manifest_sha256 gemini_key_sha256',
+    keys = 'schema_version environment runtime_env_sha256 public_manifest_sha256 gemini_key_sha256'
+    receiver.exact(value, keys + (' user_release' if 'user_release' in value else ''),
                    'serving_configuration_invalid')
     require(type(value['schema_version']) is int and value['schema_version'] == 1 and
             value['environment'] == 'prod', 'production_serving_required')
@@ -60,6 +61,14 @@ def configuration(value):
     require(value['public_manifest_sha256'] is None or
             isinstance(value['public_manifest_sha256'], str) and receiver.HEX.fullmatch(value['public_manifest_sha256']),
             'public_input_hash_invalid')
+    update = value.get('user_release')
+    if update is not None:
+        receiver.exact(update, 'release_name security_approval_sha256 release_manifest_sha256',
+                       'user_release_configuration_invalid')
+        require(isinstance(update['release_name'], str) and
+                re.fullmatch(r'[a-z][a-z0-9-]{1,63}', update['release_name']), 'user_release_name_invalid')
+        require(all(isinstance(update[key], str) and receiver.HEX.fullmatch(update[key]) for key in
+                    ('security_approval_sha256', 'release_manifest_sha256')), 'user_release_pin_required')
     return value
 
 
@@ -121,7 +130,7 @@ def validate_environment(env, config, passwords):
     redis = urllib.parse.urlsplit(env.get('REDIS_URL', ''))
     require(redis.scheme == 'redis' and redis.hostname == 'redis' and redis.port == 6379 and
             urllib.parse.unquote(redis.password or '') == passwords['REDIS_PASSWORD'] and
-            redis.path in ('', '/0') and not redis.query and not redis.fragment, 'redis_runtime_secret_mismatch')
+            not redis.path and not redis.query and not redis.fragment, 'redis_runtime_secret_mismatch')
     require(set(env.get('CORS_ALLOWED_ORIGINS', '').split(',')) == {SITE}, 'production_cors_mismatch')
     internal = {'HUB_BASE_URL': 'http://proxy:8081/hub', 'AGENT_BASE_URL': 'http://proxy:8081/agent',
                 'USER_SERVICE_BASE_URL': 'http://proxy:8081/user',
@@ -191,6 +200,8 @@ def runtime_binding(request, config, controller):
                'gemini_key_sha256': config['gemini_key_sha256']}
     if controller is not None:
         binding['controller'] = controller
+    if config.get('user_release') is not None:
+        binding['user_release'] = config['user_release']
     return receiver.canonical(binding)
 
 
@@ -235,6 +246,44 @@ class Backend(receiver.Backend):
             images['edge'] = actual['id']
         return images
 
+    def updated_user_image(self, update, original_release):
+        """A reviewed User-only release; the initial DB contract remains immutable.
+
+        Only application changes compatible with the installed schema belong here.
+        This path neither runs migrations nor admits another service image change.
+        """
+        stage = DATA / 'staging' / update['release_name']
+        receiver.artifacts.verify_installed(stage, 'prod', update['security_approval_sha256'])
+        contract = receiver.artifacts.read_json(stage / 'contract.json')
+        installation = DATA / 'installations' / update['release_name']
+        release_path = installation / 'release.json'
+        require(receiver.private.digest(release_path) == update['release_manifest_sha256'],
+                'user_release_manifest_pin_mismatch')
+        release = receiver.private.read_json(release_path, private=True)
+        receiver.release_binding(contract, release)
+        require(release['source_ref'] == 'master', 'user_update_requires_master')
+        # Release CI relabels every image, changing digests even for unchanged
+        # source. Only take User from that original, unedited CI bundle; all other
+        # running images remain resolved from the first-install contract above.
+        require(all(release['services'][name][key] == entry[key]
+                    for name, entry in original_release['services'].items() if name != 'user'
+                    for key in ('source_repo', 'source_sha')), 'user_update_changes_other_sources')
+        cache = receiver.private.read_json(installation / 'cache-receipt.json', private=True)
+        require(cache == {'status': 'images_cached', 'role': 'prod',
+                         'security_approval_sha256': update['security_approval_sha256'],
+                         'contract_sha256': receiver.artifacts.sha256(stage / 'contract.json'),
+                         'images': contract['images'], 'receiver_executed': False, 'serving_changes': 0},
+                'user_update_cache_receipt_mismatch')
+        image = contract['images']['user']['image']
+        actual = json.loads(self.docker(['image', 'inspect', '--format',
+            '{"os":{{json .Os}},"arch":{{json .Architecture}},"digests":{{json .RepoDigests}},'
+            '"labels":{{json .Config.Labels}}}', image]))
+        require(actual['os'] == 'linux' and actual['arch'] == 'amd64' and
+                image in (actual['digests'] or []) and
+                (actual['labels'] or {}).get('org.opencontainers.image.revision') ==
+                release['services']['user']['source_sha'], 'user_update_cached_image_drift')
+        return image
+
     def inputs(self, config):
         controller = self.controller()
         runtime = receiver.configuration(receiver.private.read_json(receiver.CONFIG, private=True))
@@ -266,6 +315,8 @@ class Backend(receiver.Backend):
         require(hashlib.sha256(raw).hexdigest() == config['runtime_env_sha256'], 'runtime_env_pin_mismatch')
         environment = validate_environment(parse_environment(raw), config, passwords)
         resolved_images = self.resolved_images(runtime, contract)
+        if config.get('user_release') is not None:
+            resolved_images['user'] = self.updated_user_image(config['user_release'], release)
         image_ids = {name: self.docker(['image', 'inspect', '--format', '{{.Id}}', image])
                      for name, image in resolved_images.items()}
         require(set(image_ids) == set(SERVICES) and all(receiver.IMAGE.fullmatch(value) for value in image_ids.values()),

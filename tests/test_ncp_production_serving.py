@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import importlib.util
 import json
@@ -7,6 +8,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from test_ncp_production_receiver import contract as release_contract, manifest as release_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('ncp_serving', ROOT / 'scripts/ncp-production-serving.py')
@@ -42,7 +44,7 @@ def environment():
         ('USER_DATABASE_PASSWORD', 'HUB_DATABASE_PASSWORD', 'AGENT_DATABASE_PASSWORD', 'REDIS_PASSWORD')}
     env.update({key: value for key, value in passwords.items() if key != 'HUB_DATABASE_PASSWORD'})
     env['HUB_DATABASE_URL'] = 'postgresql+psycopg://map_hub_runtime:' + passwords['HUB_DATABASE_PASSWORD'] + '@postgres:5432/map_prod'
-    env['REDIS_URL'] = 'redis://:' + passwords['REDIS_PASSWORD'] + '@redis:6379/0'
+    env['REDIS_URL'] = 'redis://:' + passwords['REDIS_PASSWORD'] + '@redis:6379'
     return env, passwords
 
 
@@ -199,6 +201,12 @@ class ServingStateTests(unittest.TestCase):
 
 
 class ServingInputTests(unittest.TestCase):
+    def test_redis_url_cannot_override_service_database_selection(self):
+        env, passwords = environment()
+        for suffix in ('/0', '/2', '?db=0', '?db=2'):
+            with self.subTest(suffix=suffix), self.assertRaises(serving.receiver.ReceiverError):
+                serving.validate_environment({**env, 'REDIS_URL': env['REDIS_URL'] + suffix}, config(), passwords)
+
     def test_production_key_and_runtime_roles_match_existing_secret_files(self):
         env, passwords = environment()
         self.assertEqual(serving.validate_environment(env, config(), passwords), env)
@@ -260,6 +268,67 @@ class ServingInputTests(unittest.TestCase):
 
 
 class ServingPromotionTests(unittest.TestCase):
+    def test_user_release_requires_independent_master_evidence_and_preserves_other_images(self):
+        backend = serving.Backend()
+        original, prior_release = release_contract(), release_manifest()
+        candidate, release = copy.deepcopy(original), copy.deepcopy(prior_release)
+        release['source_ref'] = 'master'
+        release['services']['user'].update(source_sha='e' * 40, digest='sha256:' + 'f' * 64)
+        image = release['services']['user']['image'] + '@' + release['services']['user']['digest']
+        candidate['images']['user'].update(image=image, source_commit='e' * 40)
+        update = {'release_name': 'prod-user-update', 'security_approval_sha256': 'a' * 64,
+                  'release_manifest_sha256': 'b' * 64}
+        actual = {'os': 'linux', 'arch': 'amd64', 'digests': [image],
+                  'labels': {'org.opencontainers.image.revision': 'e' * 40}}
+        cache = {'status': 'images_cached', 'role': 'prod', 'security_approval_sha256': 'a' * 64,
+                 'contract_sha256': 'c' * 64, 'images': candidate['images'],
+                 'receiver_executed': False, 'serving_changes': 0}
+        preserved = json.dumps([original, prior_release], sort_keys=True)
+
+        def check(expected=None):
+            with patch.object(serving.receiver.artifacts, 'verify_installed') as verify, \
+                 patch.object(serving.receiver.artifacts, 'read_json', return_value=candidate), \
+                 patch.object(serving.receiver.artifacts, 'sha256', return_value='c' * 64), \
+                 patch.object(serving.receiver.private, 'digest', return_value=update['release_manifest_sha256']), \
+                 patch.object(serving.receiver.private, 'read_json', side_effect=[release, cache]), \
+                 patch.object(backend, 'docker', return_value=json.dumps(actual)) as docker:
+                if expected:
+                    with self.assertRaisesRegex(serving.receiver.ReceiverError, expected):
+                        backend.updated_user_image(update, prior_release)
+                else:
+                    self.assertEqual(backend.updated_user_image(update, prior_release), image)
+                    verify.assert_called_once_with(serving.DATA / 'staging/prod-user-update', 'prod', 'a' * 64)
+                    self.assertEqual(docker.call_count, 1)
+                    self.assertEqual(docker.call_args.args[0][:2], ['image', 'inspect'])
+            self.assertEqual(json.dumps([original, prior_release], sort_keys=True), preserved)
+
+        check()
+        release['source_ref'] = 'develop'; check('requires_master'); release['source_ref'] = 'master'
+        # Ordinary release CI relabels unchanged source images; those candidate
+        # digests are valid evidence but must not replace the running images.
+        release['services']['hub']['digest'] = 'sha256:' + '1' * 64
+        candidate['images']['hub']['image'] = release['services']['hub']['image'] + '@sha256:' + '1' * 64
+        check()
+        release['services']['admin']['source_sha'] = 'f' * 40
+        release['services']['admin-web']['source_sha'] = 'f' * 40; check('other_sources')
+        release['services']['admin'] = copy.deepcopy(prior_release['services']['admin'])
+        release['services']['admin-web'] = copy.deepcopy(prior_release['services']['admin-web'])
+        cache['serving_changes'] = 1; check('cache_receipt'); cache['serving_changes'] = 0
+        actual['digests'] = []; check('cached_image'); actual['digests'] = [image]
+        actual['labels'] = {}; check('cached_image')
+
+    def test_user_release_is_pinned_in_readiness_and_rejects_paths_or_missing_pins(self):
+        first = config()
+        update = {'release_name': 'prod-user-update', 'security_approval_sha256': 'a' * 64,
+                  'release_manifest_sha256': 'b' * 64}
+        second = {**first, 'user_release': update}
+        self.assertEqual(serving.configuration(second), second)
+        self.assertNotEqual(serving.runtime_binding({}, first, None), serving.runtime_binding({}, second, None))
+        for key, value in (('release_name', '../prod'), ('security_approval_sha256', None),
+                           ('release_manifest_sha256', 'unpinned')):
+            with self.subTest(key=key), self.assertRaises(serving.receiver.ReceiverError):
+                serving.configuration({**first, 'user_release': {**update, key: value}})
+
     def test_reviewed_caddy_identity_reaches_compose_without_rewriting_contract(self):
         backend = serving.Backend()
         index = 'sha256:' + 'a' * 64
