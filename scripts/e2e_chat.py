@@ -104,6 +104,61 @@ async def wait_for(sock, marker, seconds):
         return False
 
 
+
+
+def ensure_consents(base, token):
+    """서비스 약관과 AI 외부 전송 동의를 실제 경로로 채운다.
+
+    두 관문(생년월일·약관, AI 전송)이 막고 있으면 채팅 이전 단계에서 403 이 난다.
+    화면이 하는 것과 같은 호출을 그대로 쓴다.
+    """
+    status, current = http("GET", f"{base}/api/v1/consents", token)
+    if status == 200 and not current.get("accepted"):
+        http("POST", f"{base}/api/v1/consents", token, {
+            "terms_version": current["terms_version"],
+            "privacy_version": current["privacy_version"],
+            "is_18_or_older": True, "terms_accepted": True, "privacy_accepted": True})
+    status, scopes = http("GET", f"{base}/api/v1/consents/ai", token)
+    for item in (scopes if isinstance(scopes, list) else []):
+        if item.get("accepted"):
+            continue
+        http("POST", f"{base}/api/v1/consents/ai/{item['scope']}", token, {
+            "policy_version": item["policy_version"], "accepted": True,
+            "include_location": False, "expected_revision": item.get("revision", 0) or 0})
+
+
+def seed_draft(args, job_id, draft, email):
+    """초안과 함께 추천 작업의 주인을 심는다.
+
+    일정 저장은 그 초안을 만든 사람인지 본다(RECOMMEND_002). 초안은 본래 agent 가
+    만들고 작업 행은 BFF 가 남기는데, 여기서는 모델을 부르지 않으므로 둘 다 직접 심는다.
+    """
+    seeded = subprocess.run(
+        ["docker", "exec",
+         *(["-e", f"REDISCLI_AUTH={args.redis_password}"] if args.redis_password else []),
+         args.redis, "redis-cli", "-n", args.redis_db,
+         "SET", f"recommend:result:{job_id}", json.dumps(draft, ensure_ascii=False),
+         "EX", "3600"],
+        capture_output=True, text=True)
+    if seeded.returncode != 0:
+        raise SystemExit(f"초안 심기 실패({args.redis}): {seeded.stderr.strip()}")
+    # 작업의 주인과, 그 작업이 어느 동의 판에서 시작됐는지를 함께 남긴다. 둘 중 하나라도
+    # 없으면 일정 저장이 RECOMMEND_002 / AI_CONSENT_CHANGED 로 막힌다.
+    statement = (
+        "INSERT INTO user_service.recommend_jobs (job_id, status, owner_user_id) "
+        f"SELECT '{job_id}', 'done', id FROM user_service.users WHERE email='{email}'; "
+        "INSERT INTO user_service.external_ai_job_consents (job_id, user_id, revision) "
+        f"SELECT '{job_id}', u.id, c.revision FROM user_service.users u "
+        "JOIN user_service.external_ai_consents c ON c.user_id = u.id AND c.scope = 'trip' "
+        f"WHERE u.email='{email}';")
+    owned = subprocess.run(
+        ["docker", "exec", args.pg, "psql", "-U", args.pg_user, "-d", args.pg_db,
+         "-v", "ON_ERROR_STOP=1", "-tAc", statement],
+        capture_output=True, text=True)
+    if owned.returncode != 0:
+        raise SystemExit(f"작업 주인 심기 실패({args.pg}): {owned.stderr.strip()}")
+
+
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:8090")
@@ -116,6 +171,10 @@ async def main():
     # 저장소에 비밀번호가 걸린 스택이면 환경변수나 이 인자로 준다.
     ap.add_argument("--redis-password",
                     default=os.environ.get("REDIS_PASSWORD", ""))
+    ap.add_argument("--pg", default="map-service-postgres",
+                    help="추천 작업 주인을 심을 postgres 컨테이너 이름")
+    ap.add_argument("--pg-user", default="map")
+    ap.add_argument("--pg-db", default="map")
     args = ap.parse_args()
     base = args.base.rstrip("/")
     ws_url = base.replace("https://", "wss://").replace("http://", "ws://") + "/ws/chat"
@@ -124,6 +183,8 @@ async def main():
     token_a = login(base, "maptester1@admin.map", args.password)
     token_b = login(base, "maptester2@admin.map", args.password)
     record("서로 다른 두 사람이 각자 토큰을 받는다", token_a != token_b)
+    for token in (token_a, token_b):
+        ensure_consents(base, token)
 
     # 방은 저장된 일정에 1:1 로 붙는다. 초안을 하나 만들어 일정으로 저장한다.
     job_id = str(uuid.uuid4())
@@ -132,19 +193,7 @@ async def main():
                          "address": "강원 속초시", "lat": 38.1907, "lng": 128.5998,
                          "stay_minutes": 60}],
              "visit_order": [1], "legs": []}
-    # 초안은 본래 agent 가 만들어 넣는다. 여기서는 모델 호출 없이 채팅만 보려고
-    # 같은 자리에 직접 심는다. BFF 가 읽을 때 봉투가 아니면 그대로 쓰므로,
-    # 평문으로 심어도 저장 단계에서 감싸진다.
-    seeded = subprocess.run(
-        ["docker", "exec",
-         *(["-e", f"REDISCLI_AUTH={args.redis_password}"]
-           if args.redis_password else []),
-         args.redis, "redis-cli", "-n", args.redis_db,
-         "SET", f"recommend:result:{job_id}", json.dumps(draft, ensure_ascii=False),
-         "EX", "3600"],
-        capture_output=True, text=True)
-    if seeded.returncode != 0:
-        raise SystemExit(f"초안 심기 실패({args.redis}): {seeded.stderr.strip()}")
+    seed_draft(args, job_id, draft, "maptester1@admin.map")
 
     status, body = http("POST", f"{base}/api/v1/schedules", token_a, {
         "job_id": job_id, "title": "채팅 검사", "date_start": "2026-09-10",
