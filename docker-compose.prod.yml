@@ -73,7 +73,13 @@ services:
       - /srv/map-prod/data/public:/srv/public:ro
       - /srv/map-prod/data/caddy-data:/data
       - /srv/map-prod/data/caddy-config:/config
-    mem_limit: 128m
+    # 앞단은 TLS 를 끝내고 연결을 들고 있는 자리라, 뒤쪽이 느려지거나 끊기면
+    # 끝나지 못한 연결이 쌓이는 만큼 메모리가 함께 늘어난다. 128m 에서는 그
+    # 봉우리가 한도를 넘어 커널이 프로세스를 죽였고, 되살리는 장치가 없어
+    # 바깥에서 보면 포트가 통째로 닫힌 것처럼 보였다. 뒤쪽 nginx 는 같은 값에서
+    # 버티지만 이 앞단은 더 무겁게 잡는다. 호스트에 남는 양에 비하면 작은
+    # 자리이므로, 봉우리를 흡수할 만큼 올려 둔다.
+    mem_limit: 512m
     cpus: 0.5
     logging:
       driver: json-file
