@@ -1,0 +1,11 @@
+[Unit]
+Description=MAP NCP production public serving watch schedule
+
+[Timer]
+OnBootSec=180
+OnUnitActiveSec=30
+AccuracySec=1s
+Unit=map-prod-serving-watchdog.service
+
+[Install]
+WantedBy=timers.target
