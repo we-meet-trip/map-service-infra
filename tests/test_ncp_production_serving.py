@@ -37,7 +37,7 @@ def environment():
     for name in ('JWT_PRIVATE_KEY', 'JWT_PUBLIC_KEY', 'LOCATION_ENC_ACTIVE_KID', 'LOCATION_ENC_KEYS',
                  'LOCATION_WIRE_KEY', 'CHECKPOINT_ENC_ACTIVE_KID', 'CHECKPOINT_ENC_KEYS', 'INTERNAL_SERVICE_TOKEN',
                  'USER_ADMIN_INTERNAL_TOKEN', 'HUB_ADMIN_INTERNAL_TOKEN', 'VISION_INTERNAL_TOKEN', 'GEMINI_MODEL',
-                 'KMA_SERVICE_KEY', 'KAKAO_REST_API_KEY', 'KAKAO_OAUTH_CLIENT_ID', 'KAKAO_OAUTH_CLIENT_SECRET',
+                 'KMA_SERVICE_KEY', 'KAKAO_REST_API_KEY', 'KAKAO_APP_ID',
                  'APPLE_TEAM_ID', 'APPLE_KEY_ID', 'APPLE_PRIVATE_KEY_B64', 'EDGE_EMAIL'):
         env[name] = 'fixture-' + name.lower()
     passwords = {name: 'fixture-' + name.lower() for name in

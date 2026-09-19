@@ -95,9 +95,7 @@ def validate_environment(env, config, passwords):
     fixed = {'APP_ENV': 'prod', 'POSTGRES_DB': 'map_prod', 'POSTGRES_HOST': 'postgres',
              'POSTGRES_PORT': '5432', 'USER_DATABASE_USER': 'map_user_runtime',
              'AGENT_DATABASE_USER': 'map_agent_runtime', 'REDIS_HOST': 'redis', 'REDIS_PORT': '6379',
-             'LANGGRAPH_SCHEMA': 'langgraph', 'KAKAO_PUBLIC_ORIGIN': API,
-             'KAKAO_OAUTH_REDIRECT_URI': API + '/api/v1/auth/kakao/callback',
-             'KAKAO_APP_CALLBACK_SCHEME': 'mapauth://kakao', 'CHAT_INVITE_BASE_URL': SITE + '/invite/'}
+             'LANGGRAPH_SCHEMA': 'langgraph', 'CHAT_INVITE_BASE_URL': SITE + '/invite/'}
     require(all(env.get(key) == value for key, value in fixed.items()), 'production_runtime_identity_mismatch')
     switches = {'AUTH_ENFORCED': 'true', 'TESTER_SEED_ENABLED': 'false', 'PLACES_STUB_MODE': 'false',
                 'TRAINING_CAPTURE_ENABLED': 'false', 'TRAINING_EXPORT_ENABLED': 'false',
@@ -108,7 +106,7 @@ def validate_environment(env, config, passwords):
                 'LOCATION_WIRE_KEY', 'CHECKPOINT_ENC_ACTIVE_KID', 'CHECKPOINT_ENC_KEYS',
                 'INTERNAL_SERVICE_TOKEN', 'USER_ADMIN_INTERNAL_TOKEN', 'HUB_ADMIN_INTERNAL_TOKEN',
                 'VISION_INTERNAL_TOKEN', 'GEMINI_API_KEY', 'GEMINI_MODEL', 'KMA_SERVICE_KEY',
-                'KAKAO_REST_API_KEY', 'KAKAO_OAUTH_CLIENT_ID', 'KAKAO_OAUTH_CLIENT_SECRET',
+                'KAKAO_REST_API_KEY', 'KAKAO_APP_ID',
                 'APPLE_CLIENT_ID', 'APPLE_TEAM_ID', 'APPLE_KEY_ID', 'APPLE_PRIVATE_KEY_B64', 'EDGE_EMAIL')
     require(all(env.get(key) and not env[key].lower().startswith(('replace', 'required', 'changeme'))
                 for key in required), 'production_runtime_input_missing')
