@@ -253,11 +253,12 @@ resource "google_monitoring_alert_policy" "uptime" {
   }
 }
 
+# API 가 돌려주는 정규형(columns 는 문자열, targetAxis 기본값 명시)으로 써서 plan 마다 대시보드가 바뀐 것으로 나오지 않게 한다.
 resource "google_monitoring_dashboard" "this" {
   dashboard_json = jsonencode({
     displayName = local.name
     gridLayout = {
-      columns = 2
+      columns = "2"
       widgets = [
         for title, chart in {
           "Uptime check passed" = { filter = local.uptime_filter, aligner = "ALIGN_FRACTION_TRUE" }
@@ -268,7 +269,8 @@ resource "google_monitoring_dashboard" "this" {
           title = title
           xyChart = {
             dataSets = [{
-              plotType = "LINE"
+              plotType   = "LINE"
+              targetAxis = "Y1"
               timeSeriesQuery = {
                 timeSeriesFilter = {
                   filter      = chart.filter
