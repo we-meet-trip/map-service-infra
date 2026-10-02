@@ -1,0 +1,57 @@
+# 무료 동적 DNS(duckdns) 이름을 이 서버의 지금 주소로 맞춘다. 앞단 파일과 함께 쓴다.
+#
+#   docker compose --env-file ./.env.test \
+#     -f docker-compose.yml -f docker-compose.test.yml \
+#     -f docker-compose.edge.yml -f docker-compose.dns.yml \
+#     --profile full --profile edge --profile dns up -d
+#
+# 앞단 파일과 따로 둔다. compose 는 프로필로 꺼 둔 서비스의 ${VAR:?} 도 먼저
+# 보간하다 멈추므로, 한 파일에 있으면 이 서비스를 쓰지 않는 서버도 아래 두
+# 값을 채워야만 앞단을 띄울 수 있다. 도메인을 직접 관리하는 서버는 이 파일을
+# 얹지 않는다.
+#
+# 클라우드 서버의 바깥 주소는 껐다 켜면 바뀔 수 있다. 주소가 바뀌면 앱이
+# 서버를 찾지 못하는데, 그 사실은 앱을 열어 봐야 드러난다. 그래서 주기적으로
+# 지금 주소를 알려 이름이 늘 따라오게 한다.
+#
+# 발급처는 실패를 200 응답에 "KO" 라는 본문으로 알린다. 응답 코드만 보면
+# 성공으로 읽히므로 본문을 확인한다.
+
+# 로그 상한. 앵커는 파일을 넘어오지 않으므로 여기에 다시 적는다.
+# 늘 켜 두는 것이고 실패할 때만 한 줄씩 적는다(5분 주기).
+x-dns-logging: &dns-logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  dns:
+    <<: *dns-logging
+    image: curlimages/curl:8.11.1
+    container_name: !reset null
+    restart: unless-stopped
+    profiles: ["dns"]
+    environment:
+      DUCKDNS_SUBDOMAIN: ${DUCKDNS_SUBDOMAIN:?duckdns 에 만든 이름을 정해야 한다}
+      DUCKDNS_TOKEN: ${DUCKDNS_TOKEN:?duckdns 발급 토큰을 정해야 한다}
+    command:
+      - sh
+      - -c
+      - |
+        while :; do
+          body=$$(curl -fsS --max-time 20 \
+            "https://www.duckdns.org/update?domains=$$DUCKDNS_SUBDOMAIN&token=$$DUCKDNS_TOKEN&ip=" \
+            || echo "REQUEST_FAILED")
+          case "$$body" in
+            OK*) : ;;
+            *) echo "[dns] 주소 갱신 실패: $$body" ;;
+          esac
+          sleep 300
+        done
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: 16m

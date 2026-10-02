@@ -46,14 +46,27 @@ guard_spec = importlib.util.spec_from_file_location("cutover_watchdog", Path(__f
 cutover_guard = importlib.util.module_from_spec(guard_spec)
 guard_spec.loader.exec_module(cutover_guard)
 
-REPO = Path("/home/mapadmin26/map-service-infra")
+TARGET_FILE = Path("/etc/map-deploy/target.json")
+TARGET_KEYS = frozenset({"project", "zone", "instance", "instance_id", "public_url", "repo", "dns_profile"})
+# The test host that predates the target file. A process on a host without the
+# file is bound to these values, and verify_instance still compares them with
+# the machine's own metadata, so no other machine can act under them.
+LEGACY_TARGET = {"project": "mapcenter-b59ca", "zone": "us-central1-a", "instance": "map-test",
+                 "instance_id": "2327348931395410137", "public_url": "https://mapapptest.duckdns.org",
+                 "repo": "/home/mapadmin26/map-service-infra", "dns_profile": True}
+
+
+def apply_target(target):
+    """Bind the deployment identity that every later check in this process reads."""
+    global PROJECT, ZONE, INSTANCE, INSTANCE_ID, PUBLIC_URL, REPO, DNS_PROFILE
+    PROJECT, ZONE, INSTANCE = target["project"], target["zone"], target["instance"]
+    INSTANCE_ID, PUBLIC_URL = target["instance_id"], target["public_url"]
+    REPO, DNS_PROFILE = Path(target["repo"]), target["dns_profile"]
+
+
+apply_target(LEGACY_TARGET)
 STATE = Path("/var/lib/map-deploy")
 BACKUP_ENV = Path("/etc/map-deploy/backup.env")
-PROJECT = "mapcenter-b59ca"
-ZONE = "us-central1-a"
-INSTANCE = "map-test"
-INSTANCE_ID = "2327348931395410137"
-PUBLIC_URL = "https://mapapptest.duckdns.org"
 # The published proxy port on this host. The private smoke and the
 # rollover probes must name the same origin or one of them is checking
 # something that is not there.
@@ -76,6 +89,22 @@ INFRASTRUCTURE = {
                        "redis-exporter": "oliver006/redis_exporter", "node-exporter": "prom/node-exporter"},
 }
 INFRA_BUNDLE_MARKER = "# MAP_INFRA_IMAGE_BUNDLE_VERSION=1"
+
+
+# DNS_PROFILE says whether this host keeps a free dynamic-DNS name pointed at
+# itself. A host that owns its DNS record never renders, pins, pulls or keeps
+# the updater, so its environment needs no updater token.
+def app_services():
+    return APP_SERVICES if DNS_PROFILE else tuple(s for s in APP_SERVICES if s != "dns")
+
+
+def approved_infrastructure(project):
+    services = INFRASTRUCTURE[project]
+    return services if DNS_PROFILE else {k: v for k, v in services.items() if k != "dns"}
+
+
+def service_profiles():
+    return ("full", "vision", "edge", "dns") if DNS_PROFILE else ("full", "vision", "edge")
 
 
 class DeployError(Exception):
@@ -130,6 +159,38 @@ def read_host_json(path):
         return json.loads(content, object_pairs_hook=release.unique_object)
     except (OSError, ValueError, TypeError):
         raise DeployError("root-owned host policy missing or invalid") from None
+
+
+def validate_target(data):
+    require(isinstance(data, dict) and set(data) == TARGET_KEYS, "invalid deployment target schema")
+    require(all(isinstance(data[key], str) for key in TARGET_KEYS - {"dns_profile"})
+            and type(data["dns_profile"]) is bool, "invalid deployment target types")
+    # public_url is a bare https origin because every probe appends its own path.
+    require(bool(re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", data["project"])
+                 and re.fullmatch(r"[a-z]+-[a-z]+[0-9]+-[a-z]", data["zone"])
+                 and re.fullmatch(r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", data["instance"])
+                 and re.fullmatch(r"[1-9][0-9]{0,19}", data["instance_id"])
+                 and re.fullmatch(r"https://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}",
+                                  data["public_url"])
+                 and re.fullmatch(r"(?:/[A-Za-z0-9_][A-Za-z0-9._-]*)+", data["repo"])),
+            "invalid deployment target value")
+    return data
+
+
+def load_target():
+    """This host's deployment identity from the root-owned target file.
+
+    Only a truly absent file, not even a dangling link, means the original test
+    host. A file that is present is used only when it is root-owned and valid.
+    Any other lookup failure (a parent that is not a directory, a link loop, no
+    permission) is raised rather than read as absent.
+    """
+    try:
+        TARGET_FILE.lstat()
+    except FileNotFoundError:
+        return dict(LEGACY_TARGET)
+    validate_state_directory(TARGET_FILE.parent.lstat())
+    return validate_target(read_host_json(TARGET_FILE))
 
 
 def exact_image_tuple(value):
@@ -387,14 +448,15 @@ def stop_process_group(process):
     process.communicate()
 
 
-def command_status(args, *, env=None, timeout=300, cwd=REPO, umask=-1, accept=(0,)):
+def command_status(args, *, env=None, timeout=300, cwd=None, umask=-1, accept=(0,)):
     """Run one child and return its exit code with its output.
 
     A caller that can act on a particular non-zero code lists it in accept;
-    everything else still ends the deployment exactly as before.
+    everything else still ends the deployment exactly as before. Without an
+    explicit cwd the child runs in the checkout bound when it is called.
     """
     # A timed-out shell must not leave its compose/backup children racing rollback.
-    process = subprocess.Popen(args, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE,
+    process = subprocess.Popen(args, cwd=REPO if cwd is None else cwd, env=env, text=True, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, start_new_session=True, umask=umask)
     try:
         output, _errors = process.communicate(timeout=timeout)
@@ -524,6 +586,8 @@ def unpack_payload(raw, directory):
 
 def verify_instance():
     require(os.geteuid() == 0, "receiver requires root forced command")
+    # Every server entry point passes here before it reads a target value.
+    apply_target(load_target())
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     for path, expected in (("project/project-id", PROJECT), ("instance/name", INSTANCE),
                            ("instance/id", INSTANCE_ID), ("instance/zone", ZONE)):
@@ -590,6 +654,10 @@ def replace_environment(path, content, metadata):
 def compose_command(*, admin=False, bundle=None, env_file=None, infrastructure=None):
     files = (["docker-compose.admin.yml", "docker-compose.admin.test.yml", "docker-compose.admin.registry.yml"]
              if admin else ["docker-compose.yml", "docker-compose.test.yml", "docker-compose.registry.yml", "docker-compose.edge.yml"])
+    # A checkout from before the split still carries the updater inside the
+    # edge file; only a later checkout has it separately.
+    if not admin and DNS_PROFILE and (REPO / "docker-compose.dns.yml").is_file():
+        files.append("docker-compose.dns.yml")
     if admin and ADMIN_DETACHED:
         files = ["docker-compose.target-exporters.yml"]
     if admin and not ADMIN_DETACHED and (ADMIN_NCP_OVERLAY.exists() or ADMIN_NCP_OVERLAY.is_symlink()):
@@ -608,7 +676,7 @@ def compose_command(*, admin=False, bundle=None, env_file=None, infrastructure=N
         args.extend(("-f", str(infrastructure / ("compose.admin-infrastructure.yml" if admin else "compose.infrastructure.yml"))))
     if not admin:
         args.extend(("-f", str(STATE / "public-restart.yml")))
-    for profile in (("monitoring",) if admin else ("full", "vision", "edge", "dns")):
+    for profile in (("monitoring",) if admin else service_profiles()):
         args.extend(("--profile", profile))
     return args
 
@@ -688,12 +756,12 @@ def prepare_infrastructure(directory, bundle, env_file, captured, env):
         config = json.loads(command(compose_command(admin=admin, bundle=bundle, env_file=env_file)
                                     + ["config", "--format", "json"], env=env))
         require(config.get("name") == project, "wrong infrastructure Compose project")
-        profiles = {"monitoring"} if admin else {"full", "vision", "edge", "dns"}
+        profiles = {"monitoring"} if admin else set(service_profiles())
         selected = {name: item for name, item in config.get("services", {}).items()
                     if not item.get("profiles") or profiles.intersection(item["profiles"])}
         app_names = set(release.SERVICES[4:] if admin else release.SERVICES[:4])
         candidates = set(selected) - app_names
-        require(candidates <= INFRASTRUCTURE[project].keys(), "unapproved infrastructure service")
+        require(candidates <= approved_infrastructure(project).keys(), "unapproved infrastructure service")
         require(set(captured[project]) <= candidates, "existing infrastructure cannot be removed by app release")
         if not admin:
             require({"postgres", "redis"} <= candidates, "stateful infrastructure is required")
@@ -703,7 +771,7 @@ def prepare_infrastructure(directory, bundle, env_file, captured, env):
             item = selected[service]
             requested = item.get("image", "")
             match = re.fullmatch(r"(.+?)(?::([A-Za-z0-9_][A-Za-z0-9_.-]{0,127})|@(sha256:[0-9a-f]{64}))", requested)
-            repository = INFRASTRUCTURE[project][service]
+            repository = approved_infrastructure(project)[service]
             require(match is not None and canonical_repository(match[1]) == repository, "unapproved infrastructure image repository")
             require(item.get("platform", "linux/amd64") == "linux/amd64", "wrong infrastructure platform")
             metadata = captured[project].get(service)
@@ -755,7 +823,7 @@ def verify_infrastructure_images(evidence, env):
 
 def snapshot_images(directory, env, *, include_stopped=False):
     active = {}
-    for admin, candidates in ((False, APP_SERVICES), (True, admin_services())):
+    for admin, candidates in ((False, app_services()), (True, admin_services())):
         # Query by labels so capturing an older deployment does not need new compose syntax.
         project = "map-admin-test" if admin else "map-test"
         pins = ["services:"]
@@ -964,7 +1032,7 @@ def smoke(*, include_public=True):
 def rollback(old_sha, original_env, env_metadata, previous, active, current_bundle, env):
     status("rollback_started")
     # Stop only newly introduced services. Never down/rm/prune or touch DB volumes.
-    for admin, candidates in ((False, APP_SERVICES), (True, admin_services())):
+    for admin, candidates in ((False, app_services()), (True, admin_services())):
         project = "map-admin-test" if admin else "map-test"
         new = set(candidates) - set(active[project])
         for service in sorted(new):
@@ -1102,8 +1170,9 @@ def receive(raw):
                     stop_public_services(env, ("edge",))
                 status("rollover_started" if rollover else "deploy_private_started")
                 role_args = ["--target-exporters"] if ADMIN_DETACHED else ["--admin", "--monitoring"]
-                # cloud-up's explicit application list omits edge/dns without --edge.
-                # Existing DNS remains running; all database/infrastructure pins remain.
+                # cloud-up's explicit application list omits edge without --edge and
+                # dns without --dns. An existing updater keeps running; all
+                # database/infrastructure pins remain.
                 child = {**env, "RELEASE_BUNDLE": str(new_bundle), "INFRA_IMAGE_BUNDLE": str(infrastructure),
                          "CUTOVER_SUPERVISED": "1"}
                 if rollover:

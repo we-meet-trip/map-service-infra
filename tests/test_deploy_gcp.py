@@ -42,6 +42,119 @@ class BundleFixture:
         self.target.mkdir()
 
 
+TARGET = {"project": "mapservice-test", "zone": "us-central1-a", "instance": "map-test",
+          "instance_id": "1234567890123456789", "public_url": "https://test-api.mapservice.app",
+          "repo": "/srv/map-test/map-service-infra", "dns_profile": False}
+# What the metadata server of the machine named by TARGET answers.
+TARGET_METADATA = {"project/project-id": "mapservice-test", "instance/name": "map-test",
+                   "instance/id": "1234567890123456789", "instance/zone": "projects/1/zones/us-central1-a"}
+
+
+class TargetTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "target.json"
+        # apply_target rebinds module state; every test leaves the original host bound.
+        self.addCleanup(deploy.apply_target, deploy.LEGACY_TARGET)
+        for patched in (patch.object(deploy, "TARGET_FILE", self.path),
+                        patch.object(deploy, "validate_host_metadata")):
+            patched.start()
+            self.addCleanup(patched.stop)
+        patched = patch.object(deploy, "validate_state_directory")
+        self.directory_check = patched.start()
+        self.addCleanup(patched.stop)
+
+    def metadata(self, values):
+        class Response(io.BytesIO):
+            headers = {"Metadata-Flavor": "Google"}
+        opener = SimpleNamespace(open=lambda request, timeout: Response(
+            values[request.full_url.split("/computeMetadata/v1/", 1)[1]].encode()))
+        return patch.object(deploy.urllib.request, "build_opener", return_value=opener)
+
+    def test_absent_file_keeps_the_original_host(self):
+        self.assertEqual(deploy.load_target(), deploy.LEGACY_TARGET)
+        self.assertIsNot(deploy.load_target(), deploy.LEGACY_TARGET)
+        # A host with no target directory at all is also a host without the file.
+        with patch.object(deploy, "TARGET_FILE", Path(self.temp.name) / "absent" / "target.json"):
+            self.assertEqual(deploy.load_target(), deploy.LEGACY_TARGET)
+        # The fallback obeys the same contract a written file must meet.
+        deploy.validate_target(dict(deploy.LEGACY_TARGET))
+
+    def test_a_path_that_cannot_be_looked_up_never_falls_back(self):
+        # A parent that is a plain file or a link loop hides whatever is there;
+        # only a missing entry may be read as the original host.
+        plain = Path(self.temp.name) / "plain"
+        plain.write_text("")
+        loop = Path(self.temp.name) / "loop"
+        loop.symlink_to(loop)
+        for path in (plain / "target.json", loop / "target.json"):
+            with self.subTest(path=path), patch.object(deploy, "TARGET_FILE", path), \
+                    self.assertRaises((deploy.DeployError, OSError)):
+                deploy.load_target()
+
+    def test_present_file_binds_every_target_value(self):
+        self.path.write_text(json.dumps(TARGET))
+        deploy.apply_target(deploy.load_target())
+        # The directory holding the file is checked, not the file's own entry.
+        self.directory_check.assert_called_once()
+        self.assertEqual(self.directory_check.call_args.args[0].st_ino, self.path.parent.lstat().st_ino)
+        self.assertEqual((deploy.PROJECT, deploy.ZONE, deploy.INSTANCE, deploy.INSTANCE_ID, deploy.PUBLIC_URL),
+                         ("mapservice-test", "us-central1-a", "map-test", "1234567890123456789",
+                          "https://test-api.mapservice.app"))
+        self.assertEqual(deploy.REPO, Path("/srv/map-test/map-service-infra"))
+        self.assertIs(deploy.DNS_PROFILE, False)
+        args = deploy.compose_command()
+        self.assertTrue(all(value.startswith("/srv/map-test/map-service-infra/") for i, value in enumerate(args)
+                            if i and args[i - 1] == "-f" and "docker-compose" in value))
+
+    def test_identity_check_reads_the_target_file_first(self):
+        self.path.write_text(json.dumps(TARGET))
+        with patch.object(deploy.os, "geteuid", return_value=0), self.metadata(TARGET_METADATA):
+            deploy.verify_instance()
+        self.assertEqual(deploy.REPO, Path(TARGET["repo"]))
+        with patch.object(deploy.os, "geteuid", return_value=0), \
+                self.metadata({**TARGET_METADATA, "instance/id": deploy.LEGACY_TARGET["instance_id"]}), \
+                self.assertRaisesRegex(deploy.DeployError, "wrong GCP instance"):
+            deploy.verify_instance()
+
+    def test_another_machine_without_the_file_is_refused(self):
+        with patch.object(deploy.os, "geteuid", return_value=0), self.metadata(TARGET_METADATA), \
+                self.assertRaisesRegex(deploy.DeployError, "wrong GCP instance"):
+            deploy.verify_instance()
+
+    def test_invalid_or_linked_file_never_falls_back(self):
+        variants = [{**TARGET, "extra": 1}, {k: v for k, v in TARGET.items() if k != "repo"},
+                    {**TARGET, "instance_id": 1234567890123456789}, {**TARGET, "instance_id": "12a"},
+                    {**TARGET, "public_url": "http://test-api.mapservice.app"},
+                    {**TARGET, "public_url": "https://test-api.mapservice.app/"},
+                    {**TARGET, "repo": "srv/map-test"}, {**TARGET, "repo": "/srv/../etc"},
+                    {**TARGET, "dns_profile": "false"}, {**TARGET, "dns_profile": 0}, [TARGET]]
+        for value in variants:
+            self.path.write_text(json.dumps(value))
+            with self.subTest(value=value), self.assertRaises(deploy.DeployError):
+                deploy.load_target()
+        self.path.write_text(json.dumps(TARGET).replace('"zone"', '"zone": "x", "zone"'))
+        with self.assertRaises(deploy.DeployError):
+            deploy.load_target()
+        other = Path(self.temp.name) / "other.json"
+        other.write_text(json.dumps(TARGET))
+        self.path.unlink()
+        self.path.symlink_to(other)
+        with self.assertRaises(deploy.DeployError):
+            deploy.load_target()
+        other.unlink()
+        with self.assertRaises(deploy.DeployError):
+            deploy.load_target()
+
+    def test_children_run_in_the_checkout_bound_when_called(self):
+        checkout = Path(self.temp.name) / "checkout"
+        checkout.mkdir()
+        with patch.object(deploy, "REPO", checkout):
+            cwd = deploy.command([sys.executable, "-c", "import os; print(os.getcwd())"])
+        self.assertEqual(os.path.realpath(cwd), os.path.realpath(checkout))
+
+
 class PayloadTests(BundleFixture, unittest.TestCase):
     def test_payload_roundtrip(self):
         data = deploy.unpack_payload(json.dumps(self.payload).encode(), self.target)
@@ -334,6 +447,63 @@ class InfrastructureTests(BundleFixture, unittest.TestCase):
                 self.assertEqual(Path(files.pop()).name, "public-restart.yml")
             self.assertEqual(Path(files[-1]).parent, self.directory)
             self.assertEqual(Path(files[-2]).parent, self.source)
+
+    def test_target_without_dynamic_dns_never_renders_or_pins_the_updater(self):
+        # Such a host renders no updater and runs none.
+        del self.configs["map-test"]["services"]["dns"]
+        self.present.discard("dns")
+        (self.repo / "docker-compose.dns.yml").write_text("services: {}\n")
+        with patch.object(deploy, "DNS_PROFILE", False):
+            evidence = self.prepare()
+            with patch.object(deploy, "REPO", self.repo):
+                args = deploy.compose_command(bundle=self.source)
+        self.assertNotIn("dns", evidence["projects"]["map-test"])
+        self.assertEqual(sum(len(services) for services in evidence["projects"].values()), 9)
+        self.assertNotIn("  dns:\n", (self.directory / "compose.infrastructure.yml").read_text())
+        self.assertNotIn(str(self.repo / "docker-compose.dns.yml"), args)
+        self.assertNotIn("dns", [args[index + 1] for index, value in enumerate(args) if value == "--profile"])
+
+    def test_target_without_dynamic_dns_refuses_an_updater_it_finds(self):
+        with patch.object(deploy, "DNS_PROFILE", False):
+            # Rendered by an edge file that still carries it: not approved here.
+            with self.assertRaisesRegex(deploy.DeployError, "unapproved infrastructure service"):
+                self.prepare()
+            # Still running from before: an app release cannot quietly drop it.
+            del self.configs["map-test"]["services"]["dns"]
+            self.directory = self.root / "infrastructure-second"
+            with self.assertRaisesRegex(deploy.DeployError, "cannot be removed"):
+                self.prepare()
+        self.assertFalse(any(args[:2] == ["docker", "pull"] for args in self.calls))
+
+    def test_dynamic_dns_file_sits_between_edge_and_release_pins(self):
+        (self.repo / "docker-compose.dns.yml").write_text("services: {}\n")
+        with patch.object(deploy, "REPO", self.repo):
+            args = deploy.compose_command(bundle=self.source, infrastructure=self.directory)
+            files = [Path(args[index + 1]).name for index, value in enumerate(args) if value == "-f"]
+            self.assertEqual(files[3:6], ["docker-compose.edge.yml", "docker-compose.dns.yml", "compose.images.yml"])
+            self.assertIn("dns", [args[index + 1] for index, value in enumerate(args) if value == "--profile"])
+            # A checkout from before the split keeps the updater in the edge file,
+            # so rolling back to it must not name a file that is not there.
+            (self.repo / "docker-compose.dns.yml").unlink()
+            args = deploy.compose_command(bundle=self.source)
+            self.assertNotIn("docker-compose.dns.yml", [Path(args[index + 1]).name for index, value in enumerate(args) if value == "-f"])
+            self.assertIn("dns", [args[index + 1] for index, value in enumerate(args) if value == "--profile"])
+
+    def test_snapshot_skips_the_updater_on_a_target_without_it(self):
+        calls = []
+        def command(args, **_kwargs):
+            calls.append(args)
+            if "inspect" in args:
+                return "sha256:" + "a" * 64
+            return "b" * 12 if "label=com.docker.compose.service=user" in args else ""
+        snapshot = self.root / "snapshot"
+        snapshot.mkdir()
+        with patch.object(deploy, "DNS_PROFILE", False), patch.object(deploy, "ADMIN_DETACHED", False), \
+                patch.object(deploy, "command", side_effect=command):
+            active = deploy.snapshot_images(snapshot, {})
+        self.assertEqual(active["map-test"], ["user"])
+        self.assertFalse(any("label=com.docker.compose.service=dns" in call for call in calls))
+        self.assertTrue(any("label=com.docker.compose.service=edge" in call for call in calls))
 
     def test_running_image_identity_is_verified_without_tag_lookup(self):
         evidence = self.prepare()

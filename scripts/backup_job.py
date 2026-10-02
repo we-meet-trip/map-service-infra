@@ -2,6 +2,7 @@
 from contextlib import ExitStack
 import datetime as dt
 import fcntl
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,6 @@ import time
 
 CONFIG = Path('/etc/map-deploy/backup.env')
 STATE = Path('/var/lib/map-deploy')
-REPO = Path('/home/mapadmin26/map-service-infra')
 LIB = Path('/usr/local/lib/map-deploy')
 ALLOWED = {'BACKUP_DIR', 'BACKUP_REMOTE', 'BACKUP_S3_ENDPOINT', 'BACKUP_GCP_CREDENTIALS_FILE', 'BACKUP_REQUIRE_REMOTE'}
 CHILD_CODES = {'persistence_busy', 'aof_write_unhealthy', 'redis_fork_memory_limit',
@@ -24,6 +24,14 @@ CHILD_CODES = {'persistence_busy', 'aof_write_unhealthy', 'redis_fork_memory_lim
 
 
 LOCK_WAIT_SECONDS = 150
+
+
+def receiver():
+    """The deployment receiver installed beside this file; it owns the host target file."""
+    spec = importlib.util.spec_from_file_location('backup_receiver', Path(__file__).with_name('deploy-gcp.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def acquire(lock, seconds):
@@ -95,6 +103,9 @@ def entry(kind):
         raise ValueError('invalid_backup_kind')
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
     values = configuration()
+    # The checkout whose environment and Compose files the backup reads. A host
+    # without the target file keeps its original checkout.
+    repo = Path(receiver().load_target()['repo'])
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG') if key in os.environ}
     env.update(values, BACKUP_REQUIRE_REMOTE='1')
     if kind == 'redis':
@@ -118,7 +129,7 @@ def entry(kind):
                 overdue = write_status(kind, {'success': False, 'deferred': True, 'code': 'LOCK_BUSY'})
                 return 1 if overdue else 0
         module = 'pg_backup' if kind == 'pg' else 'redis_backup'
-        loader = 'from pathlib import Path; import ' + module + '; ' + module + '.ROOT=Path(' + repr(str(REPO)) + '); raise SystemExit(' + module + '.main())'
+        loader = 'from pathlib import Path; import ' + module + '; ' + module + '.ROOT=Path(' + repr(str(repo)) + '); raise SystemExit(' + module + '.main())'
         process = subprocess.Popen([sys.executable, '-c', loader, 'backup', '--test'], cwd=LIB,
                                    env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, start_new_session=True)
