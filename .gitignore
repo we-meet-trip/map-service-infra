@@ -50,3 +50,11 @@ commit_contents.md
 
 # 배포한 판을 한 줄씩 쌓는다. 되돌릴 때 이전 이름을 여기서 찾는다.
 .deploy-history
+
+# OpenTofu 작업 폴더·상태·계획·비공개 변수. 잠금 파일(.terraform.lock.hcl)과 *.tfvars.example 은 담는다.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan*
+*.tfvars
+*.tfvars.json
