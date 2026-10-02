@@ -1,0 +1,27 @@
+[Unit]
+Description=MAP container access block to the GCE metadata server (DNS 53 allowed)
+# Container traffic to 169.254.169.254 is routed by the host, so it traverses the
+# filter FORWARD chain, which Docker sends through DOCKER-USER before its own rules.
+# Host processes (Ops Agent, gcloud, OS Login, the deploy receiver) use OUTPUT and
+# are not matched. Both TCP and UDP stay open on port 53 only, so the GCE internal
+# DNS keeps working while metadata HTTP (80) and HTTPS (443) are dropped.
+After=docker.service
+BindsTo=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# -C makes every re-run idempotent; -I puts the drop ahead of Docker's own accepts.
+# A missing DOCKER-USER chain (nftables backend or iptables disabled) makes -I fail,
+# so the unit fails visibly instead of silently passing.
+# ponytail: the rules land only after dockerd is up, so containers it restores at
+# start can reach the metadata server for a few seconds, and the IPv6 metadata
+# address is not covered (Docker networks here are IPv4 only). Upgrade path: create
+# DOCKER-USER with these rules in a unit ordered Before=docker.service, and add the
+# ip6tables twin once IPv6 is enabled on a Docker network.
+ExecStart=/bin/sh -c '/usr/sbin/iptables -w -C DOCKER-USER -d 169.254.169.254/32 -p tcp ! --dport 53 -j DROP 2>/dev/null || /usr/sbin/iptables -w -I DOCKER-USER -d 169.254.169.254/32 -p tcp ! --dport 53 -j DROP'
+ExecStart=/bin/sh -c '/usr/sbin/iptables -w -C DOCKER-USER -d 169.254.169.254/32 -p udp ! --dport 53 -j DROP 2>/dev/null || /usr/sbin/iptables -w -I DOCKER-USER -d 169.254.169.254/32 -p udp ! --dport 53 -j DROP'
+
+[Install]
+WantedBy=docker.service
