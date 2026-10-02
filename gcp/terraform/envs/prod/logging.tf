@@ -58,4 +58,10 @@ resource "google_logging_project_sink" "default" {
     name   = "access-audit"
     filter = local.access_audit_filter
   }
+
+  # Ops Agent 가 시작할 때와 런타임 오류 때 남기는 자체 점검 로그. 에이전트에 끄는 설정이 없어 저장 단계에서 버린다.
+  exclusions {
+    name   = "ops-agent-health"
+    filter = "logName=\"projects/${local.project_id}/logs/ops-agent-health\""
+  }
 }

@@ -8,6 +8,8 @@
 # sets on its own lines about a unit (for example "Failed with result").
 # The journald field names are confirmed on the installed VM with
 # `journalctl -o json` before alerts rely on this file.
+# The package starts the agent at install time with its default config, which
+# ships /var/log/syslog until this file is in place and the agent restarts.
 logging:
   receivers:
     map_journald:
