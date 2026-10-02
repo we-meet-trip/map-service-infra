@@ -110,11 +110,10 @@ run "values_add_quota_secret_and_team_bindings" {
     team_group         = "team@example.com"
     runtime_secret_ids = ["map-test-example"]
     gemini_daily_caps  = { "gemini-3.5-flash-lite" = 1000 }
-    gemini_quota_limit = "/d/project/model"
   }
 
   assert {
-    condition     = google_service_usage_consumer_quota_override.gemini["gemini-3.5-flash-lite"].project == "gen-lang-client-0035497524" && google_service_usage_consumer_quota_override.gemini["gemini-3.5-flash-lite"].metric == "generativelanguage.googleapis.com%2Fgenerate_requests_per_model_per_day" && google_service_usage_consumer_quota_override.gemini["gemini-3.5-flash-lite"].limit == "%2Fd%2Fproject%2Fmodel" && google_service_usage_consumer_quota_override.gemini["gemini-3.5-flash-lite"].dimensions == tomap({ model = "gemini-3.5-flash-lite" })
+    condition     = google_service_usage_consumer_quota_override.gemini["gemini-3.5-flash-lite"].project == "gen-lang-client-0035497524" && google_service_usage_consumer_quota_override.gemini["gemini-3.5-flash-lite"].metric == "generativelanguage.googleapis.com%2Fgenerate_requests_per_model_per_day" && google_service_usage_consumer_quota_override.gemini["gemini-3.5-flash-lite"].limit == "%2Fd%2Fmodel%2Fproject" && google_service_usage_consumer_quota_override.gemini["gemini-3.5-flash-lite"].dimensions == tomap({ model = "gemini-3.5-flash-lite" })
     error_message = "Gemini per-model quota override"
   }
   assert {
@@ -125,20 +124,6 @@ run "values_add_quota_secret_and_team_bindings" {
     condition     = toset([for binding in google_project_iam_member.team : binding.role]) == toset(["roles/viewer", "roles/logging.viewer", "roles/monitoring.viewer", "roles/compute.osLogin", "roles/iap.tunnelResourceAccessor"]) && google_service_account_iam_member.team[0].role == "roles/iam.serviceAccountUser"
     error_message = "team group roles"
   }
-}
-
-run "gemini_caps_need_limit_unit" {
-  command = plan
-
-  variables {
-    alert_emails       = ["owner@example.com"]
-    owner_email        = "owner@example.com"
-    billing_account_id = "000000-000000-000000"
-    budget_test_krw    = 50
-    gemini_daily_caps  = { "gemini-3.5-flash-lite" = 1000 }
-  }
-
-  expect_failures = [google_service_usage_consumer_quota_override.gemini]
 }
 
 run "host_module_test_vm" {

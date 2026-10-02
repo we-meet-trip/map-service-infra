@@ -7,9 +7,8 @@ team_group   = "" # 팀 Google Group 이 생기면 그룹 이메일
 billing_account_id = "000000-000000-000000"
 budget_test_krw    = 0
 
-# 정해지면: 모델 이름 -> 하루 요청 한도, 그리고 한도 단위(README 의 확인 방법)
-gemini_daily_caps  = {}
-gemini_quota_limit = null
+# 정해지면: 모델 이름 -> 하루 요청 한도
+gemini_daily_caps = {}
 
 # scripts/gcp_secrets.py ensure 로 만든 시험 런타임 비밀 ID
 runtime_secret_ids = []

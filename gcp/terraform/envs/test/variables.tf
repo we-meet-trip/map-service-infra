@@ -36,12 +36,6 @@ variable "gemini_daily_caps" {
   default = {}
 }
 
-# generate_requests_per_model_per_day 한도 단위에서 '1/'·중괄호를 뺀 값. gemini_daily_caps 를 채울 때 함께 적는다.
-variable "gemini_quota_limit" {
-  type    = string
-  default = null
-}
-
 # scripts/gcp_secrets.py 가 만든 시험 런타임 비밀 ID. 시험 VM SA 가 비밀 단위로 읽기만 한다.
 variable "runtime_secret_ids" {
   type    = list(string)
