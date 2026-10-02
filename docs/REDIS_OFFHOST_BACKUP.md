@@ -33,6 +33,7 @@ R2 배포 종료 후 root가 동일 배포 lock 아래 적용한다. 먼저 기�
 함께 설치할 파일:
 
 - `scripts/backup_job.py`, `scripts/redis_backup.py`, `scripts/backup-test-redis-service.py`
+- `scripts/deploy-gcp.py`, `scripts/release_manifest.py`, `scripts/cutover_watchdog.py` (`backup_job.py`가 호스트 대상 파일을 읽으려고 같은 디렉터리의 `deploy-gcp.py`를 불러오고, 그 파일이 나머지 둘을 불러온다. 셋 다 같은 검토 커밋의 사본이어야 한다)
 - 수정한 `scripts/backup-test-service.py` (PG도 같은 lock에 참여해야 하므로 함께 적용)
 - `deploy/map-test-redis-backup.service`, `deploy/map-test-redis-backup.timer`
 

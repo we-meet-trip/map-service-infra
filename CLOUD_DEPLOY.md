@@ -11,9 +11,9 @@ NCP 운영 서버는 아직 생성하지 않았다. 아래 NCP 항목은 후속 
 
 | 항목 | 2026-09-06 확인 상태 |
 |---|---|
-| GCP 시험 앱 | `mapcenter-b59ca / us-central1-a / map-test`, 기존 판 `2026-09-06-5`의 9컨테이너 healthy. 이번 수정 앱의 배포·재시작은 아직 미실행 |
-| GCP 접속 | IAP SSH 및 sudo 확인. 자동배포 계정 `mapdeploy`는 고정 명령만 허용, 호스트 키 고정 및 잘못된 입력 거절 실증 |
-| GCP 백업 | 비공개 `mapcenter-b59ca-test-backups`에 역할·DB·manifest 저장 및 재다운로드 SHA256 검증. 30분 systemd timer 활성화, 2026-09-06 04:00 UTC 자동 실행 성공 확인 |
+| GCP 시험 앱 | 수령자·감시기는 호스트의 `/etc/map-deploy/target.json`이 가리키는 시험 VM에 묶이고 백업 timer도 그 파일의 checkout 경로를 쓴다. 이 파일이 없는 옛 `mapcenter-b59ca / us-central1-a / map-test`(기존 판 `2026-09-06-5`의 9컨테이너 healthy)는 정리 전까지 그대로 남는다. 이번 수정 앱의 배포·재시작은 아직 미실행 |
+| GCP 접속 | IAP SSH 및 sudo 확인. 자동배포 계정 `mapdeploy`는 고정 명령만 허용, 호스트 키 고정 및 잘못된 입력 거절 실증(옛 map-test). 새 시험 VM은 [등록 절차](docs/CUTOVER_SUPERVISOR.md#new-test-host-enrollment-one-time)에서 같은 항목을 다시 확인 |
+| GCP 백업 | 원격 위치는 호스트 `/etc/map-deploy/backup.env`의 `BACKUP_REMOTE`(새 시험 VM은 `gs://map-test-backups/test`). 옛 map-test는 비공개 `mapcenter-b59ca-test-backups`에 역할·DB·manifest 저장 및 재다운로드 SHA256 검증. 30분 systemd timer 활성화, 2026-09-06 04:00 UTC 자동 실행 성공 확인 |
 | DB 복원 | GCP 사본을 network none 새 컨테이너에 복원하고 31테이블 행 수 대조 통과(14.08초). 전체 앱 RTO 실증과는 구분 |
 | 이미지·자동배포 | 여섯 이미지의 SHA/digest 묶음과 수령자 코드 구현. 새 CI → image-release → 실제 GCP 앱 반영의 전체 성공 확인은 남음 |
 | 중앙 관리자 | 환경별 연결·개인 계정·권한·준비 상태·감사 기능 로컬 시험 완료. GCP 실제 배포 및 비공개 접근 실증은 남음 |
@@ -99,12 +99,36 @@ GitHub 저장소/워크플로/run의 성공과 artifact 출처·해시를 검사
 임의 태그를 `.env.test`에 적는 방법으로 이 검증을 우회하지 않는다.
 
 [deploy-gcp-test](.github/workflows/deploy.yml)는 GitHub `gcp-test` environment를
-사용한다. 현재 인증은 제한된 SA의 JSON 키와 별도 SSH 키이며 **WIF 전환은 미구현**이다.
-키를 앱 환경파일·이미지·로그에 넣지 않고 전용 저장소의 접근 권한·회전·회수를 관리한다.
-GitHub environment 이름 존재가 검토자 승인·브랜치 보호 정책 설정까지 증명하지는 않는다.
+사용하며 그 배포 브랜치 정책은 `develop` 하나여야 한다(2026-10-02 설정). environment
+비밀을 넣기 전에 [등록 절차](docs/CUTOVER_SUPERVISOR.md#new-test-host-enrollment-one-time)의
+`gh api` 명령으로 다시 확인한다. 클라우드 인증은 서비스 계정 키 없이
+job의 GitHub OIDC 토큰을 시험 프로젝트 Workload Identity Federation으로 교환해 배포
+SA를 가장한다. 배포 SA의 권한은 시험 VM 하나에 대한 IAP 터널과 조회뿐이다. 공급자
+조건은 이 저장소 `develop`의 `deploy.yml`, environment `gcp-test`, 이벤트
+`workflow_dispatch`·`workflow_run`만 받으므로 수동 배포는
+`gh workflow run deploy.yml --ref develop -f run_id=<image-release 실행 ID>`로 한다.
+변수와 비밀은 저장소 수준이 아니라 `gcp-test` environment 단위로 둔다(저장소 수준
+비밀은 environment 브랜치 정책이 보호하지 못한다). 변수는 `TEST_WIF_PROVIDER`,
+`TEST_DEPLOYER_SA`, `TEST_GCP_PROJECT`, `TEST_GCP_ZONE`, `TEST_INSTANCE`, 비밀은 강제
+명령 전용 SSH 키 `TEST_DEPLOY_SSH_KEY`와 호스트 키 줄 `TEST_DEPLOY_SSH_KNOWN_HOSTS`
+(별칭 `map-test-deploy`)다. SSH 키는 앱 환경파일·이미지·로그에 넣지 않고 회전·회수를
+관리한다. 브랜치 정책과 변수·비밀 등록은 GitHub 설정이라 저장소 파일로 증명되지 않으며,
+environment 이름 존재가 검토자 승인까지 뜻하지는 않는다.
 
-수령자는 고정 GCP 인스턴스 확인, 배포 잠금, 기존 infra/env/이미지 기록, 사전 원격
-백업, migration 및 readiness 검사, 실제 API smoke를 순서대로 수행한다.
+옛 키 기반 경로의 퇴역은 소유자가 옛 시험 VM을 정리할 때(새 VM의 첫 WIF 배포 성공 뒤)
+끝낸다. 이 브랜치에서 `cutover-supervisor-check.yml`을 지워도 그 워크플로 등록과 다른
+ref의 사본은 남고, 저장소 수준 비밀은 어느 브랜치의 워크플로든 읽을 수 있다
+(`GCP_SA_KEY`는 만료 없는 `gh-deploy@mapcenter-b59ca` 키다). 그래서
+`gh workflow disable 352153768 -R we-meet-trip/map-service-infra`로 그 등록을 끄고,
+`git grep -n -e GCP_SA_KEY -e 'secrets\.DEPLOY_SSH_' origin/develop -- .github/workflows`가
+0건인지 확인한 뒤 저장소 수준 비밀을 지운다(`--env` 없이, 모두 `-R we-meet-trip/map-service-infra`):
+`gh secret delete GCP_SA_KEY`, `gh secret delete DEPLOY_SSH_KEY`,
+`gh secret delete DEPLOY_SSH_KNOWN_HOSTS`. 마지막으로
+`gcloud iam service-accounts keys list --iam-account=gh-deploy@mapcenter-b59ca.iam.gserviceaccount.com --managed-by=user`로
+사용자 관리 키를 확인하고 `gcloud iam service-accounts keys delete <키 ID> --iam-account=gh-deploy@mapcenter-b59ca.iam.gserviceaccount.com`으로 지운다.
+
+수령자는 `target.json`이 가리키는 GCP 인스턴스 확인, 배포 잠금, 기존 infra/env/이미지
+기록, 사전 원격 백업, migration 및 readiness 검사, 실제 API smoke를 순서대로 수행한다.
 실패 시 한 번의 앱 복귀를 시도하며 복귀 성공도 해당 배포의 성공으로 처리하지 않는다.
 새 코드가 이 경로로 서버에 실제 반영됐는지는 run 결과와 서버 digest를 대조해 확인한다.
 
@@ -122,11 +146,20 @@ GitHub environment 이름 존재가 검토자 승인·브랜치 보호 정책 �
 이미지 안의 코드로 수행하므로 이웃 `../map-service-hub` 소스 checkout을 요구하지 않는다.
 `RELEASE_BUNDLE`을 쓸 때는 `--registry`가 필수다. `cloud-up.sh`의 묶음 파일 존재
 확인은 GitHub artifact 출처 확인을 대체하지 않는다. 수령자 또는 별도 검증기를 먼저
-통과해야 한다. GCP 자동 수령자의 기능 조합은 다음과 같다.
+통과해야 한다. GCP 자동 수령자는 `cloud-up.sh`를 `--edge` 없이 다음 조합으로 부르고,
+edge는 비공개 smoke 뒤에 직접 연다. 관리자를 분리한 호스트는 `--admin --monitoring`
+대신 `--target-exporters`를 쓴다.
 
 ```text
---test --registry --vision --edge --admin --monitoring
+--test --registry --vision --admin --monitoring
 ```
+
+새 시험 호스트의 수동 첫 기동만 `--test --registry --vision --edge`에 같은 역할 인자를
+더하고, `EDGE_IMAGE_OVERRIDE`로 검증된 Caddy 산출물을, `RELEASE_BUNDLE`로
+`deploy-gcp.py prepare`가 검증한 develop 릴리스 묶음을 지정한다. 묶음 없이 태그 이미지로
+기동하면 migration 작업이 `serving_image_not_pinned`로 거절해 앱이 하나도 뜨지 않는다. DuckDNS로 주소를
+갱신하는 서버(`target.json`의 `dns_profile`이 true)만 `--dns`를 더한다. 절차는
+[새 시험 호스트 등록](docs/CUTOVER_SUPERVISOR.md#new-test-host-enrollment-one-time)에 있다.
 
 NCP 후속 조합은 `--registry --vision --edge --routing`이다. 중앙 admin을 추가로
 기동하지 않는다. 서비스가 먼저 네트워크·DB를 준비하고 중앙 관리자 연결이 그 뒤에
@@ -163,8 +196,10 @@ foot/bicycle 양쪽에서 `code=Ok`, 실제 도로 경로와 이동 수단, 부�
 | S3 `s3://bucket/prefix` | 업로드 후 ContentLength 대조 | NCP endpoint/최소 권한 설정 후 재다운로드 SHA256 및 복원 실증 필요 |
 
 S3의 크기 일치는 checksum 검증 완료가 아니다. `BACKUP_S3_ENDPOINT`와 전용 CLI
-자격증명을 호스트에 분리하고 앱 `.env`에 넣지 않는다. GCP 백업 SA도 전용 비공개
-버킷의 objectCreator/objectViewer만 사용하며 기존 VM의 OAuth scope를 바꾸지 않았다.
+자격증명을 호스트에 분리하고 앱 `.env`에 넣지 않는다. GCP 백업도 전용 비공개 버킷의
+objectCreator/objectViewer만 쓴다. 옛 map-test는 전용 백업 SA를 써서 VM의 OAuth scope를
+바꾸지 않았고, 새 시험 VM은 키 파일 없이 VM SA(cloud-platform scope와 버킷 단위 IAM)로
+올린다.
 
 ```bash
 # 동일 작업 디렉터리에 manifest와 companion 두 파일을 준비한다.
