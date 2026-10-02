@@ -9,8 +9,8 @@ locals {
     "externalaudit.googleapis.com/access_transparency",
   ] : "NOT LOG_ID(\"${log_id}\")"])
 
-  # 접근 기록(IAP·Secret Manager 데이터 접근 감사, VM 저널의 ssh·sudo·logind·백업 결과)은 map-access-audit 에만 남긴다.
-  access_audit_filter = "(logName=\"projects/${local.project_id}/logs/cloudaudit.googleapis.com%2Fdata_access\" AND protoPayload.serviceName=(\"iap.googleapis.com\" OR \"secretmanager.googleapis.com\")) OR logName=\"${local.journald_log_name}\""
+  # 접근 기록(IAP·Secret Manager 데이터 접근 감사, OS Login 의 로그인 판정, VM 저널의 ssh·sudo·logind·백업 결과)은 map-access-audit 에만 남긴다.
+  access_audit_filter = "(logName=\"projects/${local.project_id}/logs/cloudaudit.googleapis.com%2Fdata_access\" AND protoPayload.serviceName=(\"iap.googleapis.com\" OR \"secretmanager.googleapis.com\")) OR (logName=\"projects/${local.project_id}/logs/cloudaudit.googleapis.com%2Fdata_access\" AND protoPayload.serviceName=\"oslogin.googleapis.com\" AND protoPayload.methodName:\"OsLoginDataPlaneService.CheckPolicy\") OR logName=\"${local.journald_log_name}\""
 }
 
 resource "google_project_iam_audit_config" "access" {
@@ -63,5 +63,11 @@ resource "google_logging_project_sink" "default" {
   exclusions {
     name   = "ops-agent-health"
     filter = "logName=\"projects/${local.project_id}/logs/ops-agent-health\""
+  }
+
+  # VM 의 OS Login 모듈이 계정 정보를 조회할 때마다(약 분당 1회) 남는 데이터 접근 감사. 사람의 접근이 아니어서 저장하지 않는다.
+  exclusions {
+    name   = "oslogin-list-profiles"
+    filter = "logName=\"projects/${local.project_id}/logs/cloudaudit.googleapis.com%2Fdata_access\" AND protoPayload.serviceName=\"oslogin.googleapis.com\" AND protoPayload.methodName:\"OsLoginDataPlaneService.ListLoginProfiles\""
   }
 }

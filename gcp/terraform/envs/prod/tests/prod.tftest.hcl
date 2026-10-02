@@ -170,11 +170,11 @@ run "defaults_keep_public_web_and_vm_alerts_off" {
     error_message = "_Default filter must stay the project default verbatim"
   }
   assert {
-    condition     = google_logging_project_sink.default.destination == "logging.googleapis.com/projects/mapcenter-b59ca/locations/asia-northeast3/buckets/map-general" && google_logging_project_sink.default.exclusions[0].filter == google_logging_project_sink.access_audit.filter && google_logging_project_sink.default.exclusions[1].filter == "logName=\"projects/mapcenter-b59ca/logs/ops-agent-health\""
-    error_message = "_Default must route to map-general and exclude the access-audit and Ops Agent health logs"
+    condition     = google_logging_project_sink.default.destination == "logging.googleapis.com/projects/mapcenter-b59ca/locations/asia-northeast3/buckets/map-general" && google_logging_project_sink.default.exclusions[0].filter == google_logging_project_sink.access_audit.filter && google_logging_project_sink.default.exclusions[1].filter == "logName=\"projects/mapcenter-b59ca/logs/ops-agent-health\"" && google_logging_project_sink.default.exclusions[2].filter == "logName=\"projects/mapcenter-b59ca/logs/cloudaudit.googleapis.com%2Fdata_access\" AND protoPayload.serviceName=\"oslogin.googleapis.com\" AND protoPayload.methodName:\"OsLoginDataPlaneService.ListLoginProfiles\""
+    error_message = "_Default must route to map-general and exclude the access-audit, Ops Agent health and OS Login profile lookup logs"
   }
   assert {
-    condition     = google_logging_project_sink.access_audit.filter == "(logName=\"projects/mapcenter-b59ca/logs/cloudaudit.googleapis.com%2Fdata_access\" AND protoPayload.serviceName=(\"iap.googleapis.com\" OR \"secretmanager.googleapis.com\")) OR logName=\"projects/mapcenter-b59ca/logs/map_journald\""
+    condition     = google_logging_project_sink.access_audit.filter == "(logName=\"projects/mapcenter-b59ca/logs/cloudaudit.googleapis.com%2Fdata_access\" AND protoPayload.serviceName=(\"iap.googleapis.com\" OR \"secretmanager.googleapis.com\")) OR (logName=\"projects/mapcenter-b59ca/logs/cloudaudit.googleapis.com%2Fdata_access\" AND protoPayload.serviceName=\"oslogin.googleapis.com\" AND protoPayload.methodName:\"OsLoginDataPlaneService.CheckPolicy\") OR logName=\"projects/mapcenter-b59ca/logs/map_journald\""
     error_message = "access-audit sink filter"
   }
   assert {
