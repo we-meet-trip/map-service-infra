@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "enrollment_sha256": "REQUIRED_CANONICAL_ENROLLMENT_SHA256",
+  "bucket": "map-prod-backups",
+  "age_recipient": "REQUIRED_REAL_AGE_RECIPIENT",
+  "postgres": {
+    "container_id": "REQUIRED_EXACT_PROD_POSTGRES_CONTAINER_ID",
+    "image_id": "REQUIRED_EXACT_PROD_POSTGRES_IMAGE_ID",
+    "user": "REQUIRED_BACKUP_DATABASE_USER",
+    "database": "map_prod"
+  },
+  "redis": {
+    "container_id": "REQUIRED_EXACT_PROD_REDIS_CONTAINER_ID",
+    "image_id": "REQUIRED_EXACT_PROD_REDIS_IMAGE_ID"
+  },
+  "admin": {
+    "container_id": "REQUIRED_EXACT_ADMIN_CONTROL_DB_CONTAINER_ID",
+    "image_id": "REQUIRED_EXACT_ADMIN_CONTROL_DB_IMAGE_ID",
+    "user": "REQUIRED_CONTROL_DB_BOOTSTRAP_USER",
+    "database": "REQUIRED_CONTROL_DB_NAME"
+  }
+}

@@ -1,0 +1,32 @@
+[Unit]
+Description=MAP GCP production admin control PostgreSQL encrypted GCS backup
+After=network-online.target docker.service
+Wants=network-online.target
+RequiresMountsFor=/srv/map-prod
+ConditionPathExists=/var/lib/map-bootstrap/enrollment.json
+ConditionPathExists=/etc/map-ops-gcp/backup-gcs.json
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+WorkingDirectory=/opt/map-ops-gcp
+ExecStart=/usr/bin/python3 -B -X pycache_prefix=/run/map-prod-admin-backup-gcs /opt/map-ops-gcp/scripts/gcs-production-backup.py admin
+RuntimeDirectory=map-prod-admin-backup-gcs
+RuntimeDirectoryMode=0700
+Environment=PATH=/usr/bin:/bin
+Environment=HOME=/run/map-prod-admin-backup-gcs
+Environment=CLOUDSDK_CONFIG=/run/map-prod-admin-backup-gcs
+Environment=CLOUDSDK_CORE_DISABLE_PROMPTS=1
+Environment=CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED=False
+Environment=DOCKER_HOST=unix:///var/run/docker.sock
+Environment=DOCKER_CONFIG=/var/empty
+TimeoutStartSec=900
+TimeoutStopSec=10
+KillMode=control-group
+SendSIGKILL=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/srv/map-prod /var/run/docker.sock
+PrivateTmp=yes
