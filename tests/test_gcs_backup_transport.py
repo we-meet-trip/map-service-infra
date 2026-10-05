@@ -44,8 +44,9 @@ import json, os, pathlib, shutil, sys
 root = pathlib.Path({root!r})
 args = sys.argv[1:]
 with (root / 'calls.jsonl').open('a') as log:
+    # macOS's python3 launcher adds __CF_USER_TEXT_ENCODING itself; the transport never passes it.
     log.write(json.dumps({{'args': args, 'composite': os.environ.get('CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED'),
-                          'env': sorted(os.environ)}}) + '\\n')
+                          'env': sorted(k for k in os.environ if k != '__CF_USER_TEXT_ENCODING')}}) + '\\n')
 if os.environ.get('CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED') != 'False':
     sys.exit(9)
 create = '--if-generation-match=0' in args
