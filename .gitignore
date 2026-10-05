@@ -56,5 +56,8 @@ commit_contents.md
 *.tfstate
 *.tfstate.*
 *.tfplan*
+tfplan*
 *.tfvars
 *.tfvars.json
+crash.log
+override.tf
