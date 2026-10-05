@@ -20,13 +20,14 @@
 # =========================================================================
 set -euo pipefail
 
-: "${MAP_ADMIN_PASSWORD:?MAP_ADMIN_PASSWORD must be set (infra .env)}"
+export MAP_ADMIN_PASSWORD="${MAP_ADMIN_PASSWORD:?MAP_ADMIN_PASSWORD must be set (infra .env)}"
 
 # 따옴표 heredoc(<<'EOSQL')으로 $$·:'var' 를 psql 로 그대로 전달한다.
-# 비밀번호는 psql 변수 :'mapadminpw' 로 안전하게 인용된다(-v 로 주입).
+# 비밀번호는 psql 이 환경에서 \getenv 로 읽어 psql 변수 :'mapadminpw' 로 안전하게
+# 인용한다(PostgreSQL 15 이상). -v 로 주면 값이 psql 명령줄(프로세스 목록)에 드러난다.
 psql -v ON_ERROR_STOP=1 \
-     -v mapadminpw="$MAP_ADMIN_PASSWORD" \
      --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<'EOSQL'
+\getenv mapadminpw MAP_ADMIN_PASSWORD
 -- 역할이 없을 때만 생성(gexec: 생성 SQL 을 조건부 실행).
 SELECT 'CREATE ROLE map_admin LOGIN'
  WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'map_admin')

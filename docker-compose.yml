@@ -110,9 +110,19 @@ services:
     # 캐시·카운터·스트림만 담고 데이터셋을 담지 않아 유휴 약 10MiB.
     profiles: ["infra", "full"]
     # REDIS_PASSWORD 가 비어 있으면(현행) 무인증으로 기동한다.
-    # 값이 설정되면 --requirepass 로 인증을 켜고 healthcheck 도 -a 로 인증한다.
+    # 값이 설정되면 명령줄이 아니라 표준입력(redis-server -)의 설정 한 줄로 인증을
+    # 켠다. 명령줄의 값은 호스트의 모든 계정이 프로세스 목록으로 읽는다. 큰따옴표
+    # 안에서는 \ 와 " 만 이스케이프하면 값이 그대로 읽힌다. exec 로 redis-server 가
+    # PID 1 이 되어 종료 신호를 직접 받는다.
     # $$ 는 compose 치환이 아니라 컨테이너 shell 확장(런타임)을 의미한다.
-    command: ["sh", "-c", "redis-server --appendonly yes $${REDIS_PASSWORD:+--requirepass $$REDIS_PASSWORD}"]
+    command:
+      - sh
+      - -c
+      - |
+        [ -n "$$REDIS_PASSWORD" ] || exec redis-server --appendonly yes
+        exec redis-server - --appendonly yes <<EOF
+        requirepass "$$(printf '%s' "$$REDIS_PASSWORD" | sed 's/[\\"]/\\&/g')"
+        EOF
     # redis 는 x-app-env 앵커를 쓰지 않으므로 REDIS_PASSWORD 를 .env 에서 명시 주입.
     environment:
       - REDIS_PASSWORD
@@ -121,7 +131,9 @@ services:
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli $${REDIS_PASSWORD:+-a $$REDIS_PASSWORD} ping | grep -q PONG"]
+      # redis-cli 는 REDISCLI_AUTH 환경변수로 인증한다. -a 로 주면 10초마다 값이
+      # 명령줄(호스트 프로세스 목록)에 드러난다.
+      test: ["CMD-SHELL", 'if [ -n "$$REDIS_PASSWORD" ]; then export REDISCLI_AUTH="$$REDIS_PASSWORD"; fi; redis-cli ping | grep -q PONG']
       interval: 10s
       timeout: 3s
       retries: 5

@@ -304,13 +304,14 @@ fi
 #
 # 비밀번호는 환경파일에서 다시 준다. 컨테이너가 들고 있는 값은 만들어질 때
 # 박힌 것이라, 환경파일만 고친 상태에서 재적용하면 옛 값으로 되맞춰 버린다.
+# 값은 compose 의 환경으로만 건네고 명령줄에는 이름만 둔다. 명령줄은 같은
+# 호스트의 모든 계정이 프로세스 목록으로 읽는다.
 echo "[$LABEL] 저장소 초기화 다시 적용"
 dc exec -T postgres psql -v ON_ERROR_STOP=1 -U "$db_user" -d "$db_name" \
   -f /docker-entrypoint-initdb.d/00-create-schemas.sql
 if [ "$TARGET_ONLY" = 0 ]; then
-  dc exec -T \
-    -e MAP_ADMIN_PASSWORD="$(grep -E '^MAP_ADMIN_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)" \
-    postgres bash /docker-entrypoint-initdb.d/10-admin.sh
+  MAP_ADMIN_PASSWORD="$(grep -E '^MAP_ADMIN_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)" \
+    dc exec -T -e MAP_ADMIN_PASSWORD postgres bash /docker-entrypoint-initdb.d/10-admin.sh
 fi
 
 echo "[$LABEL] 3/4 스키마 이전"

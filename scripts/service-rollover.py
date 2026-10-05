@@ -53,9 +53,9 @@ def require(condition, code):
         raise RolloverError(code)
 
 
-def docker(args, timeout=60):
+def docker(args, timeout=60, env=ENV):
     try:
-        result = subprocess.run(['docker', *args], env=ENV, capture_output=True,
+        result = subprocess.run(['docker', *args], env=env, capture_output=True,
                                 text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
         raise RolloverError('docker_command_unavailable') from None
@@ -186,6 +186,8 @@ def create_args(name, project, service, image, entry, networks, stop=STOP_SECOND
 
     Published ports are deliberately dropped: the canonical container owns them
     and a second binding would fail. Restart is off so a failure stays visible.
+    Environment entries are named only; their values reach the client through
+    create_env, because every local account can read a process's arguments.
     """
     require(NAME.fullmatch(name), 'rollover_name_invalid')
     args = ['create', '--pull=never', '--name', name, '--restart=no', '--init',
@@ -193,8 +195,8 @@ def create_args(name, project, service, image, entry, networks, stop=STOP_SECOND
             '--label', f'{LABEL}=1', '--label', f'kr.mapservice.project={project}',
             '--label', f'kr.mapservice.service={service}', '--log-driver=none',
             '--network', networks[0], *health_args(entry)]
-    for key, value in sorted((entry.get('environment') or {}).items()):
-        args += ['--env', f'{key}={value}' if value is not None else key]
+    for key in sorted(entry.get('environment') or {}):
+        args += ['--env', key]
     limits = ((entry.get('deploy') or {}).get('resources') or {}).get('limits') or {}
     if limits.get('memory'):
         args += ['--memory', str(limits['memory'])]
@@ -210,6 +212,19 @@ def create_args(name, project, service, image, entry, networks, stop=STOP_SECOND
         args += ['--cap-drop', capability]
     args.append(image)
     return args
+
+
+def create_env(entry):
+    """The client environment that fills in the names create_args passes.
+
+    docker resolves a bare --env NAME from its own environment. A service value
+    that would also steer the client itself is refused instead of applied.
+    """
+    values = {key: str(value) for key, value in (entry.get('environment') or {}).items()
+              if value is not None}
+    require(not any(key in ENV or key.startswith('DOCKER_') for key in values),
+            'service_environment_collides_with_docker_client')
+    return {**ENV, **values}
 
 
 def upstream_body(service, target):
@@ -319,7 +334,8 @@ def rollover(config, project, service, upstreams, probes, recreate, *,
     green = None
     switched = False
     try:
-        green = docker(create_args(name, project, service, image, entry, networks, drain), timeout=120)
+        green = docker(create_args(name, project, service, image, entry, networks, drain), timeout=120,
+                       env=create_env(entry))
         require(ID.fullmatch(green), 'rollover_container_id_invalid')
         for extra in networks[1:]:
             docker(['network', 'connect', extra, green])

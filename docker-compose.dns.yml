@@ -36,13 +36,15 @@ services:
     environment:
       DUCKDNS_SUBDOMAIN: ${DUCKDNS_SUBDOMAIN:?duckdns 에 만든 이름을 정해야 한다}
       DUCKDNS_TOKEN: ${DUCKDNS_TOKEN:?duckdns 발급 토큰을 정해야 한다}
+    # 토큰은 curl 이 자기 환경에서 읽어 주소에 끼운다(--variable %…, {{…}}).
+    # 셸이 펼쳐 인자로 주면 요청마다 값이 명령줄(호스트 프로세스 목록)에 드러난다.
     command:
       - sh
       - -c
       - |
         while :; do
-          body=$$(curl -fsS --max-time 20 \
-            "https://www.duckdns.org/update?domains=$$DUCKDNS_SUBDOMAIN&token=$$DUCKDNS_TOKEN&ip=" \
+          body=$$(curl -fsS --max-time 20 --variable %DUCKDNS_TOKEN \
+            --expand-url "https://www.duckdns.org/update?domains=$$DUCKDNS_SUBDOMAIN&token={{DUCKDNS_TOKEN}}&ip=" \
             || echo "REQUEST_FAILED")
           case "$$body" in
             OK*) : ;;
