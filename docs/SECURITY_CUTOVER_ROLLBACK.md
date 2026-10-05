@@ -14,7 +14,10 @@ when the database schema happens to be backward compatible.
 The JSON object has exactly these four keys:
 
 - `schema_version`: integer `1` (not boolean).
-- `instance_id`: exact GCP instance ID `2327348931395410137`.
+- `instance_id`: the exact GCP instance ID string the receiver is bound to, that is
+  `instance_id` of root-owned `/etc/map-deploy/target.json` (the original test host,
+  which has no such file, stays bound to `2327348931395410137`; see
+  [CUTOVER_SUPERVISOR.md](CUTOVER_SUPERVISOR.md#new-test-host-enrollment-one-time)).
 - `candidate_allowed`: nonempty list of complete six-image objects.
 - `rollback_verified`: list of complete six-image objects, initially empty.
 

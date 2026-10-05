@@ -1,0 +1,11 @@
+[Unit]
+Description=MAP GCP production admin control PostgreSQL half-hour GCS backup schedule
+
+[Timer]
+OnCalendar=*-*-* *:05,35:00
+Persistent=true
+AccuracySec=1s
+Unit=map-prod-admin-backup-gcs.service
+
+[Install]
+WantedBy=timers.target

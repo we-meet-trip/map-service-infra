@@ -31,7 +31,7 @@ MAP 서비스의 인프라 오케스트레이션 레포. 다른 6 레포(admin �
 - `docker-compose.admin.test.yml` — 관리자 스택을 시험 스택 곁에 세운다(포트·볼륨·네트워크 분리)
 - `scripts/cloud-up.sh` — 클라우드 서버에서 순서대로 띄운다(받기 → 저장소 → 백업 → 표 손질 → 앱 → 콘솔).
   `--test` 시험 스택 · `--micro` 1GB 급 서버 · `--registry` 만들지 않고 받아 쓰기 ·
-  `--edge` 바깥 노출 · `--routing` 경로 엔진 · `--vision` 카메라 인식 ·
+  `--edge` 바깥 노출 · `--dns` 동적 DNS 이름 갱신 · `--routing` 경로 엔진 · `--vision` 카메라 인식 ·
   `--admin` 운영 콘솔 · `--monitoring` 콘솔 + 지표
 - `scripts/images-push.sh` — 여섯 이미지를 만들어 받아갈 곳에 올린다. 평소에는 사람이
   직접 부르지 않고 레포의 배포 실행이 부른다

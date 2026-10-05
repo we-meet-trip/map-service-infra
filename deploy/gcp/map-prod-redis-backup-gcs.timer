@@ -1,0 +1,11 @@
+[Unit]
+Description=MAP GCP production Redis half-hour GCS backup schedule
+
+[Timer]
+OnCalendar=*-*-* *:15,45:00
+Persistent=true
+AccuracySec=1s
+Unit=map-prod-redis-backup-gcs.service
+
+[Install]
+WantedBy=timers.target

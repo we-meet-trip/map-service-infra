@@ -57,10 +57,17 @@ jobs:
             docker compose --env-file ./.env \
               -f docker-compose.yml -f docker-compose.registry.yml \
               --profile full --profile routing config -q
+          # 앞단만 얹는 조합은 동적 DNS 값 없이도 그려져야 한다. 도메인을 직접
+          # 관리하는 서버의 환경파일에는 그 값이 없다.
+          EDGE_DOMAIN=example.invalid EDGE_EMAIL=ci@example.invalid \
+            docker compose --env-file ./.env \
+              -f docker-compose.yml -f docker-compose.edge.yml \
+              --profile full --profile edge config -q
+          # 동적 DNS 를 함께 얹는 조합은 따로 본다.
           EDGE_DOMAIN=example.invalid EDGE_EMAIL=ci@example.invalid \
           DUCKDNS_SUBDOMAIN=ci DUCKDNS_TOKEN=ci \
             docker compose --env-file ./.env \
-              -f docker-compose.yml -f docker-compose.edge.yml \
+              -f docker-compose.yml -f docker-compose.edge.yml -f docker-compose.dns.yml \
               --profile full --profile edge --profile dns config -q
 
       # 관문 설정은 렌더링 검사에 걸리지 않는다. 문법이 깨져도 compose 는

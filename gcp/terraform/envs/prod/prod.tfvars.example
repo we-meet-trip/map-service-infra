@@ -1,0 +1,25 @@
+# 실제 값은 gs://map-prod-tf-config/prod.tfvars 에만 둔다. 저장소에는 자리표시자만.
+
+alert_emails = ["owner@example.com", "ops@example.com"]
+owner_cidrs  = ["203.0.113.10/32"]
+owner_email  = "owner@example.com"
+operators = {
+  owner = "owner@example.com"
+  ops   = "ops@example.com"
+}
+team_group = "" # 팀 Google Group 이 생기면 그룹 이메일
+
+# 기본값(false)을 바꾸지 않는다. 적용 금지 구간 규칙은 README.
+# prod_public_web = false
+# prod_vm_alerts  = false
+
+billing_account_id = "000000-000000-000000"
+budget_account_krw = 0
+budget_project_krw = 0
+budget_gemini_krw  = 0
+
+# 정해지면: 지표 이름 -> 하루 한도(계산식은 README)
+places_daily_caps = {}
+
+# 정해지면: { dump = 일수, access_log = 일수 }
+archive_retention_days = null

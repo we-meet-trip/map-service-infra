@@ -115,9 +115,16 @@ class RedisBackupTests(unittest.TestCase):
 class BackupTimerTests(unittest.TestCase):
     @contextlib.contextmanager
     def timer(self, root, wait=0.2):
+        # The real receiver beside backup_job reads its target file from root
+        # (absent unless a test writes one), never the host's own.
+        receiver = job.receiver()
         with patch.object(job, 'STATE', Path(root)), \
              patch.object(job, 'LOCK_WAIT_SECONDS', wait), \
              patch.object(job, 'configuration', return_value={'BACKUP_REMOTE': 'gs://fixture/test', 'BACKUP_DIR': '/tmp/fixture'}), \
+             patch.object(job, 'receiver', return_value=receiver), \
+             patch.object(receiver, 'TARGET_FILE', Path(root) / 'target.json'), \
+             patch.object(receiver, 'validate_host_metadata'), \
+             patch.object(receiver, 'validate_state_directory'), \
              contextlib.redirect_stdout(io.StringIO()):
             yield
 
@@ -181,7 +188,7 @@ class BackupTimerTests(unittest.TestCase):
 
     def test_child_timeout_terminates_its_group_and_records_failure(self):
         process = SimpleNamespace(pid=4242, communicate=None)
-        with tempfile.TemporaryDirectory() as root, patch.object(job, 'STATE', Path(root)), patch.object(job, 'configuration', return_value={'BACKUP_REMOTE': 'gs://fixture/test', 'BACKUP_DIR': '/tmp/fixture'}), patch.object(job.subprocess, 'Popen', return_value=process), patch.object(job.os, 'killpg') as terminate, contextlib.redirect_stdout(io.StringIO()):
+        with tempfile.TemporaryDirectory() as root, self.timer(root), patch.object(job.subprocess, 'Popen', return_value=process), patch.object(job.os, 'killpg') as terminate:
             from unittest.mock import Mock
             process.communicate = Mock(side_effect=[job.subprocess.TimeoutExpired('fixture', 540), ('', '')])
             self.assertEqual(job.entry('redis'), 1)
@@ -200,6 +207,27 @@ class BackupTimerTests(unittest.TestCase):
                 for bad in ('BACKUP_DIR=/x\nBACKUP_DIR=/y\n', 'TOKEN=secret\n'):
                     config.write_text(bad)
                     with self.assertRaises(ValueError): job.configuration()
+
+    def test_backup_reads_the_checkout_named_by_the_target_file(self):
+        written = {'project': 'mapservice-test', 'zone': 'us-central1-a', 'instance': 'map-test',
+                   'instance_id': '1234567890123456789', 'public_url': 'https://test-api.mapservice.app',
+                   'repo': '/srv/map-test/map-service-infra', 'dns_profile': False}
+        # Absent file: the original host's checkout. Present file: its own checkout.
+        for content, expected in ((None, '/home/mapadmin26/map-service-infra'), (written, written['repo'])):
+            with tempfile.TemporaryDirectory() as root, self.timer(root), patch.object(job.subprocess, 'Popen') as child:
+                if content is not None:
+                    (Path(root) / 'target.json').write_text(json.dumps(content))
+                child.return_value = SimpleNamespace(pid=1, communicate=lambda timeout=None: ('{}', ''), returncode=0)
+                self.assertEqual(job.entry('pg'), 0)
+                self.assertIn('.ROOT=Path(' + repr(expected) + ')', child.call_args.args[0][2])
+
+    def test_invalid_target_file_stops_the_backup_instead_of_guessing(self):
+        with tempfile.TemporaryDirectory() as root, self.timer(root), patch.object(job.subprocess, 'Popen') as child:
+            # Owned correctly but missing keys: refused, never read as the original host.
+            (Path(root) / 'target.json').write_text('{"repo": "/srv/map-test/map-service-infra"}')
+            self.assertEqual(job.safe_entry('pg'), 1)
+            child.assert_not_called()
+            self.assertEqual(json.loads((Path(root) / 'backup-status.json').read_text())['code'], 'BACKUP_RUNNER_FAILED')
 
     def test_redis_timer_is_staggered_and_process_group_is_bounded(self):
         root = Path(__file__).parents[1]

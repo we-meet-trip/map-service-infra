@@ -12,7 +12,8 @@
 # 사용:
 #   ./scripts/cloud-up.sh                    운영
 #   ./scripts/cloud-up.sh --test             시험(오버레이·시험 환경파일)
-#   ./scripts/cloud-up.sh --edge             바깥 노출까지 함께
+#   ./scripts/cloud-up.sh --edge             바깥 노출(앞단)까지 함께
+#   ./scripts/cloud-up.sh --edge --dns       앞단 + 무료 동적 DNS 이름 갱신
 #   ./scripts/cloud-up.sh --test --micro     메모리 1GB 서버
 #   ./scripts/cloud-up.sh --registry         이미지를 만들지 않고 받아 쓴다
 #   ./scripts/cloud-up.sh --admin            운영 콘솔까지 함께
@@ -30,6 +31,7 @@ PULL=0
 ROUTING=0
 VISION=0
 EDGE=0
+DNS=0
 ADMIN=0
 MONITORING=0
 TARGET_ONLY=0
@@ -46,7 +48,10 @@ for arg in "$@"; do
     --micro) FILES+=(-f docker-compose.micro.yml); MICRO=1 ;;
     --registry) FILES+=(-f docker-compose.registry.yml)
                 ADMIN_FILES+=(-f docker-compose.admin.registry.yml); PULL=1 ;;
-    --edge) FILES+=(-f docker-compose.edge.yml); PROFILES+=(--profile edge --profile dns); EDGE=1 ;;
+    --edge) FILES+=(-f docker-compose.edge.yml); PROFILES+=(--profile edge); EDGE=1 ;;
+    # 무료 동적 DNS 이름을 이 서버 주소로 맞춘다. 도메인을 직접 관리하는 서버는
+    # 쓰지 않는다 — 그 파일을 얹으면 갱신 이름과 토큰을 환경파일에 채워야 한다.
+    --dns) FILES+=(-f docker-compose.dns.yml); PROFILES+=(--profile dns); DNS=1 ;;
     # 운영 콘솔을 함께 올린다. 서비스 스택이 만든 네트워크에 얹히므로 반드시
     # 서비스가 먼저 서고 난 뒤에 세운다 — 아래에서 마지막 단계로 돌린다.
     --admin) ADMIN=1 ;;
@@ -299,13 +304,14 @@ fi
 #
 # 비밀번호는 환경파일에서 다시 준다. 컨테이너가 들고 있는 값은 만들어질 때
 # 박힌 것이라, 환경파일만 고친 상태에서 재적용하면 옛 값으로 되맞춰 버린다.
+# 값은 compose 의 환경으로만 건네고 명령줄에는 이름만 둔다. 명령줄은 같은
+# 호스트의 모든 계정이 프로세스 목록으로 읽는다.
 echo "[$LABEL] 저장소 초기화 다시 적용"
 dc exec -T postgres psql -v ON_ERROR_STOP=1 -U "$db_user" -d "$db_name" \
   -f /docker-entrypoint-initdb.d/00-create-schemas.sql
 if [ "$TARGET_ONLY" = 0 ]; then
-  dc exec -T \
-    -e MAP_ADMIN_PASSWORD="$(grep -E '^MAP_ADMIN_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)" \
-    postgres bash /docker-entrypoint-initdb.d/10-admin.sh
+  MAP_ADMIN_PASSWORD="$(grep -E '^MAP_ADMIN_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)" \
+    dc exec -T -e MAP_ADMIN_PASSWORD postgres bash /docker-entrypoint-initdb.d/10-admin.sh
 fi
 
 echo "[$LABEL] 3/4 스키마 이전"
@@ -419,7 +425,8 @@ rollover_up() {
       break
     fi
   done
-  [ "$EDGE" = 0 ] || dc "${PROFILES[@]}" up -d --no-deps --wait --wait-timeout 180 edge dns
+  [ "$EDGE" = 0 ] || dc "${PROFILES[@]}" up -d --no-deps --wait --wait-timeout 180 edge
+  [ "$DNS" = 0 ] || dc "${PROFILES[@]}" up -d --no-deps --wait --wait-timeout 180 dns
   return $rc
 }
 
@@ -431,7 +438,8 @@ application_up() {
     # their containers merely because the image spelling changed from tag to ID.
     local services=(user agent hub proxy)
     [ "$VISION" = 0 ] || services+=(yolo)
-    [ "$EDGE" = 0 ] || services+=(edge dns)
+    [ "$EDGE" = 0 ] || services+=(edge)
+    [ "$DNS" = 0 ] || services+=(dns)
     dc "${PROFILES[@]}" up -d --no-deps --wait --wait-timeout 180 "${services[@]}"
   else
     dc "${PROFILES[@]}" up -d --wait --wait-timeout 180

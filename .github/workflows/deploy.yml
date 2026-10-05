@@ -1,5 +1,8 @@
 # Receives a verified immutable release bundle. The server's forced command owns
 # backup, fixed-instance checks, health checks and one application-only rollback.
+# Cloud access is keyless: this job's GitHub OIDC token is exchanged through the
+# test project's Workload Identity Federation for a deployer service account whose
+# only grants are an IAP tunnel to, and read access on, the one test instance.
 name: deploy-gcp-test
 
 on:
@@ -13,9 +16,7 @@ on:
     workflows: [image-release]
     types: [completed]
 
-permissions:
-  contents: read
-  actions: read
+permissions: {}
 
 concurrency:
   group: deploy-gcp-test
@@ -34,7 +35,14 @@ jobs:
     # Receiver budgets include prebackup (30m), startup (40m), compatibility
     # checks and an application rollback (up to 10m). Keep SSH alive to report it.
     timeout-minutes: 120
+    # Only develop may deploy here (environment branch policy); the environment
+    # name is also a claim the federation condition requires.
     environment: gcp-test
+    # Listing any permission sets every unlisted one to none.
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,21 +66,30 @@ jobs:
           python scripts/deploy-gcp.py prepare --run-id "$RELEASE_RUN_ID" \
             --output "$RUNNER_TEMP/map-release-bundle" --target-environment test "${automatic[@]}"
 
-      - uses: google-github-actions/auth@v2
+      - uses: google-github-actions/auth@v3
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-          project_id: mapcenter-b59ca
-      - uses: google-github-actions/setup-gcloud@v2
+          workload_identity_provider: ${{ vars.TEST_WIF_PROVIDER }}
+          service_account: ${{ vars.TEST_DEPLOYER_SA }}
+          project_id: ${{ vars.TEST_GCP_PROJECT }}
+      - uses: google-github-actions/setup-gcloud@v3
         with:
-          project_id: mapcenter-b59ca
+          project_id: ${{ vars.TEST_GCP_PROJECT }}
 
       - name: deploy and smoke through pinned IAP SSH
         env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+          DEPLOY_SSH_KEY: ${{ secrets.TEST_DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.TEST_DEPLOY_SSH_KNOWN_HOSTS }}
+          GCP_PROJECT: ${{ vars.TEST_GCP_PROJECT }}
+          GCP_ZONE: ${{ vars.TEST_GCP_ZONE }}
+          INSTANCE: ${{ vars.TEST_INSTANCE }}
         run: |
           set -euo pipefail
           umask 077
+          # These values end up in ssh's ProxyCommand, which a shell executes.
+          [[ "$GCP_PROJECT" =~ ^[a-z][-a-z0-9]{4,28}[a-z0-9]$ &&
+             "$GCP_ZONE" =~ ^[a-z]+-[a-z]+[0-9]+-[a-z]$ &&
+             "$INSTANCE" =~ ^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
+            { echo 'gcp-test target variables are missing or malformed' >&2; exit 1; }
           key="$RUNNER_TEMP/map-deploy-key"
           hosts="$RUNNER_TEMP/map-deploy-known-hosts"
           trap 'rm -f "$key" "$hosts"' EXIT
@@ -83,5 +100,5 @@ jobs:
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$hosts" \
             -o HostKeyAlias=map-test-deploy -o ConnectTimeout=30 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=6 \
-            -o 'ProxyCommand=gcloud compute start-iap-tunnel map-test 22 --listen-on-stdin --project=mapcenter-b59ca --zone=us-central1-a --verbosity=error' \
-            mapdeploy@map-test < "$RUNNER_TEMP/map-release-bundle/transport.json"
+            -o "ProxyCommand=gcloud compute start-iap-tunnel $INSTANCE 22 --listen-on-stdin --project=$GCP_PROJECT --zone=$GCP_ZONE --verbosity=error" \
+            "mapdeploy@$INSTANCE" < "$RUNNER_TEMP/map-release-bundle/transport.json"

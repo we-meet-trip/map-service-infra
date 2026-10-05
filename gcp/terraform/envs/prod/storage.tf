@@ -1,0 +1,48 @@
+# 운영 버킷 권한 표에는 apply 주체(소유자)와 VM SA 만 남는다. VM SA 에 프로젝트 단위 storage 역할은 주지 않는다.
+locals {
+  vm_sa_member = "serviceAccount:${module.host.vm_sa_email}"
+  owner_admin  = { "roles/storage.admin" = ["user:${var.owner_email}"] }
+
+  # 버킷마다 권한 표 전체. VM SA 는 백업을 올리고 읽기만 하며(지우는 것은 수명 규칙뿐) 산출물은 읽기만 한다.
+  bucket_bindings = {
+    backups = merge(local.owner_admin, {
+      "roles/storage.objectCreator" = [local.vm_sa_member]
+      "roles/storage.objectViewer"  = [local.vm_sa_member]
+    })
+    artifacts = merge(local.owner_admin, {
+      "roles/storage.objectViewer" = [local.vm_sa_member]
+    })
+    archive = local.owner_admin
+  }
+}
+
+module "backups" {
+  source = "../../modules/bucket"
+
+  name                = "map-prod-backups"
+  location            = "ASIA-NORTHEAST3"
+  soft_delete_seconds = 0
+  delete_after_days   = { "" = local.backup_retention_days }
+  bindings            = local.bucket_bindings.backups
+}
+
+module "artifacts" {
+  source = "../../modules/bucket"
+
+  name     = "map-prod-release-artifacts"
+  location = "ASIA-NORTHEAST3"
+  bindings = local.bucket_bindings.artifacts
+}
+
+module "archive" {
+  source = "../../modules/bucket"
+
+  name                = "map-prod-archive"
+  location            = "ASIA-NORTHEAST3"
+  soft_delete_seconds = 0
+  delete_after_days = var.archive_retention_days == null ? {} : {
+    "dump/"       = var.archive_retention_days.dump
+    "access-log/" = var.archive_retention_days.access_log
+  }
+  bindings = local.bucket_bindings.archive
+}

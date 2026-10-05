@@ -1,0 +1,31 @@
+# /etc/google-cloud-ops-agent/config.yaml on the production VM.
+#
+# Metrics: no metrics section, so the built-in hostmetrics pipeline stays as is.
+# Logs: the built-in syslog file pipeline is switched off and one journald
+# receiver ships only the entries in the allowlist below. Its receiver ID is the
+# log name: projects/<project>/logs/map_journald. exclude_logs drops every entry
+# that is NOT one of the allowlisted units or identifiers; UNIT is the field PID 1
+# sets on its own lines about a unit (for example "Failed with result").
+# The journald field names are confirmed on the installed VM with
+# `journalctl -o json` before alerts rely on this file.
+# The package starts the agent at install time with its default config, which
+# ships /var/log/syslog until this file is in place and the agent restarts.
+logging:
+  receivers:
+    map_journald:
+      type: systemd_journald
+  processors:
+    map_allowlist:
+      type: exclude_logs
+      match_any:
+      - 'NOT (jsonPayload._SYSTEMD_UNIT = "ssh.service" OR jsonPayload._SYSTEMD_UNIT = "systemd-logind.service" OR jsonPayload._SYSTEMD_UNIT =~ "^map-prod-.*backup.*\.service$" OR jsonPayload.UNIT =~ "^map-prod-.*backup.*\.service$" OR jsonPayload.SYSLOG_IDENTIFIER = "sudo")'
+  service:
+    pipelines:
+      default_pipeline:
+        receivers: []
+      map_journald:
+        receivers: [map_journald]
+        processors: [map_allowlist]
+# The agent's own Fluent Bit logs are not shipped (Ops Agent 2.44.0 or later).
+global:
+  default_self_log_file_collection: false

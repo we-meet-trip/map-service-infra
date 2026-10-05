@@ -31,7 +31,8 @@ class ArgumentTests(unittest.TestCase):
         self.assertNotIn('--network-alias', args)
         self.assertIn('--restart=no', args)
         self.assertIn('--env', args)
-        self.assertIn('HUB_DATABASE_URL=x', args)
+        self.assertIn('HUB_DATABASE_URL', args)
+        self.assertEqual(roll.create_env(entry)['HUB_DATABASE_URL'], 'x')
         self.assertIn('384m', args)
         self.assertIn('1.0', args)
         self.assertIn('no-new-privileges:true', args)
@@ -251,7 +252,7 @@ class RolloverTests(unittest.TestCase):
                        GREEN: {'id': GREEN, 'image': IMAGE_ID, 'running': True, 'health': 'healthy'},
                        NEW: {'id': NEW, 'image': IMAGE_ID, 'running': True, 'health': 'healthy'}}
 
-    def docker(self, args, timeout=60):
+    def docker(self, args, timeout=60, env=None):
         self.calls.append(args)
         if args[:2] == ['image', 'inspect']:
             return IMAGE_ID

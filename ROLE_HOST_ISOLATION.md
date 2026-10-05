@@ -103,7 +103,7 @@ full backup/restore, Grafana rendering or RPO/RTO.
 
 중앙 서버를 검증한 다음, GCP root가 `/var/lib/map-deploy/admin-handoff.json`과 그 SHA256을 참조하는 `topology.json`을 설정한다. 이 파일들은 infra checkout 밖에 있어 앱 rollback으로 사라지지 않는다. 현재 호스트에는 **설정하지 않았다**. 기존 결합 상태에서 임의로 이 플래그를 켜면 관리자 이전 증거가 없는 채 접근을 잃으므로 금지한다.
 
-`admin-handoff.json`은 status PASS, application_instance_id `2327348931395410137`, 서로 다른 central_instance_id, checks의 control_auth/target_read/target_isolation/browser_charts/audit_restore/serving_survives_admin_failure 모두 PASS를 실제 독립 호스트 증거로 기록해야 한다. `topology.json`은 schema_version 1, instance_id, mode `application`, verified_admin_handoff_sha256을 담고 root 소유·group/other 쓰기 금지로 설치한다. receiver 자체도 root 설치본을 갱신해야 한다. 운영자 제공 사실을 증명하지 못하는 JSON만 작성해 gate를 우회하지 않는다.
+`admin-handoff.json`은 status PASS, application_instance_id = 이 호스트 `/etc/map-deploy/target.json`의 `instance_id`(이 파일이 없는 원래 시험 호스트는 `2327348931395410137`), 서로 다른 central_instance_id, checks의 control_auth/target_read/target_isolation/browser_charts/audit_restore/serving_survives_admin_failure 모두 PASS를 실제 독립 호스트 증거로 기록해야 한다. `topology.json`은 schema_version 1, 같은 instance_id, mode `application`, verified_admin_handoff_sha256을 담고 root 소유·group/other 쓰기 금지로 설치한다. receiver 자체도 root 설치본을 갱신해야 한다. 운영자 제공 사실을 증명하지 못하는 JSON만 작성해 gate를 우회하지 않는다.
 
 활성화 전 순서: 새 receiver 및 현재 checkout의 detached 지원 검사 → 독립 관리자 계정/감사 DB 복원·API/화면·권한/장애 시험 → 대상 호스트에 최소 권한 metrics 자격과 사설 TLS/auth 수집 gateway 설치·검증 → 기존 중앙 역할 프로세스(admin/admin-web/prometheus/grafana/cadvisor)만 중지 → 실제 검증 증거와 root topology 설치. 기존 DB/볼륨은 보존한다. GCP의 이전 Prometheus/Grafana 자료는 삭제하지 않고 별도 이관·보존한다.
 
