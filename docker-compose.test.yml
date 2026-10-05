@@ -74,6 +74,12 @@ services:
     environment:
       # 운영과 같은 비율을 유지한다. 상한이 절반이므로 힙도 함께 절반이 된다.
       JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=70"
+    # 2코어 공유 시험 서버에서 앱이 한꺼번에 다시 뜨면 JVM 기동이 기본 유예와
+    # 재시도를 다 쓰고도 끝나지 않을 수 있다. 그러면 뜨기 직전에 unhealthy 로
+    # 판정되고 배포 대기가 그 자리에서 실패한다. 유예만 늘려 판정이 배포 대기
+    # 상한(180초) 안에서 나게 한다. 검사 명령·간격·재시도는 밑판 그대로다.
+    healthcheck:
+      start_period: 120s
 
   agent:
     container_name: !reset null
