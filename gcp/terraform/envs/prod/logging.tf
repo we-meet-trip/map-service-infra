@@ -59,6 +59,13 @@ resource "google_logging_project_sink" "default" {
     filter = local.access_audit_filter
   }
 
+  # Google 게스트 에이전트가 Ops Agent 를 거치지 않고 Cloud Logging 에 바로 쓰는 자기 운영 로그(재시작·주기 작업). VM 저널에는 그대로 남는다.
+  # 이름은 사전순으로 둔다. API 가 목록을 정렬해 돌려줘도 순서 차이가 계획 변경으로 보이지 않게 한다.
+  exclusions {
+    name   = "guest-agent"
+    filter = "logName=(\"projects/${local.project_id}/logs/GCEGuestAgent\" OR \"projects/${local.project_id}/logs/diagnostic-log\")"
+  }
+
   # Ops Agent 가 시작할 때와 런타임 오류 때 남기는 자체 점검 로그. 에이전트에 끄는 설정이 없어 저장 단계에서 버린다.
   exclusions {
     name   = "ops-agent-health"
