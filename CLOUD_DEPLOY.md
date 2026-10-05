@@ -64,7 +64,9 @@ SHA를 순서대로 캡처하므로 여러 저장소의 병합이 원자적으�
 통합할 변경을 먼저 모두 병합·검사한 다음 릴리스의 소스 SHA 목록을 확인한다.
 
 현재 자동 트리거는 **infra develop push → infra ci 성공 → image-release →
-deploy-gcp-test**다. user/agent/hub/yolo의 develop CI가 보내는 선택적
+deploy-gcp-test**다. 다만 2026-10-05 현재 `image-release`가 `disabled_manually` 상태라,
+소유자가 `gh workflow enable`로 다시 켜기 전에는 이 체인도 수동 실행도 시작되지 않는다.
+user/agent/hub/yolo의 develop CI가 보내는 선택적
 `repository_dispatch: release-develop` 경로도 구현했다. 네 저장소의
 `RELEASE_DISPATCH_TOKEN`이 없으면 송신 단계만 건너뛰며, 일반 CI는 계속 동작한다.
 현재 토큰은 등록하지 않았으므로 이 경로의 자동 실행은 아직 활성화하지 않았다.

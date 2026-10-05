@@ -58,18 +58,20 @@ def loaded_siblings(script, seen):
 class DeploymentDocumentTests(unittest.TestCase):
     def test_enrollment_steps_run_in_a_working_order(self):
         section = enrollment()
-        # .env.test exists before PostgreSQL starts alone; DNS resolves and a verified
-        # bundle pins every image before the first stack; the account exists before
-        # its key; the branch policy is confirmed before environment secrets are stored.
-        order = ("scripts/make-test-env.sh", "--profile infra up -d postgres",
-                 "dig +short test-api.mapservice.app", "deploy-gcp.py prepare", "RELEASE_BUNDLE=",
+        # .env.test and the verified bundle exist before the database bootstrap runs the
+        # bundle's User image; DNS resolves before the first stack starts from that bundle;
+        # the account exists before its key; the branch policy is confirmed before
+        # environment secrets are stored.
+        order = ("scripts/make-test-env.sh", "deploy-gcp.py prepare", "--approve-postgis-view-revoke",
+                 "dig +short test-api.mapservice.app", "RELEASE_BUNDLE=",
                  "./scripts/cloud-up.sh", "useradd --create-home --shell /bin/sh mapdeploy",
                  "authorized_keys", "deployment_branch_policy", "TEST_DEPLOY_SSH_KNOWN_HOSTS")
         self.assertEqual([landmark for landmark in order if landmark not in section], [])
         self.assertEqual(sorted(order, key=section.find), list(order))
-        compose = re.search(r"docker compose (.*) --profile infra up -d postgres", section)[1]
-        for name in re.findall(r"(?<!\S)-f (\S+)", compose):
-            self.assertTrue((ROOT / name).is_file(), name)
+        # Every repository file the steps link to exists, the database bootstrap script included.
+        links = re.findall(r"\]\(([\w./-]+?)(?:#[\w-]*)?\)", section)
+        self.assertIn("../scripts/gcp-test-db-bootstrap.sh", links)
+        self.assertEqual([link for link in links if not (ROOT / "docs" / link).is_file()], [])
         self.assertIn("${RELEASE_BUNDLE:-}", (ROOT / "scripts" / "cloud-up.sh").read_text())
 
     def test_documented_script_calls_match_their_parsers(self):

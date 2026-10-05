@@ -90,9 +90,18 @@ apply the reviewed role transfer while its serving/consumers are stopped;
 and explicitly preserve other service rights before removing inherited PUBLIC
 rights. The current GCP catalog has PUBLIC TEMP and SELECT on PostGIS reference
 metadata. Runtime's existing cross-schema guard must pass without widening it to
-hide a permission failure. No provisioning SQL or secret rotation is performed by
-this runner. Empty-host historical bootstrap remains a separate requirement; the
-normal migrator must continue to reject an unbootstrapped DB. The Admin
+hide a permission failure. The User runtime and migrator guards accept only
+`public.spatial_ref_sys` outside `user_service`, while PostGIS also grants PUBLIC
+SELECT on the views `public.geometry_columns` and `public.geography_columns`: until
+that SELECT is withdrawn (an owner-approved change), User `migrate`, `validate` and
+serving stop with `database_privilege_cross_schema_data`, and
+`ALTER EXTENSION postgis UPDATE` may grant it again. No provisioning SQL or secret
+rotation is performed by this runner. Empty-host historical bootstrap remains a
+separate requirement; the normal migrator must continue to reject an unbootstrapped
+DB. For the new GCP test host it is
+[GCP_TEST_DB_BOOTSTRAP.md](GCP_TEST_DB_BOOTSTRAP.md), which also withdraws that view
+SELECT and withdraws it again after an extension update
+([maintenance](GCP_TEST_DB_BOOTSTRAP.md#maintenance-postgis-view-grants)). The Admin
 application keeps its existing separate `map_admin` login in this phase; only the
 three shared operator logins are separated here.
 
