@@ -142,7 +142,10 @@ fi
 #     있는 종류의 어긋남을 시험이 못 잡는다. 켜는 데 필요한 서명 열쇠는 위에서
 #     이미 만들었으므로 이 값만으로 부팅한다.
 set_kv AUTH_ENFORCED true
-set_kv CORS_ALLOWED_ORIGINS "https://test.invalid"
+# 인증을 켜면 와일드카드 출처로는 BFF 가 부팅하지 않는다. 시험 호스팅의 웹 앱과
+# 초대 미리보기는 브라우저에서 시험 API 를 부르므로 그 출처 하나만 연다. 다른
+# 값이면 그 화면들의 호출이 403 으로 막히고, e2e.sh 의 교차 출처 검사도 실패한다.
+set_kv CORS_ALLOWED_ORIGINS "https://mapcenter-b59ca.web.app"
 
 # (7-1) 저장 본문과 통신 본문을 감싸는 열쇠를 그때그때 만든다.
 #      본보기 파일의 값은 자리를 보여 주는 용도라 그대로 쓰면 모든 시험

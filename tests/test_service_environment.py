@@ -3,6 +3,7 @@ import json
 import importlib.util
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import unittest
@@ -60,3 +61,16 @@ class ServiceEnvironmentTests(unittest.TestCase):
                 rendered['services'][name]['image']=(
                     f'ghcr.io/we-meet-trip/map-service-{name}@sha256:'+'a'*64)
                 self.assertEqual(job.contract(job.service_contract(name),rendered,credentials)[0],'map-test')
+
+
+class TestStackOriginTests(unittest.TestCase):
+    def test_test_stack_allows_the_hosting_origin_that_e2e_checks(self):
+        # The generated test environment and the cross-origin check must name the same
+        # hosting origin; a placeholder here blocks the hosted web app with 403.
+        generated = re.search(r'^set_kv CORS_ALLOWED_ORIGINS "([^"]+)"$',
+                              (ROOT / 'scripts/make-test-env.sh').read_text(), re.M)
+        checked = re.search(r'^WEB_ORIGIN="\$\{E2E_WEB_ORIGIN:-([^}]+)\}"$',
+                            (ROOT / 'scripts/e2e.sh').read_text(), re.M)
+        self.assertIsNotNone(generated)
+        self.assertIsNotNone(checked)
+        self.assertEqual(generated[1], checked[1])
