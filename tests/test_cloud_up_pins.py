@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -136,6 +137,29 @@ class InfrastructurePinStartupTests(unittest.TestCase):
                          [['user', 'agent', 'hub', 'yolo']])
         self.assertFalse(any('admin' in call or 'admin-web' in call for call in calls))
         self.assertFalse(any(any('compose.admin-images' in item for item in call) for call in calls))
+
+
+@unittest.skipUnless(shutil.which("docker"), "Docker Compose is required")
+class TestUserStartupBudgetTests(unittest.TestCase):
+    def health(self, *files):
+        result = subprocess.run(["docker", "compose", "--env-file", ".env.example",
+                                 *(arg for name in files for arg in ("-f", name)),
+                                 "--profile", "full", "config", "--format", "json"],
+                                cwd=ROOT, capture_output=True, text=True, env={**os.environ, "MAP_STACK_ENV": "test"})
+        self.assertEqual(result.returncode, 0, "Compose must render")
+        return json.loads(result.stdout)["services"]["user"]["healthcheck"]
+
+    def test_the_test_user_is_judged_inside_the_deployment_wait(self):
+        seconds = lambda text: sum(int(n) * {"h": 3600, "m": 60, "s": 1}[u] for n, u in re.findall(r"(\d+)([hms])", text))
+        waits = set(re.findall(r"--wait-timeout (\d+)", (ROOT / "scripts/cloud-up.sh").read_text()))
+        self.assertEqual(len(waits), 1)
+        base = self.health("docker-compose.yml")
+        test = self.health("docker-compose.yml", "docker-compose.test.yml")
+        # Only the grace period differs; the command, interval and retries stay the base ones.
+        self.assertEqual({k: v for k, v in test.items() if k != "start_period"},
+                         {k: v for k, v in base.items() if k != "start_period"})
+        self.assertGreater(seconds(test["start_period"]), seconds(base["start_period"]))
+        self.assertLess(seconds(test["start_period"]), int(waits.pop()))
 
 
 if __name__ == "__main__":
