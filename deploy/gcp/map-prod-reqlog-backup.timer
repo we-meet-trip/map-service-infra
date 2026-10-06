@@ -1,0 +1,13 @@
+[Unit]
+Description=MAP GCP production request-log archive every 10 minutes
+
+# Installed disabled. Enabled only when the public service opens, after `arm`; json-file keeps at
+# least 20 MB per container, so 10 minutes is safe while each container writes under 10 MB in it.
+[Timer]
+OnCalendar=*-*-* *:02/10:00
+Persistent=true
+AccuracySec=1s
+Unit=map-prod-reqlog-backup.service
+
+[Install]
+WantedBy=timers.target
