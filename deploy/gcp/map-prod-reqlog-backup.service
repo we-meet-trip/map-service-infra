@@ -1,7 +1,8 @@
 [Unit]
 Description=MAP GCP production request-log archive (masked, encrypted, create-only under log-6m/)
-After=network-online.target docker.service
+After=network-online.target docker.service time-sync.target
 Wants=network-online.target
+RequiresMountsFor=/srv/map-prod
 
 # No ConditionPathExists: an armed timer without config or cursor must fail loudly (the unit name
 # matches the Ops Agent backup pattern, so "Failed with result" raises the backup failure alert).

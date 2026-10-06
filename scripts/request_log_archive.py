@@ -1,25 +1,29 @@
 #!/usr/bin/env python3
-"""Ship masked, encrypted container request logs to the archive's log-6m/ prefix.
+"""Ship masked, encrypted container stdout/stderr to the archive's log-6m/ prefix.
 
 Runs on the production host as root from a systemd timer. For each configured Compose service
-it reads the window (cursor, now - settle] with `docker logs -t`, rejoins over-long messages,
-masks coordinates (coordinate_redaction.scrub) and refuses the window when anything remains.
-The lines become one gzip NDJSON document per service and window, encrypted with age to the
-archive recipient in memory, and one new object is created with the Cloud Storage JSON API
-(ifGenerationMatch=0, Custom-Time = upload time). The VM account may only create objects under
-the prefix: no read, list, overwrite or delete, so gcloud storage cp (which reads first) is not
-used. Plain text never touches disk; the state file holds cursors, counts and object names.
+it reads the window (cursor, now - settle] with `docker logs -t` (a stopped container is read to
+its end), rejoins over-long messages, masks coordinates with coordinate_redaction.scrub and
+replaces any line that still looks like a coordinate with a fixed placeholder. The lines become
+one gzip NDJSON document per service and window, encrypted with age to the archive recipient in
+memory, and one new object is created with the Cloud Storage JSON API (ifGenerationMatch=0,
+Custom-Time = upload time). The VM account may only create objects under the prefix: no read,
+list, overwrite or delete, so gcloud storage cp (which reads first) is not used. Plain text never
+touches disk; the state file holds cursors, container IDs, the pending window and result codes.
 
-  request_log_archive.py arm --start <RFC3339 UTC>   first cursor; nothing before it is ever shipped
-  request_log_archive.py run                         one window per service (the timer, or a flush
-                                                     right before any container is recreated)
-  request_log_archive.py status                      cursors and the last result, no log content
+  request_log_archive.py arm --start <RFC3339 UTC>   first cursor (at most 6 hours back);
+                                                     nothing before it is ever shipped
+  request_log_archive.py run                         one window per service (the timer, or a
+                                                     manual run after stopping a container)
+  request_log_archive.py status                      cursors and the last result, no log text
 
 --config and --state-dir point a one-off acceptance run at its own Compose project, prefix and
 state (for example log-6m/acceptance/) without touching the production cursors.
 
-Exit status 0 when every service shipped (or had nothing new), 1 otherwise; output is codes,
-counts and object names only, never log text.
+Exit status 0 when every service shipped (or had nothing new), 1 otherwise. Output is codes,
+counts and object names only, never log text or exception messages. A fully successful run
+also prints MAP_BACKUP_RESULT=COMPLETE kind=reqlog, so the per-kind backup absence alert notices
+a collector that stopped running.
 """
 import argparse
 import base64
@@ -27,6 +31,7 @@ import datetime as dt
 import fcntl
 import gzip
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -52,6 +57,10 @@ UPLOAD = 'https://storage.googleapis.com/upload/storage/v1/b/{bucket}/o?uploadTy
 RECIPIENT = re.compile(r'age1[023456789acdefghjklmnpqrstuvwxyz]{58}')
 SERVICE = re.compile(r'[a-z][a-z0-9-]{0,30}')
 LINE = re.compile(rb'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z (.*)', re.S)
+NS = 1_000_000_000
+ARM_MAX_AGE_NS = 6 * 3600 * NS
+# Everything a single service can raise; it becomes that service's code and the run goes on.
+SERVICE_ERRORS = (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, http.client.HTTPException)
 
 
 class ArchiveError(Exception):
@@ -67,37 +76,44 @@ def load_config(path=CONFIG):
     """Write-once root file; every value is checked because a wrong prefix would put request
     records under another retention rule."""
     info = path.lstat()
-    require(path.is_file() and not path.is_symlink() and info.st_uid == 0 and info.st_mode & 0o077 == 0,
-            'config_not_root_private')
+    require(path.is_file() and not path.is_symlink() and info.st_uid == os.geteuid() and info.st_mode & 0o077 == 0,
+            'config_not_private')
     config = json.loads(path.read_text())
-    require(set(config) == {'gcp_project', 'instance', 'bucket', 'prefix', 'recipient', 'compose_project',
-                            'services', 'settle_seconds', 'log_config'}, 'config_keys')
-    require(config['prefix'].startswith('log-6m/') and config['prefix'].endswith('/'), 'config_prefix')
-    require(RECIPIENT.fullmatch(config['recipient']), 'config_recipient')
-    require(config['services'] and all(SERVICE.fullmatch(name) for name in config['services']), 'config_services')
+    require(isinstance(config, dict) and set(config) == {'gcp_project', 'instance', 'bucket', 'prefix', 'recipient',
+                                                         'compose_project', 'services', 'settle_seconds',
+                                                         'log_config'}, 'config_keys')
+    require(isinstance(config['prefix'], str) and config['prefix'].startswith('log-6m/') and
+            config['prefix'].endswith('/'), 'config_prefix')
+    require(isinstance(config['recipient'], str) and RECIPIENT.fullmatch(config['recipient']), 'config_recipient')
+    services = config['services']
+    require(isinstance(services, list) and services and len(set(services)) == len(services) and
+            all(isinstance(name, str) and SERVICE.fullmatch(name) for name in services), 'config_services')
     require(isinstance(config['settle_seconds'], int) and 5 <= config['settle_seconds'] <= 120, 'config_settle')
+    log = config['log_config']
+    require(isinstance(log, dict) and set(log) == {'type', 'max-size', 'max-file'} and
+            all(isinstance(value, str) for value in log.values()), 'config_log')
     return config
 
 
 def run_command(argv, stdin=None):
-    result = subprocess.run(argv, input=stdin, capture_output=True, env=SYSTEM_ENV, timeout=300)
+    result = subprocess.run(argv, input=stdin, capture_output=True, env=SYSTEM_ENV, timeout=240)
     return result.returncode, result.stdout, result.stderr
 
 
 def ns_to_docker(ns):
-    return f'{ns // 1_000_000_000}.{ns % 1_000_000_000:09d}'
+    return f'{ns // NS}.{ns % NS:09d}'
 
 
 def ns_to_rfc3339(ns):
-    stamp = dt.datetime.fromtimestamp(ns // 1_000_000_000, dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
-    return f'{stamp}.{ns % 1_000_000_000:09d}Z'
+    stamp = dt.datetime.fromtimestamp(ns // NS, dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
+    return f'{stamp}.{ns % NS:09d}Z'
 
 
 def rfc3339_to_ns(text):
     match = re.fullmatch(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z', text)
     require(match, 'bad_timestamp')
     seconds = int(dt.datetime.strptime(match[1], '%Y-%m-%dT%H:%M:%S').replace(tzinfo=dt.timezone.utc).timestamp())
-    return seconds * 1_000_000_000 + int((match[2] or '0').ljust(9, '0'))
+    return seconds * NS + int((match[2] or '0').ljust(9, '0'))
 
 
 class Host:
@@ -118,19 +134,24 @@ class Host:
                 self.metadata('/instance/name') == self.config['instance'], 'wrong_host')
 
     def container(self, service):
-        code, out, _ = self.command([DOCKER, 'ps', '-q', '--no-trunc', '--filter',
-                                     f'label=com.docker.compose.project={self.config["compose_project"]}',
+        """(container ID, running) of the one service container; stopped ones count too so their
+        last lines can still be read. One-off `compose run` containers are left out."""
+        code, out, _ = self.command([DOCKER, 'ps', '-a', '-q', '--no-trunc',
+                                     '--filter', 'label=com.docker.compose.oneoff=False',
+                                     '--filter', f'label=com.docker.compose.project={self.config["compose_project"]}',
                                      '--filter', f'label=com.docker.compose.service={service}'])
         ids = out.decode().split() if code == 0 else []
         require(len(ids) == 1, 'container_not_single')
-        code, out, _ = self.command([DOCKER, 'inspect', '--format', '{{json .HostConfig.LogConfig}}', ids[0]])
+        code, out, _ = self.command([DOCKER, 'inspect', '--format',
+                                     '{{json .HostConfig.LogConfig}} {{.State.Running}}', ids[0]])
         require(code == 0, 'inspect_failed')
-        log = json.loads(out)
-        expected = self.config['log_config']
+        log_json, running = out.decode().rsplit(' ', 1)
+        log, expected = json.loads(log_json), self.config['log_config']
+        # Any other option (mode=non-blocking drops lines, compress changes the files) fails closed.
         require(log.get('Type') == expected['type'] and
-                {key: log.get('Config', {}).get(key) for key in ('max-size', 'max-file')} ==
-                {'max-size': expected['max-size'], 'max-file': expected['max-file']}, 'log_config_changed')
-        return ids[0]
+                log.get('Config') == {'max-size': expected['max-size'], 'max-file': expected['max-file']},
+                'log_config_changed')
+        return ids[0], running.strip() == 'true'
 
     def logs(self, container, since_ns, until_ns):
         """Messages in [since, until] as (timestamp ns, stream, text), stdout and stderr merged."""
@@ -144,8 +165,7 @@ class Host:
                     continue
                 match = LINE.fullmatch(redaction.join_fragments(record))
                 require(match, 'unparsed_log_record')
-                seconds = rfc3339_to_ns(match[1].decode() + 'Z')
-                stamp = seconds + int((match[2] or b'0').decode().ljust(9, '0'))
+                stamp = rfc3339_to_ns(match[1].decode() + 'Z') + int((match[2] or b'0').decode().ljust(9, '0'))
                 lines.append((stamp, stream, match[3].decode('utf-8', 'replace')))
         lines.sort(key=lambda line: line[0])
         return lines
@@ -188,52 +208,91 @@ class Archive:
         self.state_path = state_dir / 'state.json'
 
     def read_state(self):
-        require(self.state_path.is_file(), 'not_armed')
+        require(self.state_path.is_file() and not self.state_path.is_symlink(), 'not_armed')
         return json.loads(self.state_path.read_text())
 
     def write_state(self, state):
         temporary = self.state_path.with_suffix('.tmp')
-        with open(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w') as stream:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with open(descriptor, 'w') as stream:
             json.dump(state, stream, indent=1, sort_keys=True)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, self.state_path)
+        directory = os.open(self.state_dir, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
     def arm(self, start):
         require(not self.state_path.exists(), 'already_armed')
-        cursor = rfc3339_to_ns(start)
-        require(cursor <= self.now_ns(), 'start_in_future')
-        self.write_state({'schema': 1, 'services': {name: {'cursor': cursor} for name in self.config['services']}})
+        cursor, now = rfc3339_to_ns(start), self.now_ns()
+        require(cursor <= now, 'start_in_future')
+        # A mistyped start would ship rehearsal-period lines the VM can never delete.
+        require(now - cursor <= ARM_MAX_AGE_NS, 'start_too_old')
+        services = {}
+        for name in self.config['services']:
+            services[name] = {'cursor': cursor}
+            try:
+                # Recorded so a container recreated before the first run still shows up as replaced.
+                services[name]['container'] = self.host.container(name)[0]
+            except (ArchiveError,) + SERVICE_ERRORS:
+                pass
+        self.write_state({'schema': 1, 'services': services})
         return cursor
 
     def object_name(self, service, until_ns):
-        moment = dt.datetime.fromtimestamp(until_ns // 1_000_000_000, dt.timezone.utc)
-        return (f'{self.config["prefix"]}{moment:%Y/%m/%d}/{service}/{moment:%H%M%S}.'
-                f'{until_ns % 1_000_000_000:09d}Z.ndjson.gz.age')
+        moment = dt.datetime.fromtimestamp(until_ns // NS, dt.timezone.utc)
+        return f'{self.config["prefix"]}{moment:%Y/%m/%d}/{service}/{moment:%H%M%S}.{until_ns % NS:09d}Z.ndjson.gz.age'
 
-    def ship(self, service, entry):
+    def ship(self, service, entry, save):
         """One window for one service. Updates entry in place; returns (code, details)."""
-        container = self.host.container(service)
+        container, running = self.host.container(service)
         details = {}
-        if entry.get('container') and entry['container'] != container:
-            # The previous container is gone together with lines nobody collected after the cursor.
+        replaced = entry.get('container') not in (None, container)
+        if replaced:
+            # Lines of a container removed before its last window was read are lost, unless that
+            # container was read to its end after it stopped (drained).
+            # ponytail: a drained container that is started again and replaced before the next
+            # run loses what it wrote meanwhile without a gap; upgrade path: compare docker
+            # events (start, destroy) with the run times.
             details['replaced'] = True
-        last = entry.get('last_line')
-        if last and entry.get('container') == container and not self.host.logs(container, last, last):
-            details['rotation_gap'] = True
-        if 'pending' not in entry:
-            entry['pending'] = {'since': entry['cursor'] + 1,
-                                'until': self.now_ns() - self.config['settle_seconds'] * 1_000_000_000}
+            if entry.get('drained') != entry.get('container'):
+                details['lost_on_replace'] = True
+            entry.pop('last_line', None)
+        # The cursor never passes the clock reading it came from, so a clock behind it has
+        # stepped back. Lines stamped in the stepped-back time sort before the cursor in the
+        # json-file and the next window's since skips them.
+        if self.now_ns() < entry['cursor']:
+            details['clock_behind'] = True
+        fresh = 'pending' not in entry
+        if fresh:
+            # ponytail: a line that reaches the json-file more than settle_seconds after its
+            # timestamp is skipped by the next window's since; upgrade path: overlap windows by
+            # settle and drop lines already shipped by (ts, stream, sha256(line)).
+            until = self.now_ns() - (self.config['settle_seconds'] * NS if running else 0)
+            entry['pending'] = {'since': entry['cursor'] + 1, 'until': until}
+            # The window and its object name are fixed on disk before anything reaches the bucket,
+            # so a retry after a lost response repeats the same name and gets 412.
+            save()
         window = entry['pending']
         lines = self.host.logs(container, window['since'], window['until']) if window['until'] >= window['since'] else []
-        documents, masked = [], 0
+        last = entry.get('last_line')
+        # Docker opens all rotated files for one read and rotation only deletes, so a last line
+        # that is still there now was there for the whole read above.
+        # ponytail: the first window after arm or a replacement has no earlier line to check, so
+        # rotation before it ships (a long outage that fails every run meanwhile) is not
+        # reported; upgrade path: compare the container's oldest kept line with its start time.
+        if last and not replaced and not self.host.logs(container, last, last):
+            details['rotation_gap'] = True
+        documents, masked, withheld = [], 0, 0
         for stamp, stream, text in lines:
-            text, count, left = redaction.scrub(text)
-            require(not left, 'residue_after_wide_mask')
-            masked += count
+            text, count, held = redaction.scrub(text)
+            masked, withheld = masked + count, withheld + held
             documents.append(json.dumps({'ts': ns_to_rfc3339(stamp), 'service': service, 'stream': stream,
                                          'line': text}, ensure_ascii=False))
-        details.update(lines=len(lines), masked=masked)
+        details.update(lines=len(lines), masked=masked, withheld=withheld)
         if documents:
             payload = self.host.encrypt(gzip.compress(('\n'.join(documents) + '\n').encode(), mtime=0))
             name = self.object_name(service, window['until'])
@@ -241,24 +300,33 @@ class Archive:
             require(status in (200, 412), f'upload_{status}')
             details.update(object=name, status=status)
             entry['last_line'] = lines[-1][0]
-        entry.update(cursor=window['until'], container=container)
+        entry.update(cursor=max(entry['cursor'], window['until']), container=container)
+        # Read to its end only when this window was laid out after the container had stopped;
+        # a window left over from an earlier attempt may end before its last lines.
+        if fresh and not running:
+            entry['drained'] = container
+        else:
+            entry.pop('drained', None)
         del entry['pending']
-        return ('gap' if details.get('rotation_gap') or details.get('replaced') else 'ok'), details
+        if details.get('rotation_gap') or details.get('lost_on_replace') or details.get('clock_behind'):
+            return 'gap', details
+        return ('withheld' if withheld else 'ok'), details
 
     def run(self):
-        with open(os.open(self.state_dir / 'lock', os.O_WRONLY | os.O_CREAT, 0o600), 'w') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with open(os.open(self.state_dir / 'lock', os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600), 'w') as lock:
+            # A manual run waits for a timer run in progress and then reads its own window.
+            fcntl.flock(lock, fcntl.LOCK_EX)
             state = self.read_state()
             self.host.check_host()
             results = {}
             for service in self.config['services']:
                 entry = state['services'].setdefault(service, {'cursor': self.now_ns()})
                 try:
-                    results[service] = self.ship(service, entry)
+                    results[service] = self.ship(service, entry, lambda: self.write_state(state))
                 except ArchiveError as error:
                     results[service] = (str(error), {})
-                # The cursor (or the pending window) is saved after every service so a crash
-                # repeats at most one window, under the same object name.
+                except SERVICE_ERRORS as error:
+                    results[service] = (type(error).__name__, {})
                 self.write_state(state)
             state['last_run'] = {'at': ns_to_rfc3339(self.now_ns()),
                                  'codes': {service: code for service, (code, _) in results.items()}}
@@ -277,8 +345,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         config = load_config(args.config)
-        require(args.state_dir.is_dir() and not args.state_dir.is_symlink() and
-                args.state_dir.stat().st_mode & 0o077 == 0, 'state_dir_not_private')
+        info = args.state_dir.lstat()
+        require(args.state_dir.is_dir() and not args.state_dir.is_symlink() and info.st_uid == os.geteuid() and
+                info.st_mode & 0o077 == 0, 'state_dir_not_private')
         archive = Archive(config, Host(config), args.state_dir)
         if args.command == 'arm':
             print('MAP_REQLOG_ARMED cursor=' + ns_to_rfc3339(archive.arm(args.start)))
@@ -287,18 +356,25 @@ def main(argv=None):
             state = archive.read_state()
             for name, entry in sorted(state['services'].items()):
                 print(f'MAP_REQLOG_STATUS service={name} cursor={ns_to_rfc3339(entry["cursor"])}'
-                      f' pending={"pending" in entry}')
+                      f' pending={"pending" in entry} drained={"drained" in entry}')
             print('MAP_REQLOG_LAST ' + json.dumps(state.get('last_run'), sort_keys=True))
             return 0
         results = archive.run()
-    except (ArchiveError, OSError, ValueError, KeyError) as error:
-        print(f'MAP_REQLOG_RESULT=FAILED code={type(error).__name__}:{error}')
+    except ArchiveError as error:
+        print(f'MAP_REQLOG_RESULT=FAILED code={error}')
+        return 1
+    except Exception as error:  # noqa: BLE001 — only the type name may reach the journal
+        print(f'MAP_REQLOG_RESULT=FAILED code={type(error).__name__}')
         return 1
     for service, (code, details) in results.items():
         print(f'MAP_REQLOG service={service} code={code} ' + ' '.join(f'{key}={value}' for key, value in sorted(details.items())))
     failed = sorted(service for service, (code, _) in results.items() if code != 'ok')
-    print('MAP_REQLOG_RESULT=' + ('OK' if not failed else 'FAILED services=' + ','.join(failed)))
-    return 0 if not failed else 1
+    if failed:
+        print('MAP_REQLOG_RESULT=FAILED services=' + ','.join(failed))
+        return 1
+    print('MAP_REQLOG_RESULT=OK')
+    print('MAP_BACKUP_RESULT=COMPLETE kind=reqlog')
+    return 0
 
 
 if __name__ == '__main__':
