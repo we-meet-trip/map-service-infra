@@ -23,6 +23,10 @@ locals {
     "perm-5y/" = 1827
   }
 
+  # 서비스 요청 기록은 동의 철회 때 해당 줄을 지우고 다시 올린다. 다시 올릴 때 Custom-Time 에 처음 올린 시각을 넣으면
+  # 새 객체도 처음 올린 날부터 같은 기간 뒤 지워진다. 수집기는 올릴 때마다 Custom-Time 을 올린 시각으로 넣는다.
+  archive_delete_after_custom_days = { "log-6m/" = local.archive_delete_after_days["log-6m/"] }
+
   # VM SA 는 보관소에 서비스 요청 기록만 올린다. 이 접두어에 새 객체를 만드는 것만 되고 읽기·덮어쓰기·삭제는 안 된다.
   archive_conditional_bindings = [{
     role       = "roles/storage.objectCreator"
@@ -53,10 +57,11 @@ module "artifacts" {
 module "archive" {
   source = "../../modules/bucket"
 
-  name                 = "map-prod-archive"
-  location             = "ASIA-NORTHEAST3"
-  soft_delete_seconds  = 0
-  delete_after_days    = local.archive_delete_after_days
-  bindings             = local.bucket_bindings.archive
-  conditional_bindings = local.archive_conditional_bindings
+  name                     = "map-prod-archive"
+  location                 = "ASIA-NORTHEAST3"
+  soft_delete_seconds      = 0
+  delete_after_days        = local.archive_delete_after_days
+  delete_after_custom_days = local.archive_delete_after_custom_days
+  bindings                 = local.bucket_bindings.archive
+  conditional_bindings     = local.archive_conditional_bindings
 }

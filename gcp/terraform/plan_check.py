@@ -10,13 +10,16 @@ import argparse
 import json
 import sys
 
-# Deleting or replacing these loses data, history, the published address or the keyless deploy trust path.
+# Deleting or replacing these loses data, history, the published address, the keyless deploy trust path or the
+# access and permission records the privacy notice promises (sinks and audit configs stop recording silently).
 PROTECTED = frozenset({
     'google_compute_address',
     'google_compute_disk',
     'google_compute_instance',
     'google_storage_bucket',
     'google_logging_project_bucket_config',
+    'google_logging_project_sink',
+    'google_project_iam_audit_config',
     'google_iam_workload_identity_pool',
     'google_iam_workload_identity_pool_provider',
 })

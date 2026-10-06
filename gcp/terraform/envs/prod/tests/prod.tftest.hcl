@@ -170,6 +170,10 @@ run "defaults_keep_public_web_and_vm_alerts_off" {
     error_message = "archive prefixes: 1 year, 6 months, 5 years; incident/ has no rule"
   }
   assert {
+    condition     = local.archive_delete_after_custom_days == { "log-6m/" = 184 }
+    error_message = "re-uploaded request records keep their first upload date through a Custom-Time rule on log-6m/ only"
+  }
+  assert {
     condition = local.archive_conditional_bindings == [{
       role       = "roles/storage.objectCreator"
       members    = ["serviceAccount:map-prod-vm@mapcenter-b59ca.iam.gserviceaccount.com"]
@@ -199,7 +203,7 @@ run "defaults_keep_public_web_and_vm_alerts_off" {
     error_message = "permission changes are copied to an unlocked Seoul log bucket kept for at least five years"
   }
   assert {
-    condition     = startswith(google_logging_project_sink.permission_audit.filter, "LOG_ID(\"cloudaudit.googleapis.com/activity\") AND (") && alltrue([for clause in ["protoPayload.methodName:\"SetIamPolicy\"", "protoPayload.methodName=\"storage.setIamPermissions\"", "\"CreateServiceAccountKey\"", "\"DeleteServiceAccountKey\"", "\"google.iam.admin.v1.CreateRole\"", "\"google.iam.v2\""] : strcontains(google_logging_project_sink.permission_audit.filter, clause)])
+    condition     = startswith(google_logging_project_sink.permission_audit.filter, "LOG_ID(\"cloudaudit.googleapis.com/activity\") AND (") && alltrue([for clause in ["protoPayload.methodName:\"SetIamPolicy\"", "protoPayload.methodName=\"storage.setIamPermissions\"", "\"CreateServiceAccountKey\"", "\"DeleteServiceAccountKey\"", "\"google.iam.admin.v1.CreateRole\"", "\"google.iam.v2\"", "\"hmacKeys\"", "\"WorkloadIdentityPools\"", "\"compute.instances.setMetadata\"", "\"compute.projects.setCommonInstanceMetadata\"", "\"DisableServiceAccount\""] : strcontains(google_logging_project_sink.permission_audit.filter, clause)])
     error_message = "permission audit sink must take IAM policy, bucket IAM, key and role changes from the activity log"
   }
   assert {
@@ -304,11 +308,12 @@ run "bucket_module_prevents_destroy_and_expires_backups" {
   }
 
   variables {
-    name                = "map-prod-backups"
-    location            = "ASIA-NORTHEAST3"
-    soft_delete_seconds = 0
-    delete_after_days   = { "" = 7, "dump/" = 30 }
-    bindings            = { "roles/storage.admin" = ["user:owner@example.com"] }
+    name                     = "map-prod-backups"
+    location                 = "ASIA-NORTHEAST3"
+    soft_delete_seconds      = 0
+    delete_after_days        = { "" = 7, "dump/" = 30 }
+    delete_after_custom_days = { "log-6m/" = 184 }
+    bindings                 = { "roles/storage.admin" = ["user:owner@example.com"] }
   }
 
   assert {
@@ -320,8 +325,12 @@ run "bucket_module_prevents_destroy_and_expires_backups" {
     error_message = "soft delete off"
   }
   assert {
-    condition     = toset([for rule in google_storage_bucket.this.lifecycle_rule : "${one(rule.action).type}:${one(rule.condition).age}:${join(",", coalesce(one(rule.condition).matches_prefix, []))}"]) == toset(["Delete:7:", "Delete:30:dump/"])
+    condition     = toset([for rule in google_storage_bucket.this.lifecycle_rule : "${one(rule.action).type}:${one(rule.condition).age}:${join(",", coalesce(one(rule.condition).matches_prefix, []))}" if one(rule.condition).age != null]) == toset(["Delete:7:", "Delete:30:dump/"])
     error_message = "whole-bucket and per-prefix delete rules"
+  }
+  assert {
+    condition     = length([for rule in google_storage_bucket.this.lifecycle_rule : rule if one(rule.condition).days_since_custom_time == 184 && one(rule.condition).matches_prefix == tolist(["log-6m/"]) && one(rule.condition).send_age_if_zero == false && one(rule.condition).age == null && one(rule.action).type == "Delete"]) == 1 && length(google_storage_bucket.this.lifecycle_rule) == 3
+    error_message = "the Custom-Time rule must never send age 0 (that would delete the whole prefix)"
   }
 }
 
@@ -365,6 +374,23 @@ run "bucket_module_requires_apply_principal_admin_and_a_delete_age" {
   }
 
   expect_failures = [var.bindings, var.delete_after_days]
+}
+
+run "bucket_module_rejects_whole_bucket_or_zero_day_custom_time_rules" {
+  command = plan
+
+  module {
+    source = "../../modules/bucket"
+  }
+
+  variables {
+    name                     = "map-prod-archive"
+    location                 = "ASIA-NORTHEAST3"
+    delete_after_custom_days = { "" = 184, "log-6m/" = 0 }
+    bindings                 = { "roles/storage.admin" = ["user:owner@example.com"] }
+  }
+
+  expect_failures = [var.delete_after_custom_days]
 }
 
 run "bucket_module_rejects_zero_day_delete_age" {

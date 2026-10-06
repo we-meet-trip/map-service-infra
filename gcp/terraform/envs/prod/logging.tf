@@ -22,7 +22,8 @@ locals {
 
   # 권한 부여·변경·말소 기록: 모든 자원의 IAM 정책 변경(프로젝트·비밀·서비스 계정·IAP·인스턴스 — methodName 부분 일치는 대소문자를 가리지 않는다),
   # 버킷 IAM 변경, 서비스 계정 키의 생성·등록·삭제·사용 중지·재사용, 커스텀 역할과 거부·접근 경계 정책 변경. OS Login 권한은 역할 부여라 IAM 정책 변경으로 남는다.
-  permission_audit_filter = "LOG_ID(\"cloudaudit.googleapis.com/activity\") AND (protoPayload.methodName:\"SetIamPolicy\" OR protoPayload.methodName=\"storage.setIamPermissions\" OR protoPayload.methodName:(\"CreateServiceAccountKey\" OR \"UploadServiceAccountKey\" OR \"DeleteServiceAccountKey\" OR \"DisableServiceAccountKey\" OR \"EnableServiceAccountKey\") OR protoPayload.methodName:(\"google.iam.admin.v1.CreateRole\" OR \"google.iam.admin.v1.UpdateRole\" OR \"google.iam.admin.v1.DeleteRole\" OR \"google.iam.admin.v1.UndeleteRole\" OR \"google.iam.v2\" OR \"google.iam.v3\"))"
+  # 접근 경로·자격 증명을 바꾸는 변경도 함께 남긴다: 서비스 계정의 사용 중지·재사용·삭제·복구, HMAC 키, 워크로드 ID 풀·공급자, VM·프로젝트 메타데이터(SSH 키·OS Login 설정).
+  permission_audit_filter = "LOG_ID(\"cloudaudit.googleapis.com/activity\") AND (protoPayload.methodName:\"SetIamPolicy\" OR protoPayload.methodName=\"storage.setIamPermissions\" OR protoPayload.methodName:(\"CreateServiceAccountKey\" OR \"UploadServiceAccountKey\" OR \"DeleteServiceAccountKey\" OR \"DisableServiceAccountKey\" OR \"EnableServiceAccountKey\") OR protoPayload.methodName:(\"google.iam.admin.v1.CreateRole\" OR \"google.iam.admin.v1.UpdateRole\" OR \"google.iam.admin.v1.DeleteRole\" OR \"google.iam.admin.v1.UndeleteRole\" OR \"google.iam.v2\" OR \"google.iam.v3\") OR protoPayload.methodName:(\"DisableServiceAccount\" OR \"EnableServiceAccount\" OR \"DeleteServiceAccount\" OR \"UndeleteServiceAccount\" OR \"hmacKeys\" OR \"WorkloadIdentityPools\" OR \"compute.instances.setMetadata\" OR \"compute.projects.setCommonInstanceMetadata\"))"
 }
 
 resource "google_project_iam_audit_config" "access" {
