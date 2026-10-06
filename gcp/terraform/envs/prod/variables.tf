@@ -92,18 +92,3 @@ variable "access_audit_retention_days" {
   type    = number
   default = 400
 }
-
-# map-prod-archive 의 접두어별 보존 일수. 정해지기 전(null)에는 수명 규칙을 만들지 않는다.
-variable "archive_retention_days" {
-  type = object({
-    dump       = number
-    access_log = number
-  })
-  default = null
-
-  # 나이가 없거나 0 인 Delete 규칙은 그 접두어의 객체를 모두 지운다.
-  validation {
-    condition     = var.archive_retention_days == null ? true : alltrue([for days in values(var.archive_retention_days) : coalesce(days, 0) >= 1])
-    error_message = "archive_retention_days 는 null(규칙 없음)이거나 두 값 모두 1 이상의 일수여야 한다."
-  }
-}

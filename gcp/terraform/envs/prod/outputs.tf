@@ -27,13 +27,14 @@ output "archive_bucket" {
 }
 
 output "archive_lifecycle_applied" {
-  value = var.archive_retention_days != null
+  value = length(local.archive_delete_after_days) > 0
 }
 
 output "log_buckets" {
   value = {
-    access_audit = google_logging_project_bucket_config.access_audit.name
-    general      = google_logging_project_bucket_config.general.name
+    access_audit     = google_logging_project_bucket_config.access_audit.name
+    general          = google_logging_project_bucket_config.general.name
+    permission_audit = google_logging_project_bucket_config.permission_audit.name
   }
 }
 

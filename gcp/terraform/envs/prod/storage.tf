@@ -14,6 +14,22 @@ locals {
     })
     archive = local.owner_admin
   }
+
+  # 보관소의 최상위 접두어 -> 삭제 나이(일). 보존 기간이 다른 기록은 서로 다른 최상위 접두어에 둔다(matchesPrefix 는 앞부분 일치라
+  # 짧은 규칙의 접두어 아래에 둔 긴 기록도 짧은 쪽으로 지워진다). incident/ 의 사고 증거에는 규칙을 두지 않는다.
+  archive_delete_after_days = {
+    "log-1y/"  = 366
+    "log-6m/"  = 184
+    "perm-5y/" = 1827
+  }
+
+  # VM SA 는 보관소에 서비스 요청 기록만 올린다. 이 접두어에 새 객체를 만드는 것만 되고 읽기·덮어쓰기·삭제는 안 된다.
+  archive_conditional_bindings = [{
+    role       = "roles/storage.objectCreator"
+    members    = [local.vm_sa_member]
+    title      = "request-log-upload-only"
+    expression = "resource.type == \"storage.googleapis.com/Object\" && resource.name.startsWith(\"projects/_/buckets/map-prod-archive/objects/log-6m/\")"
+  }]
 }
 
 module "backups" {
@@ -37,12 +53,10 @@ module "artifacts" {
 module "archive" {
   source = "../../modules/bucket"
 
-  name                = "map-prod-archive"
-  location            = "ASIA-NORTHEAST3"
-  soft_delete_seconds = 0
-  delete_after_days = var.archive_retention_days == null ? {} : {
-    "dump/"       = var.archive_retention_days.dump
-    "access-log/" = var.archive_retention_days.access_log
-  }
-  bindings = local.bucket_bindings.archive
+  name                 = "map-prod-archive"
+  location             = "ASIA-NORTHEAST3"
+  soft_delete_seconds  = 0
+  delete_after_days    = local.archive_delete_after_days
+  bindings             = local.bucket_bindings.archive
+  conditional_bindings = local.archive_conditional_bindings
 }

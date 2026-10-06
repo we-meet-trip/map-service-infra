@@ -16,7 +16,7 @@ variable "location" {
   type = string
 }
 
-# 역할 -> 구성원. 이 표가 버킷 권한의 전부라 표에 없는 바인딩(projectEditor·projectViewer 편의 바인딩 포함)은 지워진다.
+# 역할 -> 구성원. 이 표와 conditional_bindings 가 버킷 권한의 전부라 둘에 없는 바인딩(projectEditor·projectViewer 편의 바인딩 포함)은 지워진다.
 variable "bindings" {
   type = map(list(string))
 
@@ -25,6 +25,17 @@ variable "bindings" {
     condition     = length(lookup(var.bindings, "roles/storage.admin", [])) > 0
     error_message = "bindings 에 apply 주체의 roles/storage.admin 이 있어야 한다."
   }
+}
+
+# 조건이 붙은 바인딩. 객체 이름 접두어로 범위를 좁힐 때 쓴다(버킷 균일 접근이 켜져 있어야 조건을 받는다).
+variable "conditional_bindings" {
+  type = list(object({
+    role       = string
+    members    = list(string)
+    title      = string
+    expression = string
+  }))
+  default = []
 }
 
 # 객체 접두어 -> 삭제 나이(일). 키 "" 는 버킷 전체.
@@ -88,6 +99,17 @@ data "google_iam_policy" "this" {
     content {
       role    = binding.key
       members = binding.value
+    }
+  }
+  dynamic "binding" {
+    for_each = var.conditional_bindings
+    content {
+      role    = binding.value.role
+      members = binding.value.members
+      condition {
+        title      = binding.value.title
+        expression = binding.value.expression
+      }
     }
   }
 }
