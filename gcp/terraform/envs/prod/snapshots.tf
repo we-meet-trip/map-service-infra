@@ -21,9 +21,10 @@ resource "google_compute_resource_policy" "daily_snapshot" {
         start_time = "16:00"
       }
     }
+    # 원본 디스크를 지우거나 갈아 끼워도 그 디스크의 자동 스냅숏에 7일 보존을 그대로 적용한다(KEEP_AUTO_SNAPSHOTS 면 무기한 남는다).
     retention_policy {
       max_retention_days    = 7
-      on_source_disk_delete = "KEEP_AUTO_SNAPSHOTS"
+      on_source_disk_delete = "APPLY_RETENTION_POLICY"
     }
     snapshot_properties {
       storage_locations = [local.region]

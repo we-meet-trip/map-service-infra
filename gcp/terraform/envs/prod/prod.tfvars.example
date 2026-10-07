@@ -20,6 +20,3 @@ budget_gemini_krw  = 0
 
 # 정해지면: 지표 이름 -> 하루 한도(계산식은 README)
 places_daily_caps = {}
-
-# 정해지면: { dump = 일수, access_log = 일수 }
-archive_retention_days = null

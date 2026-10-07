@@ -162,8 +162,25 @@ run "defaults_keep_public_web_and_vm_alerts_off" {
     error_message = "backup retention is 7 days"
   }
   assert {
-    condition     = output.archive_lifecycle_applied == false && output.backup_bucket == "map-prod-backups" && output.artifacts_bucket == "map-prod-release-artifacts" && output.archive_bucket == "map-prod-archive"
-    error_message = "bucket names and archive lifecycle default"
+    condition     = output.archive_lifecycle_applied && output.backup_bucket == "map-prod-backups" && output.artifacts_bucket == "map-prod-release-artifacts" && output.archive_bucket == "map-prod-archive"
+    error_message = "bucket names and archive lifecycle"
+  }
+  assert {
+    condition     = local.archive_delete_after_days == { "log-1y/" = 366, "log-6m/" = 184, "perm-5y/" = 1827 }
+    error_message = "archive prefixes: 1 year, 6 months, 5 years; incident/ has no rule"
+  }
+  assert {
+    condition     = local.archive_delete_after_custom_days == { "log-6m/" = 184 }
+    error_message = "re-uploaded request records keep their first upload date through a Custom-Time rule on log-6m/ only"
+  }
+  assert {
+    condition = local.archive_conditional_bindings == [{
+      role       = "roles/storage.objectCreator"
+      members    = ["serviceAccount:map-prod-vm@mapcenter-b59ca.iam.gserviceaccount.com"]
+      title      = "request-log-upload-only"
+      expression = "resource.type == \"storage.googleapis.com/Object\" && resource.name.startsWith(\"projects/_/buckets/map-prod-archive/objects/log-6m/\")"
+    }]
+    error_message = "the VM SA may only create objects under log-6m/ in the archive"
   }
   assert {
     condition     = google_logging_project_sink.default.filter == "NOT LOG_ID(\"cloudaudit.googleapis.com/activity\") AND NOT LOG_ID(\"externalaudit.googleapis.com/activity\") AND NOT LOG_ID(\"cloudaudit.googleapis.com/system_event\") AND NOT LOG_ID(\"externalaudit.googleapis.com/system_event\") AND NOT LOG_ID(\"cloudaudit.googleapis.com/access_transparency\") AND NOT LOG_ID(\"externalaudit.googleapis.com/access_transparency\")"
@@ -174,7 +191,7 @@ run "defaults_keep_public_web_and_vm_alerts_off" {
     error_message = "_Default must route to map-general and exclude the access-audit, guest agent, Ops Agent health and OS Login profile lookup logs"
   }
   assert {
-    condition     = google_logging_project_sink.access_audit.filter == "(logName=\"projects/mapcenter-b59ca/logs/cloudaudit.googleapis.com%2Fdata_access\" AND protoPayload.serviceName=(\"iap.googleapis.com\" OR \"secretmanager.googleapis.com\")) OR (logName=\"projects/mapcenter-b59ca/logs/cloudaudit.googleapis.com%2Fdata_access\" AND protoPayload.serviceName=\"oslogin.googleapis.com\" AND protoPayload.methodName:\"OsLoginDataPlaneService.CheckPolicy\") OR logName=\"projects/mapcenter-b59ca/logs/map_journald\""
+    condition     = google_logging_project_sink.access_audit.filter == "(logName=\"projects/mapcenter-b59ca/logs/cloudaudit.googleapis.com%2Fdata_access\" AND protoPayload.serviceName=(\"iap.googleapis.com\" OR \"secretmanager.googleapis.com\" OR \"storage.googleapis.com\")) OR (logName=\"projects/mapcenter-b59ca/logs/cloudaudit.googleapis.com%2Fdata_access\" AND protoPayload.serviceName=\"oslogin.googleapis.com\" AND protoPayload.methodName:\"OsLoginDataPlaneService.CheckPolicy\") OR logName=\"projects/mapcenter-b59ca/logs/map_journald\""
     error_message = "access-audit sink filter"
   }
   assert {
@@ -182,15 +199,23 @@ run "defaults_keep_public_web_and_vm_alerts_off" {
     error_message = "log buckets and retention"
   }
   assert {
-    condition     = keys(google_project_iam_audit_config.access) == ["iap.googleapis.com", "secretmanager.googleapis.com"] && alltrue([for config in google_project_iam_audit_config.access : toset([for log in config.audit_log_config : log.log_type]) == toset(["ADMIN_READ", "DATA_READ"])])
-    error_message = "IAP and Secret Manager read audit logs"
+    condition     = google_logging_project_bucket_config.permission_audit.location == "asia-northeast3" && google_logging_project_bucket_config.permission_audit.retention_days >= 1827 && google_logging_project_bucket_config.permission_audit.locked != true && google_logging_project_sink.permission_audit.destination == "logging.googleapis.com/projects/mapcenter-b59ca/locations/asia-northeast3/buckets/map-permission-audit"
+    error_message = "permission changes are copied to an unlocked Seoul log bucket kept for at least five years"
+  }
+  assert {
+    condition     = startswith(google_logging_project_sink.permission_audit.filter, "LOG_ID(\"cloudaudit.googleapis.com/activity\") AND (") && alltrue([for clause in ["protoPayload.methodName:\"SetIamPolicy\"", "protoPayload.methodName=\"storage.setIamPermissions\"", "\"CreateServiceAccountKey\"", "\"DeleteServiceAccountKey\"", "\"google.iam.admin.v1.CreateRole\"", "\"google.iam.v2\"", "\"hmacKeys\"", "\"WorkloadIdentityPools\"", "\"compute.instances.setMetadata\"", "\"compute.projects.setCommonInstanceMetadata\"", "\"DisableServiceAccount\""] : strcontains(google_logging_project_sink.permission_audit.filter, clause)])
+    error_message = "permission audit sink must take IAM policy, bucket IAM, key and role changes from the activity log"
+  }
+  assert {
+    condition     = { for service, config in google_project_iam_audit_config.access : service => toset([for log in config.audit_log_config : log.log_type]) } == { "iap.googleapis.com" = toset(["ADMIN_READ", "DATA_READ"]), "secretmanager.googleapis.com" = toset(["ADMIN_READ", "DATA_READ"]), "storage.googleapis.com" = toset(["ADMIN_READ", "DATA_READ", "DATA_WRITE"]) } && alltrue([for config in google_project_iam_audit_config.access : alltrue([for log in config.audit_log_config : length(coalesce(log.exempted_members, [])) == 0])])
+    error_message = "IAP and Secret Manager read audit logs, Storage read and write audit logs, no exemptions"
   }
   assert {
     condition     = google_compute_snapshot_settings.this.storage_location[0].policy == "SPECIFIC_LOCATIONS" && [for location in google_compute_snapshot_settings.this.storage_location[0].locations : location.location] == ["asia-northeast3"]
     error_message = "snapshot settings must pin Seoul"
   }
   assert {
-    condition     = google_compute_resource_policy.daily_snapshot.snapshot_schedule_policy[0].schedule[0].daily_schedule[0].start_time == "16:00" && google_compute_resource_policy.daily_snapshot.snapshot_schedule_policy[0].retention_policy[0].max_retention_days == 7 && google_compute_resource_policy.daily_snapshot.snapshot_schedule_policy[0].retention_policy[0].on_source_disk_delete == "KEEP_AUTO_SNAPSHOTS" && google_compute_resource_policy.daily_snapshot.snapshot_schedule_policy[0].snapshot_properties[0].storage_locations == toset(["asia-northeast3"])
+    condition     = google_compute_resource_policy.daily_snapshot.snapshot_schedule_policy[0].schedule[0].daily_schedule[0].start_time == "16:00" && google_compute_resource_policy.daily_snapshot.snapshot_schedule_policy[0].retention_policy[0].max_retention_days == 7 && google_compute_resource_policy.daily_snapshot.snapshot_schedule_policy[0].retention_policy[0].on_source_disk_delete == "APPLY_RETENTION_POLICY" && google_compute_resource_policy.daily_snapshot.snapshot_schedule_policy[0].snapshot_properties[0].storage_locations == toset(["asia-northeast3"])
     error_message = "daily snapshot schedule"
   }
   assert {
@@ -234,18 +259,17 @@ run "cutover_values_turn_public_web_and_alerts_on" {
   command = plan
 
   variables {
-    alert_emails           = ["owner@example.com"]
-    owner_cidrs            = ["203.0.113.10/32"]
-    owner_email            = "owner@example.com"
-    operators              = { owner = "owner@example.com" }
-    billing_account_id     = "000000-000000-000000"
-    budget_account_krw     = 200
-    budget_project_krw     = 140
-    budget_gemini_krw      = 20
-    prod_public_web        = true
-    prod_vm_alerts         = true
-    places_daily_caps      = { GetPhotoMediaRequest = 600 }
-    archive_retention_days = { dump = 30, access_log = 400 }
+    alert_emails       = ["owner@example.com"]
+    owner_cidrs        = ["203.0.113.10/32"]
+    owner_email        = "owner@example.com"
+    operators          = { owner = "owner@example.com" }
+    billing_account_id = "000000-000000-000000"
+    budget_account_krw = 200
+    budget_project_krw = 140
+    budget_gemini_krw  = 20
+    prod_public_web    = true
+    prod_vm_alerts     = true
+    places_daily_caps  = { GetPhotoMediaRequest = 600 }
   }
 
   assert {
@@ -256,29 +280,24 @@ run "cutover_values_turn_public_web_and_alerts_on" {
     condition     = google_service_usage_consumer_quota_override.places["GetPhotoMediaRequest"].metric == "places.googleapis.com%2FGetPhotoMediaRequest" && google_service_usage_consumer_quota_override.places["GetPhotoMediaRequest"].limit == "%2Fd%2Fproject" && google_service_usage_consumer_quota_override.places["GetPhotoMediaRequest"].override_value == "600"
     error_message = "Places metric and limit must be url-encoded"
   }
-  assert {
-    condition     = output.archive_lifecycle_applied
-    error_message = "archive lifecycle applied once retention is decided"
-  }
 }
 
-run "rejects_non_host_owner_cidr_unknown_places_metric_and_archive_age_below_one_day" {
+run "rejects_non_host_owner_cidr_and_unknown_places_metric" {
   command = plan
 
   variables {
-    alert_emails           = ["owner@example.com"]
-    owner_cidrs            = ["203.0.113.0/24"]
-    owner_email            = "owner@example.com"
-    operators              = {}
-    billing_account_id     = "000000-000000-000000"
-    budget_account_krw     = 1
-    budget_project_krw     = 1
-    budget_gemini_krw      = 1
-    places_daily_caps      = { FindPlaceRequest = 1 }
-    archive_retention_days = { dump = null, access_log = 0 }
+    alert_emails       = ["owner@example.com"]
+    owner_cidrs        = ["203.0.113.0/24"]
+    owner_email        = "owner@example.com"
+    operators          = {}
+    billing_account_id = "000000-000000-000000"
+    budget_account_krw = 1
+    budget_project_krw = 1
+    budget_gemini_krw  = 1
+    places_daily_caps  = { FindPlaceRequest = 1 }
   }
 
-  expect_failures = [var.owner_cidrs, var.places_daily_caps, var.archive_retention_days]
+  expect_failures = [var.owner_cidrs, var.places_daily_caps]
 }
 
 run "bucket_module_prevents_destroy_and_expires_backups" {
@@ -289,11 +308,12 @@ run "bucket_module_prevents_destroy_and_expires_backups" {
   }
 
   variables {
-    name                = "map-prod-backups"
-    location            = "ASIA-NORTHEAST3"
-    soft_delete_seconds = 0
-    delete_after_days   = { "" = 7, "dump/" = 30 }
-    bindings            = { "roles/storage.admin" = ["user:owner@example.com"] }
+    name                     = "map-prod-backups"
+    location                 = "ASIA-NORTHEAST3"
+    soft_delete_seconds      = 0
+    delete_after_days        = { "" = 7, "dump/" = 30 }
+    delete_after_custom_days = { "log-6m/" = 184 }
+    bindings                 = { "roles/storage.admin" = ["user:owner@example.com"] }
   }
 
   assert {
@@ -305,8 +325,37 @@ run "bucket_module_prevents_destroy_and_expires_backups" {
     error_message = "soft delete off"
   }
   assert {
-    condition     = toset([for rule in google_storage_bucket.this.lifecycle_rule : "${one(rule.action).type}:${one(rule.condition).age}:${join(",", coalesce(one(rule.condition).matches_prefix, []))}"]) == toset(["Delete:7:", "Delete:30:dump/"])
+    condition     = toset([for rule in google_storage_bucket.this.lifecycle_rule : "${one(rule.action).type}:${one(rule.condition).age}:${join(",", coalesce(one(rule.condition).matches_prefix, []))}" if one(rule.condition).age != null]) == toset(["Delete:7:", "Delete:30:dump/"])
     error_message = "whole-bucket and per-prefix delete rules"
+  }
+  assert {
+    condition     = length([for rule in google_storage_bucket.this.lifecycle_rule : rule if one(rule.condition).days_since_custom_time == 184 && one(rule.condition).matches_prefix == tolist(["log-6m/"]) && one(rule.condition).send_age_if_zero == false && one(rule.condition).age == null && one(rule.action).type == "Delete"]) == 1 && length(google_storage_bucket.this.lifecycle_rule) == 3
+    error_message = "the Custom-Time rule must never send age 0 (that would delete the whole prefix)"
+  }
+}
+
+run "bucket_module_adds_conditional_bindings" {
+  command = plan
+
+  module {
+    source = "../../modules/bucket"
+  }
+
+  variables {
+    name     = "map-prod-archive"
+    location = "ASIA-NORTHEAST3"
+    bindings = { "roles/storage.admin" = ["user:owner@example.com"] }
+    conditional_bindings = [{
+      role       = "roles/storage.objectCreator"
+      members    = ["serviceAccount:vm@example.iam.gserviceaccount.com"]
+      title      = "upload-only"
+      expression = "resource.name.startsWith(\"projects/_/buckets/map-prod-archive/objects/log-6m/\")"
+    }]
+  }
+
+  assert {
+    condition     = length(data.google_iam_policy.this.binding) == 2 && length([for binding in data.google_iam_policy.this.binding : binding if binding.role == "roles/storage.objectCreator" && one(binding.condition).expression == "resource.name.startsWith(\"projects/_/buckets/map-prod-archive/objects/log-6m/\")"]) == 1 && length([for binding in data.google_iam_policy.this.binding : binding if binding.role == "roles/storage.admin" && length(binding.condition) == 0]) == 1
+    error_message = "conditional bindings join the policy next to the unconditional ones"
   }
 }
 
@@ -325,6 +374,23 @@ run "bucket_module_requires_apply_principal_admin_and_a_delete_age" {
   }
 
   expect_failures = [var.bindings, var.delete_after_days]
+}
+
+run "bucket_module_rejects_whole_bucket_or_zero_day_custom_time_rules" {
+  command = plan
+
+  module {
+    source = "../../modules/bucket"
+  }
+
+  variables {
+    name                     = "map-prod-archive"
+    location                 = "ASIA-NORTHEAST3"
+    delete_after_custom_days = { "" = 184, "log-6m/" = 0 }
+    bindings                 = { "roles/storage.admin" = ["user:owner@example.com"] }
+  }
+
+  expect_failures = [var.delete_after_custom_days]
 }
 
 run "bucket_module_rejects_zero_day_delete_age" {

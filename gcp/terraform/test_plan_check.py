@@ -21,8 +21,9 @@ def plan(*changes):
 class PlanCheckTests(unittest.TestCase):
     def test_replacing_any_protected_resource_is_blocked(self):
         for kind in ('google_compute_address', 'google_compute_disk', 'google_compute_instance',
-                     'google_storage_bucket', 'google_logging_project_bucket_config',
-                     'google_iam_workload_identity_pool', 'google_iam_workload_identity_pool_provider'):
+                     'google_storage_bucket', 'google_logging_project_bucket_config', 'google_logging_project_sink',
+                     'google_project_iam_audit_config', 'google_iam_workload_identity_pool',
+                     'google_iam_workload_identity_pool_provider'):
             with self.subTest(kind=kind):
                 self.assertEqual(plan_check.violations(plan(change(kind, ['delete', 'create'], {}, {}))),
                                  [f'{kind}.this: delete/create would delete it'])

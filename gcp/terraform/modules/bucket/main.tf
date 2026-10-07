@@ -16,7 +16,7 @@ variable "location" {
   type = string
 }
 
-# 역할 -> 구성원. 이 표가 버킷 권한의 전부라 표에 없는 바인딩(projectEditor·projectViewer 편의 바인딩 포함)은 지워진다.
+# 역할 -> 구성원. 이 표와 conditional_bindings 가 버킷 권한의 전부라 둘에 없는 바인딩(projectEditor·projectViewer 편의 바인딩 포함)은 지워진다.
 variable "bindings" {
   type = map(list(string))
 
@@ -25,6 +25,17 @@ variable "bindings" {
     condition     = length(lookup(var.bindings, "roles/storage.admin", [])) > 0
     error_message = "bindings 에 apply 주체의 roles/storage.admin 이 있어야 한다."
   }
+}
+
+# 조건이 붙은 바인딩. 객체 이름 접두어로 범위를 좁힐 때 쓴다(버킷 균일 접근이 켜져 있어야 조건을 받는다).
+variable "conditional_bindings" {
+  type = list(object({
+    role       = string
+    members    = list(string)
+    title      = string
+    expression = string
+  }))
+  default = []
 }
 
 # 객체 접두어 -> 삭제 나이(일). 키 "" 는 버킷 전체.
@@ -36,6 +47,18 @@ variable "delete_after_days" {
   validation {
     condition     = alltrue([for days in values(var.delete_after_days) : coalesce(days, 0) >= 1])
     error_message = "delete_after_days 의 값은 1 이상의 일수여야 한다."
+  }
+}
+
+# 객체 접두어 -> Custom-Time 으로부터의 삭제 나이(일). 내용을 고쳐 다시 올린 객체가 처음 올린 날 기준으로 지워지게 한다.
+# 버킷 전체("")에는 두지 않는다(사고 증거 등 규칙이 없어야 하는 접두어까지 걸린다).
+variable "delete_after_custom_days" {
+  type    = map(number)
+  default = {}
+
+  validation {
+    condition     = alltrue([for prefix, days in var.delete_after_custom_days : prefix != "" && coalesce(days, 0) >= 1])
+    error_message = "delete_after_custom_days 의 키는 비어 있지 않은 접두어, 값은 1 이상의 일수여야 한다."
   }
 }
 
@@ -77,6 +100,21 @@ resource "google_storage_bucket" "this" {
     }
   }
 
+  dynamic "lifecycle_rule" {
+    for_each = var.delete_after_custom_days
+    content {
+      condition {
+        days_since_custom_time = lifecycle_rule.value
+        matches_prefix         = [lifecycle_rule.key]
+        # 나이 조건 없이 보내면 공급자가 age 0 을 넣어 그 접두어의 객체를 모두 지운다.
+        send_age_if_zero = false
+      }
+      action {
+        type = "Delete"
+      }
+    }
+  }
+
   lifecycle {
     prevent_destroy = true
   }
@@ -88,6 +126,17 @@ data "google_iam_policy" "this" {
     content {
       role    = binding.key
       members = binding.value
+    }
+  }
+  dynamic "binding" {
+    for_each = var.conditional_bindings
+    content {
+      role    = binding.value.role
+      members = binding.value.members
+      condition {
+        title      = binding.value.title
+        expression = binding.value.expression
+      }
     }
   }
 }
