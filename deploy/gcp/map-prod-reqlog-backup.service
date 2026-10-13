@@ -1,0 +1,30 @@
+[Unit]
+Description=MAP GCP production request-log archive (masked, encrypted, create-only under log-6m/)
+After=network-online.target docker.service time-sync.target
+Wants=network-online.target
+RequiresMountsFor=/srv/map-prod
+
+# No ConditionPathExists: an armed timer without config or cursor must fail loudly (the unit name
+# matches the Ops Agent backup pattern, so "Failed with result" raises the backup failure alert).
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+WorkingDirectory=/opt/map-reqlog
+ExecStart=/usr/bin/python3 -B -X pycache_prefix=/run/map-prod-reqlog-backup /opt/map-reqlog/scripts/request_log_archive.py run
+RuntimeDirectory=map-prod-reqlog-backup
+RuntimeDirectoryMode=0700
+StateDirectory=map-request-log
+StateDirectoryMode=0700
+Environment=PATH=/usr/bin:/bin
+Environment=DOCKER_HOST=unix:///var/run/docker.sock
+Environment=DOCKER_CONFIG=/var/empty
+TimeoutStartSec=300
+TimeoutStopSec=10
+KillMode=control-group
+SendSIGKILL=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/run/docker.sock
+PrivateTmp=yes

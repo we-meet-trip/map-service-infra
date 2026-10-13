@@ -86,9 +86,11 @@ class OpsAgentConfigTests(unittest.TestCase):
 
     def test_backup_pattern_selects_production_backup_services_only(self):
         pattern = re.compile(BACKUP_UNIT.strip('"'))
+        # The request-log archive rides on the same pattern so its failures raise the backup alert.
         for name in ('map-prod-pg-backup-gcs.service', 'map-prod-redis-backup-gcs.service',
-                     'map-prod-admin-backup-gcs.service'):
+                     'map-prod-admin-backup-gcs.service', 'map-prod-reqlog-backup.service'):
             self.assertRegex(name, pattern)
+            self.assertTrue((ROOT / 'deploy/gcp' / name).is_file(), name)
         for name in ('map-prod-serving.service', 'map-test-backup.service', 'map-prod-pg-backup-gcs.timer'):
             self.assertNotRegex(name, pattern)
 
