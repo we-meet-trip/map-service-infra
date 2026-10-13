@@ -1,6 +1,6 @@
 # 운영 요청 기록 보관 (log-6m/)
 
-설정한 운영 컨테이너(권장 proxy·user·hub·agent·yolo·edge)가 표준 출력·오류에 쓰는 줄 전부를 json-file 순환으로 지워지기 전에 모은다. 줄마다 좌표를 가리고 암호화해 `gs://map-prod-archive/log-6m/requests/` 에 올린다. 접근 줄(IP·시각·경로·검색어·주소 문자열)과 오류·추적 줄이 모두 들어가며, 좌표 말고는 그대로 남는다. 보관소 수명 규칙이 생성 184일 뒤, 또는 Custom-Time 184일 뒤 가운데 이른 때 지운다. 줄은 Cloud Logging 을 거치지 않는다. journald 를 거쳐 백업 경보 지표로 가는 것은 수집기 자신의 결과 줄(코드·건수·객체 이름)뿐이다.
+설정한 운영 컨테이너(권장 proxy·user·hub·agent·yolo·edge)가 표준 출력·오류에 쓰는 줄 전부를 json-file 순환으로 지워지기 전에 모은다. 줄마다 좌표를 가리고 암호화해 `gs://map-prod-archive/log-6m/requests/` 에 올린다. 접근 줄(IP·시각·경로)과 오류·추적 줄이 모두 들어간다. 좌표, 검색어·주소(`query`·`q`·`keyword`·`address` 의 값), 기상 격자(`nx`·`ny`)는 가리고 나머지는 그대로 남는다. 보관소 수명 규칙이 생성 184일 뒤, 또는 Custom-Time 184일 뒤 가운데 이른 때 지운다. 줄은 Cloud Logging 을 거치지 않는다. journald 를 거쳐 백업 경보 지표로 가는 것은 수집기 자신의 결과 줄(코드·건수·객체 이름)뿐이다.
 
 | 조각 | 위치 |
 |---|---|
@@ -18,7 +18,7 @@
 - 창(시작·끝)은 읽기 전에 상태 파일에 먼저 적는다. 업로드 중 끊기거나 유닛이 죽어도 다음 실행이 같은 창을 같은 객체 이름으로 다시 한다. 이미 올라갔으면 412 를 받고 올라간 것으로 본다(운영 VM 에서 이 권한으로 같은 이름을 다시 만들면 412 임을 실측했다).
 - 16 KiB 를 넘는 메시지는 Docker 가 16 KiB 조각마다 같은 시각을 붙여 줄바꿈 없이 내보낸다. 조각 경계에서 잘린 한글 같은 여러 바이트 문자는 U+FFFD 로 저장되고 뒤 경계를 밀어낸다. 그래서 첫 조각 뒤의 반복 시각을 위치가 아니라 값으로 지워 잇는다(잘린 문자 하나는 되살릴 수 없다).
 - 줄마다 `coordinate_redaction.scrub` 을 적용한다.
-  1. 1차 규칙으로 봉투, 64자리 해시, OSRM 경로, 좌표 이름의 값, 한국 범위의 소수 3자리 이상 수를 가린다.
+  1. 1차 규칙으로 봉투, 64자리 해시, OSRM 경로, 검색어·주소 이름의 값 전체, 좌표·격자 이름(`nx`·`ny` 포함)의 값, 한국 범위의 소수 3자리 이상 수를 가린다. 검색어·주소 값은 따옴표로 시작하면 닫는 따옴표까지, 그 밖에는 `&`·`#`·따옴표·공백 앞까지 통째로 가린다. 이 값은 모양으로 찾을 수 없어 1차 규칙만 가리고 아래 잔존 검사는 보지 않는다.
   2. 이스케이프를 한 번 푼 사본에 잔존 검사가 걸리면 같은 느슨한 규칙으로 가린다.
   3. 그래도 걸리면 모든 이스케이프, IPv4[:포트] 를 뺀 소수점 있는 수, 64자 이상 16진수, 봉투, 좌표 이름의 값을 가린다.
 
@@ -42,6 +42,8 @@
   - 끝까지 읽은 컨테이너를 `docker start` 로 다시 켰다가 다음 수집 전에 다시 만들면, 다시 켠 동안의 줄은 잃고 `gap` 도 나지 않는다.
   - 무장 직후나 교체 직후의 첫 창은 비교할 앞 줄이 없다. 그 창이 올라가기 전에 순환이 지나가면(긴 장애 — 그동안 매 실행이 실패 경보를 낸다) 잃은 줄은 보고되지 않는다.
   - 시계가 뒤로 간 것은 그 동안 수집이 돌 때만 `clock_behind` 로 잡힌다. 유닛은 `After=time-sync.target` 으로 시간 동기화 뒤에 서도록 순서를 둔다(동기화 대기 서비스가 켜져 있어야 실제로 기다린다).
+  - 시험의 가짜 Docker 는 `--since/--until` 을 레코드마다 시각으로 거른다. 실제 엔진은 json-file 을 파일 순서로 훑으므로 경계 동작이 다를 수 있다. 실제 엔진에서의 경계는 수용 시험이 일부만 덮는다.
+  - 검색어·주소는 정확한 이름(`query`·`q`·`keyword`·`address`)만 가린다. `searchQuery` 처럼 다른 이름에 실린 값과, 따옴표 없이 날것의 공백을 품은 값의 첫 공백 뒤는 남는다. 지금 서비스는 이 값을 URL 인코딩된 쿼리로만 쓴다.
 
 ## 설치 (별도 고정 체크아웃, P2.5 뒤·window.reserved 전에 한 번)
 
@@ -58,7 +60,7 @@ sudo systemctl daemon-reload                                       # 타이머�
 sudo install -d -m 0700 /etc/map-request-log /var/lib/map-request-log
 ```
 
-설정(`/etc/map-request-log/config.json`, root 0600):
+설정(`/etc/map-request-log/config.json`, root 0600). edge 는 운영 compose(`docker-compose.prod.yml`, 프로젝트 `map-prod`)의 서비스이고 다른 서비스와 같은 json-file 10m×3 이라 같은 설정으로 모은다.
 
 ```json
 {"gcp_project": "mapcenter-b59ca", "instance": "map-prod", "bucket": "map-prod-archive",
@@ -103,7 +105,7 @@ sudo python3 -B /opt/map-reqlog/scripts/request_log_archive.py status   # 그 �
 ```
 
 - 무중단 교체(`scripts/service-rollover.py`)의 임시 컨테이너는 `--log-driver=none` 이다. 그래서 교체하는 동안 그 서비스(hub·agent·yolo·user)의 줄은 어디에도 남지 않는다. 같은 요청의 proxy 줄은 남는다.
-- 원래 컨테이너는 실행 중에 다시 만들어진다. 마지막 수집 뒤의 줄을 잃을 수 있고, 다음 실행이 `gap` 을 보고한다(백업 실패 경보). 이를 없애려면 교체 도구에 단계를 넣어야 한다. 트래픽이 임시 컨테이너로 옮겨진 뒤 원래 컨테이너를 멈추고, 수집을 한 번 돌린 다음, 다시 만드는 단계다(세션 C 결정 사항).
+- 원래 컨테이너는 실행 중에 다시 만들어진다. 마지막 수집 뒤의 줄을 잃을 수 있고, 다음 실행이 `gap` 을 보고한다(백업 실패 경보). 이를 없애려면 교체 도구에 단계를 넣어야 한다. 트래픽이 임시 컨테이너로 옮겨진 뒤 원래 컨테이너를 멈추고, 수집을 한 번 돌린 다음, 다시 만드는 단계다. 소유자 결정: 전환·심사 동결 기간에는 배포마다 나는 이 `gap` 경보를 예상 경보로 기록하고, 첫 운영 교체 전에 `service-rollover.py` 변경을 별도 PR 로 낸다.
 - 간격 10분은 컨테이너마다 10분에 10 MB 미만을 쓸 때 안전하다. json-file 은 10 MB×3 이고 순환은 가장 오래된 파일만 지운다. P2.3 부하 때 컨테이너별 바이트/분을 재서 넘으면 타이머 간격을 줄인다.
 
 ## 수용 시험 (window.reserved 전, 세션 C)
@@ -119,12 +121,14 @@ sudo python3 -B /opt/map-reqlog/scripts/request_log_archive.py status   # 그 �
    --label com.docker.compose.oneoff=False
    ```
 
-   출력할 줄:
-   - `loc=` 봉투, `lat`/`lng`·`start_lat`, `x`/`y`, `SX`~`EY`
+   줄은 픽스처 파일 하나(`fixture.txt`, 아래 4번 기대값의 원본)를 읽기 전용으로 붙여 `cat` 으로 낸다. 출력할 줄:
+   - `loc=` 봉투, `lat`/`lng`·`start_lat`·`startLat`~`endLng`, `x`/`y`, `SX`~`EY`, 격자 `nx`/`ny`
+   - 검색어·주소: httpx `query=`, uvicorn `keyword=`, JSON·dict 의 `"address"`·`'query'`, URL 인코딩된 `%3Fquery%3D`
    - OSRM 경로 좌표, nginx `request: "GET …?lat=&lng="`, Caddy `"uri"`, JSON·dict 꼴
    - `%2C`·`%3B`·`%2B`·`%3D` 변형과 nginx `\x22` 꼴, 64자리 해시
    - 32 KiB 를 넘는 줄 1개. 첫 경계에 한글, 둘째 경계에 좌표를 둔다. 운영 엔진(29.8.2)에서 조각 형식을 확인하는 줄이다.
    - 대조군: IPv4·시각·지연·버전
+   - 좌표는 소수부를 줄마다 다른 6자리(예: 37.123456)로, 검색어·주소에는 고유 문자열을 넣는다. 이 값들이 4번의 카나리다.
 3. 픽스처가 끝난 뒤 settle(10초)보다 오래 기다린다. 그다음 실제 유닛을 런타임 drop-in 으로 시험 설정에 돌린다.
 
    ```sh
@@ -143,13 +147,25 @@ sudo python3 -B /opt/map-reqlog/scripts/request_log_archive.py status   # 그 �
    - 코드 `ok`, 줄 수 = 픽스처 줄 수
    - 객체 이름이 `log-6m/acceptance/…`
    - `MAP_REQLOG_RESULT=OK`
-4. 소유자 계정으로 맥에서 암호문을 받는다(`gcloud storage cat`). IAP SSH 표준 입력으로 VM 에 흘려 보내 VM 에서만 처리한다.
+4. 기대값은 맥의 고정 체크아웃에서 만든다. Docker 처럼 16 KiB 조각마다 잘린 문자를 U+FFFD 로 바꾼 뒤 잇고 `scrub` 한다.
 
    ```sh
-   age --decrypt --identity <LUKS 위 0600 사본> | gunzip | python3 -B /opt/map-reqlog/scripts/coordinate_redaction.py --check
+   python3 -B -c 'import hashlib, sys; sys.path.insert(0, "scripts"); import coordinate_redaction as cr
+   F = cr.DOCKER_FRAGMENT_BYTES; out = []
+   for raw in open(sys.argv[1], "rb"):
+       b = raw.rstrip(b"\n"); out.append(cr.scrub("".join(b[i:i + F].decode("utf-8", "replace") for i in range(0, len(b), F)))[0] + "\n")
+   print("lines=%d sha256=%s" % (len(out), hashlib.sha256("".join(out).encode()).hexdigest()))' fixture.txt
    ```
 
-   `MAP_REDACTION_CHECK lines=<줄 수> residue=0`, 종료 코드 0 을 확인한다. 평문은 VM 의 파이프 밖에 두지 않고, identity 사본은 `shred -u` 한다.
+   소유자 계정으로 맥에서 암호문을 받는다(`gcloud storage cat`). IAP SSH 표준 입력으로 VM 에 흘려 보내 VM 에서만 처리한다. 카나리는 픽스처의 6자리 소수부와 고유 문자열이다.
+
+   ```sh
+   age --decrypt --identity <LUKS 위 0600 사본> | gunzip | python3 -B -c 'import hashlib, json, sys
+   lines = [json.loads(r)["line"] + "\n" for r in sys.stdin]; canaries = sys.argv[1:]
+   print("lines=%d sha256=%s canary=%d" % (len(lines), hashlib.sha256("".join(lines).encode()).hexdigest(), sum(any(c in x for c in canaries) for x in lines)))' <카나리…>
+   ```
+
+   통과 조건은 세 가지다. 줄 수가 기대값과 같고, sha256 이 기대값과 같고(바이트 일치), `canary=0` 이다. 평문은 VM 의 파이프 밖에 두지 않고, identity 사본은 `shred -u` 한다. `coordinate_redaction.py --check` 는 판정에 쓰지 않는다. 수집 사본은 `scrub` 이 잔존이 없을 때까지 돈 결과라 구조상 늘 0 이고, 조각 잇기가 실패해도(`lat=***…Z 7.123456`) 통과하기 때문이다.
 5. 정리한다.
    - 픽스처 컨테이너를 정확한 이름으로 지운다.
    - `/etc/map-request-log-acceptance`·`/var/lib/map-request-log-acceptance` 를 지운다.
@@ -173,7 +189,12 @@ sudo python3 -B /opt/map-reqlog/scripts/request_log_archive.py status   # 그 �
 ## 동의 철회와 만료 점검 (소유자 계정)
 
 - 철회는 다음 수집 1회가 끝난 뒤 한다.
-  1. 해당 이용자의 줄이 든 객체를 고른다. 고르는 기준(계정 → IP·시각 등)은 세션 C 가 정한다. 객체 이름에는 식별자를 넣지 않는다.
+  1. 해당 이용자의 줄이 든 객체를 고르고, 객체 안에서 지울 줄을 다음 기준으로만 고른다. 서비스 사이를 잇는 요청 ID 는 없다(proxy 접근 형식 `main_noqs` 는 쿼리 없는 경로만, edge 는 접근 로그 없이 오류 줄만, user 는 접근 로그를 쓰지 않는다). 그래서 **시각만으로는 고르지 않는다**. 같은 시각의 다른 이용자 줄을 지우면 그 사람 확인자료의 보관 의무를 어긴다.
+     - (가) 철회 계정의 계정 식별자가 든 줄(user 오류 줄의 userId 등).
+     - (나) 철회 처리 때 DB 에서 확인한 그 계정의 job_id 가 든 줄. 추천 경로 `/{jobId}`·`/{jobId}/edit`·`/{jobId}/research` 의 proxy 접근 줄과 hub·agent 줄이 여기에 든다.
+     - (다) (가)·(나) 줄과 같은 경로를 쓰는 다른 서비스의 줄(edge 오류 줄 ↔ proxy 줄)은 같은 초·같은 메서드·같은 경로(쿼리 제외)이고, 둘 다 상태 코드를 남겼다면 그것도 같은 줄이 그 서비스에 하나뿐일 때만 고른다. user ↔ hub 처럼 경로가 다른 짝은 job_id 가 실렸을 때만(나) 잇는다.
+     - 후보가 둘 이상이거나 시각만 맞는 줄, IP 만 남은 줄, 철회 전에 이미 지워진 작업의 줄은 고르지 않는다. 귀속할 수 없으므로 보관 기간(184일)이 지난 뒤 수명 규칙과 만료 점검으로 지워진다.
+     - 기록에는 객체 이름, 근거별(가·나·다) 줄 수, 고르지 않은 후보 수만 남긴다. 줄 본문과 식별자는 남기지 않는다. 객체 이름에는 식별자를 넣지 않는다.
   2. VM 에서만 복호하고 그 줄을 지운 뒤 같은 수신자로 다시 암호화한다. identity 는 LUKS 위 0600 사본을 쓰고 끝나면 `shred -u` 한다. 암호문만 맥으로 돌아온다.
   3. 맥에서 새 이름으로 올린다. Custom-Time 을 원 객체 값으로 둬서 만료가 그대로이게 한다.
 

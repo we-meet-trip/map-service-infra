@@ -10,10 +10,13 @@ First pass, applied in this order to the line as written:
   hash      64-digit hex tokens (unsalted SHA-256 cache keys built from coordinates can be
             reversed by trying every point at the stored precision)
   osrm      coordinate lists in OSRM service paths /route/v1/<profile>/<lng>,<lat>;...
+  text      the whole value after a search or address name: query, q, keyword, address
+            (exact names). A quoted value is masked up to its closing quote, any other value
+            up to &, #, a quote or whitespace, so a URL-encoded value is masked whole
   named     numbers after a coordinate name: lat, lng, lon, latitude, longitude and any
-            name ending in them (start_lat, endLng), x, y, SX, SY, EX, EY, mapx, mapy; as
-            query or form pairs, JSON or dict items and plain name: value, also with the
-            separator, quote or sign URL-encoded (%3D %3A %22 %27 %2B)
+            name ending in them (start_lat, endLng), x, y, SX, SY, EX, EY, mapx, mapy, and the
+            weather grid nx, ny; as query or form pairs, JSON or dict items and plain
+            name: value, also with the separator, quote or sign URL-encoded (%3D %3A %22 %27 %2B)
   net       standalone decimals with at least 3 decimals inside the latitudes 33-43 or
             longitudes 124-132 that cover Korea. A number after - or a URL or \\x escape
             counts as standalone; seconds of a hh:mm:ss time do not
@@ -33,7 +36,9 @@ Scope: the line shapes the pinned production services write (hub uvicorn and htt
 Spring, agent, yolo, nginx proxy, Caddy edge). Shapes they never write are neither masked nor
 detected: unnamed integer coordinates, Web Mercator metres, geohash, encoded polylines outside
 OSRM paths, degree-minute-second text, scientific notation, decimal commas, JSON \\u escapes,
-escapes nested more than one level. Re-check whenever a release changes what a service logs.
+escapes nested more than one level. Search and address text has no shape to look for, so only
+the text step masks it and residue() does not report it; an unquoted value with raw spaces is
+masked up to the first space. Re-check whenever a release changes what a service logs.
 
   coordinate_redaction.py           filter: stdin lines -> masked lines (counts on stderr)
   coordinate_redaction.py --check   detector only: counts lines with residue, exit 3 if any;
@@ -53,15 +58,19 @@ DOCKER_FRAGMENT_BYTES = 16 * 1024
 ENVELOPE = re.compile(r'v1\.[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{16,}')
 HEX64 = re.compile(r'(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])')
 OSRM_PATH = re.compile(r'(/(?:route|table|nearest|match|trip|tile)/v1/[A-Za-z0-9_-]+/)([^?\s"\'&]+)')
-NAME = r'(?:\b\w*?(?:latitude|longitude|lat|lng|lon)|\b(?:x|y|sx|sy|ex|ey|mapx|mapy))'
+NAME = r'(?:\b\w*?(?:latitude|longitude|lat|lng|lon)|\b(?:x|y|sx|sy|ex|ey|nx|ny|mapx|mapy))'
 QUOTE = r'(?:["\']|%2[27])?'
-NAMED = re.compile(r'(?i)(' + NAME + QUOTE + r'\s*(?:[=:]|%3[ad])\s*' + QUOTE + r'(?:\+|%2b)?)(-?\d+(?:\.\d+)?)')
+SEPARATOR = r'\s*(?:[=:]|%3[ad])\s*'
+NAMED = re.compile(r'(?i)(' + NAME + QUOTE + SEPARATOR + QUOTE + r'(?:\+|%2b)?)(-?\d+(?:\.\d+)?)')
+# A name glued to a %XX escape (%3Fquery%3D) still counts; a longer word ending in one does not.
+TEXT = re.compile(r'(?i)((?:(?<!\w)|(?<=%[0-9a-f]{2}))(?:query|keyword|address|q)' + QUOTE + SEPARATOR + r')'
+                  r'("(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|[^&#"\'\s]+)')
 NUMBER_START = r'(?<!\d\d:\d\d:)(?:(?<![\w.%])|(?<=%[0-9A-Fa-f]{2})|(?<=\\x[0-9A-Fa-f]{2}))'
 DECIMAL = re.compile(NUMBER_START + r'(-?\d{2,3}\.\d{3,})(?!\d|\.\d)')
 
 # The short names count after anything but a letter, so masking a digit in front of one never
 # turns it into a new match.
-LOOSE_NAMED = re.compile(r'(?i)((?:lat|lng|lon|latitude|longitude|mapx|mapy|(?<![a-z_])(?:x|y|sx|sy|ex|ey))'
+LOOSE_NAMED = re.compile(r'(?i)((?:lat|lng|lon|latitude|longitude|mapx|mapy|(?<![a-z_])(?:x|y|sx|sy|ex|ey|nx|ny))'
                          r'["\']?\s*[=:]\s*["\']?[+-]?)(\d+(?:\.\d+)?)')
 LOOSE_NUMBER = re.compile(r'(?<!\d\d:\d\d:)(?<![\d.])(-?\d{2,3}\.\d+)(?!\d|\.\d)')
 ESCAPE = re.compile(r'\\x([0-9A-Fa-f]{2})')
@@ -94,9 +103,15 @@ def redact(line):
     line, envelopes = ENVELOPE.subn('v1.' + MASK, line)
     line, hashes = HEX64.subn(MASK, line)
     line, paths = OSRM_PATH.subn(lambda match: match[1] + MASK, line)
+    line, texts = TEXT.subn(lambda match: match[1] + _quoted(match[2]), line)
     line, named = NAMED.subn(lambda match: match[1] + MASK, line)
     line, numbers = _net(DECIMAL, line)
-    return line, envelopes + hashes + paths + named + numbers
+    return line, envelopes + hashes + paths + texts + named + numbers
+
+
+def _quoted(value):
+    quote = value[0] if value[0] in '"\'' else ''
+    return quote + MASK + quote
 
 
 def _loose(line):

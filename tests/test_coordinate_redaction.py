@@ -40,21 +40,21 @@ COORDINATE_LINES = [
 # Values a client can put in a URL or header; none may survive and none may withhold the line.
 CRAFTED_LINES = [
     '203.0.113.5 - - [20/Oct/2026:03:41:02 +0900] "GET / HTTP/1.1" 200 0 "-" "33.0-33.0"',
-    'GET /search?q=37.5x=5',
+    'GET /search?v=37.5x=5',
     'HTTP Request: GET https://dapi.kakao.com/v2/local/search/keyword.json?query=37.5-38.5',
     'GET /a?b=a37.5&c=127.0',
-    'GET /a?q=%2037.5',
-    'GET /a?q=37%2E5',
+    'GET /a?v=%2037.5',
+    'GET /a?v=37%2E5',
     'GET /a?x=12:34:37.5',
-    'GET /a?q=37.512:34:37.512:34:37.512:34:37.5',
+    'GET /a?v=37.512:34:37.512:34:37.512:34:37.5',
     'GET /a?' + 'x=5' * 40,
-    'GET /a?q=37' + '%' + '25' * 20 + '2E5',
+    'GET /a?v=37' + '%' + '25' * 20 + '2E5',
     'GET /a?' + ''.join(f'37%{"25" * depth}2E5,' for depth in range(20)),
-    'GET /a?q=' + 'ab' * 31 + 'fx=37',
-    'GET /a?q=\\x337.5',
+    'GET /a?v=' + 'ab' * 31 + 'fx=37',
+    'GET /a?v=\\x337.5',
     # A name masked in the last step must not leave an exact 64-digit hash behind it.
-    '203.0.113.5 - - "GET /api/v1/trip/generate?q=%5Cx=5' + 'a' * 64 + ' HTTP/1.1" 503',
-    'GET /a?q=%5Cx=5' + 'a' * 64 + 'x=7' + 'b' * 64,
+    '203.0.113.5 - - "GET /api/v1/trip/generate?v=%5Cx=5' + 'a' * 64 + ' HTTP/1.1" 503',
+    'GET /a?v=%5Cx=5' + 'a' * 64 + 'x=7' + 'b' * 64,
 ]
 
 # Look like coordinates to a careless pattern but are not; they must pass through untouched.
@@ -64,7 +64,6 @@ CONTROL_LINES = [
     'GET /api/v1/users/me 401 duration=12.345 request_id=5f2c9a',
     'version 3.11.4 build 20261020.1 port 5000 retries 3',
     'format=json; flat=false; long text without numbers',
-    'weather grid nx=60 ny=127 base_time=0500',
     '2026-10-06T05:00:37.183Z  INFO 1 --- [nio-8080-exec-1] c.m.user.AuthController  : login ok',
     '2026-10-06T05:00:41.183456Z WARN retry 3 of 5 max: 7 index: 2 key: 4',
 ]
@@ -118,15 +117,15 @@ class RedactionTests(unittest.TestCase):
                 masked, _, withheld = cr.scrub(line)
                 self.assertFalse(withheld)
                 self.assertEqual(cr.residue(masked), [])
-        self.assertEqual(cr.scrub('GET /search?q=37.5x=5')[0], 'GET /search?q=***x=***')
-        self.assertEqual(cr.scrub('query=37.5-38.5')[0], 'query=***-***')
+        self.assertEqual(cr.scrub('GET /search?v=37.5x=5')[0], 'GET /search?v=***x=***')
+        self.assertEqual(cr.scrub('GET /search?q=37.5x=5')[0], 'GET /search?q=***')
 
     def test_the_last_step_keeps_the_client_address(self):
-        line = '203.0.113.5 - - [20/Oct/2026:03:41:02 +0900] "GET /a?q=37%2E5 HTTP/1.1" 200 0 "-" "Mozilla/5.0"'
+        line = '203.0.113.5 - - [20/Oct/2026:03:41:02 +0900] "GET /a?v=37%2E5 HTTP/1.1" 200 0 "-" "Mozilla/5.0"'
         self.assertEqual(cr.residue(cr.redact(line)[0]), ['number'])
         masked, _, withheld = cr.scrub(line)
         self.assertFalse(withheld)
-        self.assertTrue(masked.startswith('203.0.113.5 - - [20/Oct/2026:03:41:02 +0900] "GET /a?q=37***5 HTTP/'))
+        self.assertTrue(masked.startswith('203.0.113.5 - - [20/Oct/2026:03:41:02 +0900] "GET /a?v=37***5 HTTP/'))
         self.assertEqual(cr.residue(masked), [])
 
     def test_no_input_leaves_residue_or_reaches_the_fail_safe(self):
@@ -146,6 +145,54 @@ class RedactionTests(unittest.TestCase):
                 masked, _, withheld = cr.scrub(line)
                 self.assertFalse(withheld, line)
                 self.assertEqual(cr.residue(masked), [], line)
+
+    def test_search_and_address_text_is_masked_whole(self):
+        cases = [
+            ('HTTP Request: GET https://dapi.kakao.com/v2/local/search/address.json?query=%EC%84%9C%EC%9A%B8%20'
+             '%EA%B0%95%EB%82%A8&analyze_type=similar "HTTP/1.1 200 OK"',
+             'HTTP Request: GET https://dapi.kakao.com/v2/local/search/address.json?query=***&analyze_type=similar '
+             '"HTTP/1.1 200 OK"'),
+            ('INFO:     172.18.0.9:51234 - "GET /v1/places/search?keyword=%EC%B9%B4%ED%8E%98&size=5 HTTP/1.1" 200 OK',
+             'INFO:     172.18.0.9:51234 - "GET /v1/places/search?keyword=***&size=5 HTTP/1.1" 200 OK'),
+            ('2026/11/03 03:41:02 [error] 31#31: *7 upstream timed out, client: 172.18.0.1, request: '
+             '"GET /api/v1/places/search?query=%EC%B9%B4%ED%8E%98 HTTP/1.1", host: "api.mapservice.app"',
+             '2026/11/03 03:41:02 [error] 31#31: *7 upstream timed out, client: 172.18.0.1, request: '
+             '"GET /api/v1/places/search?query=*** HTTP/1.1", host: "api.mapservice.app"'),
+            ('{"msg":"dial tcp: i/o timeout","request":{"uri":"/api/v1/places/search?query=%EC%B9%B4%ED%8E%98&size=5"}}',
+             '{"msg":"dial tcp: i/o timeout","request":{"uri":"/api/v1/places/search?query=***&size=5"}}'),
+            ('{"address": "서울 강남구 테헤란로 152", "q": "카페 \\"본점\\""}', '{"address": "***", "q": "***"}'),
+            ("params={'query': '서울 강남', 'page': 1}", "params={'query': '***', 'page': 1}"),
+            ('GET /a?d=%7B%22address%22%3A%22%EC%84%9C%22%7D&page=2', 'GET /a?d=%7B%22address%22%3A***&page=2'),
+            ('GET /a?next=%3Fquery%3D%EC%84%9C&page=2', 'GET /a?next=%3Fquery%3D***&page=2'),
+        ]
+        for line, expected in cases:
+            with self.subTest(line=line[:60]):
+                self.assertEqual(cr.redact(line)[0], expected)
+                self.assertEqual(cr.scrub(line), (expected, cr.redact(line)[1], False))
+        for line in ('GET /faq=1 remote_address=1.2.3.4 searchQuery=x quality=high',
+                     'HTTP Request: GET https://dapi.kakao.com/v2/local/search/address.json "HTTP/1.1 200 OK"',
+                     'GET /a?query=&page=2'):
+            with self.subTest(line=line[:60]):
+                self.assertEqual(cr.redact(line), (line, 0))
+
+    def test_weather_grid_is_masked_and_detected(self):
+        line = ('HTTP Request: GET http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst?serviceKey=***'
+                '&base_date=20261103&base_time=0500&nx=60&ny=127 "HTTP/1.1 200 OK"')
+        self.assertEqual(cr.redact(line)[0], line.replace('nx=60&ny=127', 'nx=***&ny=***'))
+        self.assertEqual(cr.redact("forecast cell {'nx': 60, 'ny': 127}")[0], "forecast cell {'nx': ***, 'ny': ***}")
+        self.assertEqual(cr.residue('weather grid nx=60 ny=127'), ['named'])
+        self.assertEqual(cr.scrub('weather grid nx=60 ny=127 base_time=0500'),
+                         ('weather grid nx=*** ny=*** base_time=0500', 2, False))
+
+    def test_prefixed_coordinate_names_are_masked(self):
+        line = ('203.0.113.5 - - "GET /api/v1/directions?startLat=37.56&startLng=127&endLat=37.4979&endLng=127.0276'
+                ' HTTP/1.1" 200 512')
+        self.assertEqual(cr.redact(line)[0], '203.0.113.5 - - "GET /api/v1/directions?startLat=***&startLng=***'
+                                             '&endLat=***&endLng=*** HTTP/1.1" 200 512')
+        self.assertEqual(cr.redact('{"startLat":37.5665,"start_lng":-126.978,"END_LAT":"37.49"}')[0],
+                         '{"startLat":***,"start_lng":***,"END_LAT":"***"}')
+        masked, _, withheld = cr.scrub('GET /a?startX=127.02&startY=37.49 HTTP/1.1')
+        self.assertEqual((masked, withheld), ('GET /a?startX=***&startY=*** HTTP/1.1', False))
 
     def test_residue_reports_check_names_only(self):
         self.assertEqual(cr.residue(f'lat=37.5 {ENVELOPE} at 127.0276 {CACHE_KEY}'),
