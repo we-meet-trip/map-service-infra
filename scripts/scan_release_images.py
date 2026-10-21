@@ -4,11 +4,14 @@
 The scanner runs without a Docker socket/source mount. Raw HIGH/CRITICAL reports,
 image sizes, scanner DB metadata and checksums are retained even for a failed gate.
 HIGH findings allow GCP testing, never automatic NCP residual-risk acceptance.
+A CRITICAL finding passes the gate only when security/release-accepted-critical.json
+(read from the workflow checkout, never the source ref) names that exact service,
+vulnerability ID, package and installed version with an expiry date not yet passed.
 """
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -21,6 +24,8 @@ import release_manifest as release
 SCANNER = 'aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969'
 VERSION = '0.74.0'
 MAX_REPORT = 64 * 1024 * 1024
+ACCEPTED = Path(__file__).resolve().parent.parent / 'security/release-accepted-critical.json'
+ACCEPTED_FIELDS = ('service', 'id', 'package', 'installed', 'expires', 'reason')
 require = release.require
 
 
@@ -193,6 +198,23 @@ def scan_bundle(bundle, output, cache, github_summary=None):
     return summary
 
 
+def accepted_critical(today):
+    """Owner-accepted CRITICAL findings still in force, as (service, ID, package, installed version)."""
+    if not ACCEPTED.exists():
+        return set()
+    document = read_json(ACCEPTED, 65536)
+    rows = document.get('accepted') if isinstance(document, dict) else None
+    require(isinstance(rows, list), 'invalid accepted findings file')
+    keys = set()
+    for row in rows:
+        require(isinstance(row, dict) and set(row) == set(ACCEPTED_FIELDS)
+                and all(isinstance(row[k], str) and row[k] for k in ACCEPTED_FIELDS)
+                and row['service'] in release.SERVICES, 'invalid accepted finding')
+        if date.fromisoformat(row['expires']) >= today:
+            keys.add((row['service'], row['id'], row['package'], row['installed']))
+    return keys
+
+
 def enforce(bundle, output):
     data = release.verify_bundle(bundle)
     required_files = {s + '.json' for s in release.SERVICES} | {
@@ -206,14 +228,22 @@ def enforce(bundle, output):
     require((output / 'scanned-release.json').read_bytes() == (bundle / 'release.json').read_bytes(), 'scanned release changed')
     started = timestamp(summary.get('started_at'))
     services = {}
+    critical = set()
     for service in release.SERVICES:
         raw = output / (service + '.json')
-        row = parse_report(read_json(raw), data['services'][service], data['release_tag'])
+        document = read_json(raw)
+        row = parse_report(document, data['services'][service], data['release_tag'])
         row['report_sha256'] = hashlib.sha256(raw.read_bytes()).hexdigest()
         services[service] = row
+        critical |= {(service, f['VulnerabilityID'], f['PkgName'], f['InstalledVersion'])
+                     for r in document['Results'] for f in r.get('Vulnerabilities', []) if f['Severity'] == 'CRITICAL'}
     expected = summarize(data, output, services, started, True)
     require(summary == expected, 'audit summary mismatch')
-    require(summary['counts']['CRITICAL'] == 0, 'CRITICAL findings block release bundle publication')
+    # The summary keeps the raw BLOCK_CRITICAL status; only exact, unexpired owner acceptances let the bundle through.
+    require(critical <= accepted_critical(datetime.now(timezone.utc).date()),
+            'CRITICAL findings block release bundle publication')
+    if critical:
+        print('Owner-accepted CRITICAL findings: ' + json.dumps(sorted(critical)))
     return summary
 
 

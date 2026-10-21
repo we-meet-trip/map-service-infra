@@ -1,0 +1,28 @@
+{
+  "accepted": [
+    {
+      "service": "user",
+      "id": "CVE-2026-47884",
+      "package": "org.springframework:spring-webmvc",
+      "installed": "6.2.19",
+      "expires": "2026-12-31",
+      "reason": "Requires XsltView view rendering; the user service has no XsltView. No 6.2.x open-source fix exists (7.0.x only); accepted by the owner on 2026-10-21 until the Spring Boot 4 migration."
+    },
+    {
+      "service": "user",
+      "id": "CVE-2026-47890",
+      "package": "org.springframework:spring-webmvc",
+      "installed": "6.2.19",
+      "expires": "2026-12-31",
+      "reason": "Requires Server-Sent Events with view fragments; the user service has no SSE endpoint. No 6.2.x open-source fix exists (7.0.x only); accepted by the owner on 2026-10-21 until the Spring Boot 4 migration."
+    },
+    {
+      "service": "yolo",
+      "id": "CVE-2026-112403",
+      "package": "pillow",
+      "installed": "12.3.0",
+      "expires": "2026-12-31",
+      "reason": "Requires draft() or thumbnail() downscaling; the yolo service only opens and loads JPEG frames. Accepted by the owner on 2026-10-21 until the Pillow 13 upgrade."
+    }
+  ]
+}
