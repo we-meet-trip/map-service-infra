@@ -1,5 +1,5 @@
 import copy
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import importlib.util
 import json
@@ -169,6 +169,28 @@ class GateTests(unittest.TestCase):
         self.assertEqual(len(result['services']),6)
         with self.assertRaisesRegex(ValueError,'CRITICAL'):audit.enforce(self.bundle,self.output)
         self.assertTrue((self.output/'SHA256SUMS').is_file())
+
+    def accept(self,rows):
+        p=self.root/'accepted.json';p.write_text(json.dumps({'accepted':rows}))
+        return patch.object(audit,'ACCEPTED',p)
+
+    def test_only_exact_unexpired_owner_acceptance_lets_critical_pass(self):
+        result=self.run_scan('CRITICAL')
+        row={'id':'CVE-2026-12345','package':'test-package','installed':'1.0','expires':'2999-12-31','reason':'unreachable'}
+        every=[dict(row,service=s) for s in audit.release.SERVICES]
+        with self.accept(every):self.assertEqual(audit.enforce(self.bundle,self.output),result)
+        self.assertEqual(result['security_status'],'BLOCK_CRITICAL')
+        for rows in (every[1:],[dict(r,expires='2000-01-01') for r in every],[dict(r,installed='1.1') for r in every],
+                     [dict(r,id='CVE-2026-54321') for r in every],[]):
+            with self.subTest(rows=rows[:1]),self.accept(rows),self.assertRaisesRegex(ValueError,'CRITICAL'):
+                audit.enforce(self.bundle,self.output)
+        for bad in ([dict(every[0],expires='31-12-2999')],[dict(every[0],service='../user')],[{**every[0],'extra':'x'}]):
+            with self.subTest(bad=bad),self.accept(bad),self.assertRaises(ValueError):audit.enforce(self.bundle,self.output)
+
+    def test_tracked_acceptances_are_well_formed_and_expire(self):
+        keys=audit.accepted_critical(date(2026,10,21))
+        self.assertTrue(keys and all(k[0] in audit.release.SERVICES for k in keys))
+        self.assertEqual(audit.accepted_critical(date(2027,1,1)),set())
 
     def test_scan_failure_retains_partial_evidence_with_closed_gate(self):
         with patch.object(audit,'command',side_effect=self.scanner('HIGH','hub')):
